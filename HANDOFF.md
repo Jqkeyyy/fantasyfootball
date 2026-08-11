@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-11
 **Last machine:** Maybe (Windows)
-**Last commit:** pending — this session's task 0.3 work (player id mapping) is not yet committed. Last committed: `1845e42` — docs: fill in commit hash and machine name in HANDOFF.md
+**Last commit:** `92d770c` — feat: player id mapping with fuzzy matching and league-scoped relevance gate
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
