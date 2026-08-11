@@ -1,0 +1,22 @@
+slug: "league-b"
+display_name: "League B"
+is_primary: false
+
+sleeper:
+  league_id: "222222222222222222"
+  season: 2026
+
+league_cache:
+  total_rosters: 12
+  roster_positions: [QB, RB, RB, WR, WR, TE, FLEX, K, DEF, BN, BN, BN, BN, BN]
+  scoring_settings:
+    pass_yd: 0.04
+    pass_td: 4
+    rec: 0.5
+  waiver_type: "rolling"
+  waiver_budget: null
+  playoff_week_start: 15
+
+overrides:
+  flex_eligible: [RB, WR, TE]
+  superflex_eligible: [QB, RB, WR, TE]

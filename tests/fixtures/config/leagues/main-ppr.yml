@@ -1,0 +1,22 @@
+slug: "main-ppr"
+display_name: "Main league"
+is_primary: true
+
+sleeper:
+  league_id: "111111111111111111"
+  season: 2026
+
+league_cache:
+  total_rosters: 10
+  roster_positions: [QB, RB, RB, WR, WR, TE, FLEX, FLEX, K, DEF, BN, BN, BN, BN, BN, BN]
+  scoring_settings:
+    pass_yd: 0.04
+    pass_td: 4
+    rec: 1
+  waiver_type: "faab"
+  waiver_budget: 100
+  playoff_week_start: 15
+
+overrides:
+  flex_eligible: [RB, WR, TE]
+  superflex_eligible: [QB, RB, WR, TE]

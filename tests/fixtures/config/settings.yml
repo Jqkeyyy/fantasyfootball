@@ -1,0 +1,20 @@
+paths:
+  data_root: "./data"
+
+seasons:
+  train_start: 2015
+  current: 2026
+
+sleeper:
+  username: "fixture_user"
+
+cache:
+  root: "./data/raw"
+  offline_default: true
+  staleness_hours:
+    sleeper_league: 168
+    sleeper_rosters: 24
+    rankings_adp: 24
+    odds: 12
+    weather_forecast: 6
+  warn_on_stale: true
