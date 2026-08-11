@@ -1,0 +1,2 @@
+source,source_id,player_id,note
+sleeper,8008,no_gsis_sleeper_8008,Josh Imatorbhebhe -- dynastyprocess crosswalk links this sleeper_id but carries no gsis_id for him; never appeared in an NFL regular-season box score so nflverse never assigned one.

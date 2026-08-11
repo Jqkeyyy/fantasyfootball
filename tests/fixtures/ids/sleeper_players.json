@@ -1,0 +1,72 @@
+{
+  "9226": {
+    "player_id": "9226",
+    "full_name": "Bijan Robinson",
+    "position": "RB",
+    "team": "ATL",
+    "gsis_id": null,
+    "espn_id": 4432665,
+    "birth_date": "2002-01-30",
+    "search_rank": 1
+  },
+  "9509": {
+    "player_id": "9509",
+    "full_name": "Puka Nacua",
+    "position": "WR",
+    "team": "LAR",
+    "gsis_id": "00-0039164",
+    "espn_id": 4426385,
+    "birth_date": "2001-05-29",
+    "search_rank": 5
+  },
+  "7564": {
+    "player_id": "7564",
+    "full_name": "Amon Ra St Brown",
+    "position": "WR",
+    "team": "DET",
+    "gsis_id": null,
+    "espn_id": 4372016,
+    "birth_date": "1999-11-24",
+    "search_rank": 8
+  },
+  "7788": {
+    "player_id": "7788",
+    "full_name": "Override Test Player",
+    "position": "TE",
+    "team": "FA",
+    "gsis_id": null,
+    "espn_id": null,
+    "birth_date": null,
+    "search_rank": 200
+  },
+  "9999": {
+    "player_id": "9999",
+    "full_name": "Zzyzx Unmatched Guy",
+    "position": "WR",
+    "team": "FA",
+    "gsis_id": null,
+    "espn_id": null,
+    "birth_date": null,
+    "search_rank": 50
+  },
+  "8888": {
+    "player_id": "8888",
+    "full_name": "Deep Bench Guy",
+    "position": "RB",
+    "team": "FA",
+    "gsis_id": null,
+    "espn_id": null,
+    "birth_date": null,
+    "search_rank": 9000
+  },
+  "ATL": {
+    "player_id": "ATL",
+    "full_name": null,
+    "position": "DEF",
+    "team": "ATL",
+    "gsis_id": null,
+    "espn_id": null,
+    "birth_date": null,
+    "search_rank": null
+  }
+}

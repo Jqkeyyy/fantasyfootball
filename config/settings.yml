@@ -47,4 +47,5 @@ cache:
     rankings_adp: 24
     odds: 12
     weather_forecast: 6
+    nflverse_player_ids: 168
   warn_on_stale: true

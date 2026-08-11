@@ -25,7 +25,7 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Add `ffapp ingest sleeper --season 2026` which resolves username → user_id → league, and writes the league object into `config/league.yml` under `league_cache`.
   **Done when:** `config/league.yml` is populated with real `roster_positions` and `scoring_settings`; `/players/nfl` is cached to disk and a second invocation within 24h does not re-fetch it.
 
-- [ ] **0.3 — Player ID mapping** 🔴 ⏱ 3h
+- [x] **0.3 — Player ID mapping** 🔴 ⏱ 3h
   SPEC §7
   Build `ids/mapping.py`: load the published ffverse player-id crosswalk as the base, layer Sleeper's cross-reference fields, fuzzy-match the remainder with `rapidfuzz` (floor 92), apply `config/id_overrides.csv` last. Implement `unmatched_report()` and the `ffapp ids check` command.
   **Done when:** `ffapp ids check` reports zero unmatched players inside the top 300 by ADP, and `tests/test_ids.py` asserts this.

@@ -3,16 +3,19 @@ import typer
 from ffapp import __version__
 from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
-from ffapp.config import load_settings
+from ffapp.config import load_primary_league, load_settings
 from ffapp.env import load_env
+from ffapp.ids import mapping
 
 load_env()
 
 app = typer.Typer(name="ffapp", help="Fantasy football decision-support CLI.")
 ingest_app = typer.Typer(name="ingest", help="Ingest raw data from external sources.")
 cache_app = typer.Typer(name="cache", help="Manage the offline data cache (SPEC-ADDENDUM-02.md).")
+ids_app = typer.Typer(name="ids", help="Cross-source player id resolution (SPEC.md §7).")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
+app.add_typer(ids_app, name="ids")
 
 
 def _version_callback(value: bool) -> None:
@@ -130,3 +133,44 @@ def cache_verify_command(
         for req in missing:
             typer.echo(f"  {req.warm_hint}")
         raise typer.Exit(code=1)
+
+
+@ids_app.command("check")
+def ids_check(
+    season: int = typer.Option(..., "--season"),
+    top_n: int = typer.Option(
+        300, "--top-n", help="Fail if any unmatched player ranks within this many by search_rank."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Report players not resolved to a real cross-source id (SPEC.md §7).
+
+    The blocking gate is scoped to the primary league's own roster positions and
+    active players only: Sleeper's search_rank spans every player it tracks,
+    including retirees and IDP positions this league may not start.
+    """
+    settings = load_settings()
+    league = load_primary_league()
+    eligible_positions = mapping.league_relevant_positions(league)
+    unmatched = mapping.unmatched_report(season, settings=settings, offline=offline)
+
+    if unmatched.is_empty():
+        typer.echo("ffapp ids check: 0 unmatched players.")
+        return
+
+    for row in unmatched.iter_rows(named=True):
+        name = row["full_name"] or row["sleeper_id"]
+        typer.echo(f"  {name:30s} sleeper_id={row['sleeper_id']} search_rank={row['search_rank']}")
+
+    blocking = mapping.within_top_n(mapping.league_relevant(unmatched, eligible_positions), top_n)
+    if not blocking.is_empty():
+        typer.echo(
+            f"{blocking.height} unmatched player(s) within top {top_n} by search_rank "
+            "-- build failure.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.echo(f"{unmatched.height} unmatched player(s), none within top {top_n}.")
