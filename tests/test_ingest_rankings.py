@@ -1244,4 +1244,129 @@ def test_normalize_adp_drops_unknown_positions() -> None:
     df = rankings.normalize_adp(payload, season=2026)
 
     assert df.height == 3
+
+
+# --- FantasyPros weekly historical archive (task 1.10, B3) -------------------------
+
+
+def test_get_fp_weekly_commits_all_paginates_until_a_short_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_page = [
+        {"sha": f"sha{i}", "commit": {"committer": {"date": f"2021-08-{10 + i:02d}T12:00:00Z"}}}
+        for i in range(100)
+    ]
+    short_page = [{"sha": "sha_last", "commit": {"committer": {"date": "2021-12-01T12:00:00Z"}}}]
+    pages = {1: full_page, 2: short_page}
+    monkeypatch.setattr(rankings, "_get_fp_weekly_commits_page", lambda page: pages[page])
+
+    result = rankings._get_fp_weekly_commits_all()
+
+    assert len(result["commits"]) == 101
+    # sorted oldest first
+    assert result["commits"][0]["date"] <= result["commits"][-1]["date"]
+
+
+def test_get_fp_weekly_commits_all_stops_immediately_on_an_empty_first_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rankings, "_get_fp_weekly_commits_page", lambda page: [])
+
+    result = rankings._get_fp_weekly_commits_all()
+
+    assert result["commits"] == []
+
+
+def test_fetch_fp_weekly_commits_online_writes_cache(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    monkeypatch.setattr(
+        rankings, "_get_fp_weekly_commits_all", lambda: {"commits": [{"sha": "a", "date": "x"}]}
+    )
+
+    path = rankings.fetch_fp_weekly_commits(offline=False, settings=settings)
+
+    assert json.loads(path.read_text())["commits"] == [{"sha": "a", "date": "x"}]
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "rankings_fp_weekly_commits"
+
+
+def test_select_commit_before_picks_the_latest_strictly_prior_commit() -> None:
+    commits = [
+        {"sha": "old", "date": "2021-09-01T12:00:00Z"},
+        {"sha": "mid", "date": "2021-09-08T12:00:00Z"},
+        {"sha": "new", "date": "2021-09-15T12:00:00Z"},
+    ]
+
+    assert rankings.select_commit_before(commits, "2021-09-10T17:00:00Z") == "mid"
+
+
+def test_select_commit_before_is_none_when_nothing_predates_the_cutoff() -> None:
+    commits = [{"sha": "new", "date": "2021-09-15T12:00:00Z"}]
+
+    assert rankings.select_commit_before(commits, "2021-08-01T00:00:00Z") is None
+
+
+def test_select_commit_before_never_picks_a_commit_on_or_after_the_cutoff() -> None:
+    """The as_of contract: a commit made *at* kickoff itself must not
+    count as "before" -- real weekly consensus data can't leak in from
+    the exact moment the game starts."""
+    commits = [{"sha": "at_kickoff", "date": "2021-09-15T17:00:00Z"}]
+
+    assert rankings.select_commit_before(commits, "2021-09-15T17:00:00Z") is None
+
+
+def test_fetch_fp_weekly_snapshot_online_writes_raw_csv_and_sidecar(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    monkeypatch.setattr(rankings, "_get_fp_weekly_snapshot_csv", lambda sha: "a,b\n1,2\n")
+
+    path = rankings.fetch_fp_weekly_snapshot("deadbeef", offline=False, settings=settings)
+
+    assert path.name == "fp_weekly_deadbeef.csv"
+    assert path.read_text() == "a,b\n1,2\n"
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "rankings_fp_weekly_snapshot"
+
+
+FP_WEEKLY_FIXTURE_CSV = (
+    '"page","player_name","pos","team","ecr","r2p_pts"\n'
+    '"qb","Joe Burrow","QB","CIN",1.42,"22.1"\n'
+    '"ppr-rb","Christian McCaffrey","RB","SF",1.1,"24.5"\n'
+    '"ppr-wr","Justin Jefferson","WR","MIN",1.3,"19.8"\n'
+    '"ppr-te","Travis Kelce","TE","KC",1.5,"15.2"\n'
+    '"dst","San Francisco 49ers","DST","SF",1.0,"9.0"\n'
+    '"k","Justin Tucker","K","BAL",1.0,"8.5"\n'
+)
+
+
+def test_normalize_fp_weekly_keeps_only_qb_rb_wr_te_pages() -> None:
+    df = rankings.normalize_fp_weekly(FP_WEEKLY_FIXTURE_CSV, season=2023, week=5)
+
+    assert df.height == 4
+    assert set(df["pos"].to_list()) == {"QB", "RB", "WR", "TE"}
+
+
+def test_normalize_fp_weekly_uses_r2p_pts_as_b3_points_directly() -> None:
+    df = rankings.normalize_fp_weekly(FP_WEEKLY_FIXTURE_CSV, season=2023, week=5)
+
+    burrow = df.filter(pl.col("player_name") == "Joe Burrow").row(0, named=True)
+    assert burrow["b3_points"] == pytest.approx(22.1)
+    assert burrow["season"] == 2023
+    assert burrow["week"] == 5
     assert "Some Punter" not in df["player_name"].to_list()
+
+
+FP_WEEKLY_FIXTURE_CSV_NO_R2P = (
+    '"page","player_name","pos","team","ecr"\n"qb","Joe Burrow","QB","CIN",1.42\n'
+)
+
+
+def test_normalize_fp_weekly_leaves_b3_points_null_when_r2p_pts_column_is_absent() -> None:
+    """Real schema-evolution case found live: some 2021-era historical
+    snapshots have no r2p_pts column at all (ecr/pos_rank are present
+    throughout, r2p_pts was added to the source later). Must not crash
+    with a ColumnNotFoundError -- an honest null, not a guess."""
+    df = rankings.normalize_fp_weekly(FP_WEEKLY_FIXTURE_CSV_NO_R2P, season=2021, week=1)
+
+    row = df.row(0, named=True)
+    assert row["b3_points"] is None
+    assert row["ecr"] == pytest.approx(1.42)

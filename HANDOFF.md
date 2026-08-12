@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `644d686` — feat: feature table build (task 1.9)
+**Last commit:** `PENDING` — feat: baselines B0-B3 (task 1.10)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
-**Next task:** 1.10 (Baselines) 🔴 — see SPEC §12.3. Nothing blocking it.
-**First concrete step:** `models/baselines.py`: B0 (positional weekly mean), B1 (player's season-to-date mean), B2 (player's own `ewm_4` of league-scored points — "the real bar for did my features do anything"), B3 (public consensus weekly projections — needs ingesting weekly consensus projections, distinct from task 0.7's draft-time consensus rankings, which are a single preseason snapshot, not a weekly-updating series). All four need to "produce weekly predictions over the validation range" (task's own literal acceptance bar) — B0-B2 can compute directly from `features/player_week_features.parquet` (now real, task 1.9); B3 needs new ingestion. This task is 🔴 blocking: SPEC §12.3's own rule ("if the model does not beat B2, the features are not working... if it does not beat B3, ship B3 and keep working") means nothing downstream (1.11+) can honestly evaluate a model without these existing first, and CLAUDE.md's own standing rule 6 ("beat the baselines before believing the model") is directly about this task.
+**Next task:** 1.11 (Snapshot and leakage test) 🔴 — see SPEC §12.1. Nothing blocking it.
+**First concrete step:** `evaluation/snapshot.py`'s `snapshot(tables, as_of) -> dict[str, pl.DataFrame]` (return every table filtered to rows knowable at `as_of`) plus `tests/test_leakage.py` (must pass over a sample of real backtest weeks, and must *fail* when a deliberate leak is introduced — task's own literal acceptance bar, a mutation-style test, not just a passing green suite). SPEC §12.1: injury designations use `date_modified`, stats use game completion time, Vegas lines use the line timestamp. `features/player_week_features.parquet`'s own `as_of_utc` column (task 1.9) is the per-row cutoff to filter against — this task is about proving nothing in the real table ever violates it, not computing `as_of_utc` itself (already done). 🔴 blocking: task 1.12 (walk-forward harness) calls `snapshot()` directly in its own per-week loop.
 
 **Blocking on me (the human), not the agent:**
 
@@ -189,12 +189,20 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - **Task's own literal acceptance bar, verified against real 2015-2025 data end to end:** `data/features/player_week_features.parquet` now exists for real (SPEC's repo layout, §4: `data/features/` is a distinct top-level directory from `data/interim/` — caught a same-session slip where the real output was first written to `data/interim/` by mistake and moved to the correct location before finishing) — **94,422 rows, 84 columns, built in 1.2s**. `as_of_utc`: 0 nulls across all 94,422 rows. Non-played rows are genuinely present: 33,678 rows with `availability_flag=False` (not dropped). Full real chain regenerated to get there: `data/raw/nflverse/rosters_2015-2025.parquet` (weekly, re-fetched live), `data/interim/schedule.parquet` (regenerated with the new `weekday` column), `data/interim/weather.parquet` (**materialized for real at full scale for the first time this session** — 3,028 real games, 855 dome overrides + 2,173 live Open-Meteo historical calls, ~536s).
   - Malik Nabers' full real week-4-through-7 sequence in the final table: week 4 `target=23.1, availability_flag=true, report_status=None`; weeks 5-6 `target=0.0, availability_flag=false, report_status=Out, teammate_vacated_target_share=0.409` (both weeks, correctly persistent); week 7 `target=8.1, availability_flag=true, teammate_vacated_target_share=0.0` (correctly reset once he's back) — every piece of this session's work converging correctly on the same real, already-familiar verification case.
   - **Not built:** no CLI command (same no-CLI precedent as every task since 0.6). `K`/`DST` are out of scope for this table (SPEC §11.6/§11.7: separate models, entirely different feature sets) — matches `SKILL_POSITIONS`' existing scope throughout this project.
+- **1.10** — Baselines B0-B3 (SPEC §12.3) — the second-largest research effort this session, after task 1.9's roster/status bugs. B0-B2 (`models/baselines.py`) are mechanical: pooled/per-player trailing means of `player_week_features.parquet`'s own `target`, all using `.shift(1)` after the cumulative/ewm computation so the target week's own outcome is *never* included (the walk-forward requirement applied literally, not just "windowed"). B3 needed real research: SPEC's "public consensus weekly projections" has to span *multiple past seasons* for the walk-forward backtest (SPEC §12.2's own example: `--seasons 2021 2022 2023 2024 2025`), and no public site publishes an archive of its own past weekly projections — every live-scrapable source (including this project's own task 0.7 sources) only ever has the *current* week.
+  - **Real technical solution, found by digging past several dead ends:** `hvpkod/NFL-Data` (GitHub, looked like a real historical projections archive from its own README) turned out to be actual post-game results, not projections — verified live by inspecting real week-1-2023 QB data (passing yardage matching real completed box scores) before trusting it. The real answer: `dynastyprocess/data`'s `files/fp_latest_weekly.csv` (task 0.7's own already-trusted FantasyPros source) gets overwritten ~1-2x/day, but its **git commit history is a real point-in-time archive** — every historical version is still fetchable via `raw.githubusercontent.com/<repo>/<commit_sha>/<path>`. Confirmed live: the earliest commit touching this file is 2021-08-29 (the 2021 season's own opening week), continuously updated through the present (1,203 real commits as of this session) — exactly SPEC's example validation range. Confirmed with you before building: PPR-scored only (no half-PPR/standard variant exists in this archive for RB/WR/TE) and honestly null before 2021-08-29, both documented limitations rather than guessed around.
+  - New `ingest/rankings.py` functions: `fetch_fp_weekly_commits` (paginates and caches the full commit list, ~13 requests at 100/page, well under GitHub's unauthenticated 60/hour limit), `select_commit_before` (the as_of contract applied to this archive — the latest commit *strictly* before a week's real kickoff, kept alongside the fetch functions rather than split into a separate business-logic module, the same deliberate departure `ingest.weather`'s own docstring already documents), `fetch_fp_weekly_snapshot` (one cached raw CSV per real commit sha), `normalize_fp_weekly` (extracts QB/`ppr-rb`/`ppr-wr`/`ppr-te` pages, using FantasyPros' own already-computed `r2p_pts` column directly as the point projection — no reference-curve conversion needed, unlike task 0.7's rank-only draft-time ECR ingestion).
+  - New `models/baselines.py::add_b3_fp_weekly_consensus` resolves FantasyPros' own `player_name`/`pos` to this project's canonical `player_id` via the same normalized `(name, position)` `join_key` this project already uses for cross-source matching (`projections.aggregate.add_join_key` + `ids.mapping.dedupe_to_one_row_per_name_position` — the identical pattern `games_played.player_ages_from_players_dim`/`draft.board._team_by_join_key` already use for two other sources, applied here to a third). An unresolved name is dropped, not failed loudly — a deliberate, documented departure from CLAUDE.md rule 4's join-drop rule, reasoned the same way task 0.12 reasoned through its own graceful-rankings-failure departure: B3 is an independent best-effort comparison table, not the real training/target pipeline rule 4 protects.
+  - Evidence: `tests/test_models_baselines.py` (12 tests, new file, TDD) + `tests/test_ingest_rankings.py` (+10 tests) — 527 tests pass total (`uv run pytest -q`, up from 505 at the end of task 1.9), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+  - **A real schema-evolution bug found only by running the live materialization across the full real 2021-2025 range, not by any unit test:** `r2p_pts` doesn't exist in every historical snapshot — confirmed live, some 2021/2022-era commits have no `r2p_pts` column at all (`ecr`/`pos_rank` are present throughout; `r2p_pts` was added to the source later). The naive `pl.col("r2p_pts")` select crashed with `ColumnNotFoundError` on the very first real run, at roughly week 40 of 110. Fixed with a column-presence check in `normalize_fp_weekly` (`b3_points` stays honestly null when the column is absent, same "leave it null, don't fake it" precedent as every other real gap this project has hit), regression test added with a fixture CSV that has no `r2p_pts` column at all.
+  - **Task's own literal acceptance bar, verified against real data end to end:** B0/B1/B2 run against the real `player_week_features.parquet` (94,422 rows) — hand-verified B1's own trailing arithmetic against a real player's real week-by-week values, and B0's real season-long positional means came out QB 6.83 > RB 5.83 > WR 5.54 > TE 3.29, matching well-known real-world fantasy scoring hierarchy (an unprompted plausibility check). B3: the full real live materialization across all 110 (season, week) rows spanning 2021-2025 succeeded in 25.8s — 42,906 raw FantasyPros rows, 42,176 (98.3%) resolved to a real canonical `player_id`, only 1,167 rows (2.8%, concentrated in 2022's pre-`r2p_pts` commits) honestly null. The real top-5 B3 predictions for a real week (2025, week 10) resolved to real, instantly-recognizable names: Josh Allen, Christian McCaffrey, Lamar Jackson, Drake Maye, Jaxon Smith-Njigba.
+  - **Not built:** no CLI command (same no-CLI precedent as every task since 0.6). No half-PPR/standard rescaling of B3 to the primary league's own actual scoring settings — this archive only ever publishes PPR, a documented approximation confirmed with you up front, not something a future task needs to "fix" unless it turns out to matter.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–1.9 are complete and verified. Tasks 1.8 and 1.9's changes are both uncommitted (see header) -- expect two separate commits when asked, matching this project's one-commit-per-task convention.
+None. 0.1–1.10 are complete and verified. Task 1.10's changes are uncommitted (see header).
 
 ## 4. Decisions made during implementation
 
@@ -365,6 +373,40 @@ player_week_features = features_build.build_player_week_features(
     registry=registry,
 )
 player_week_features.write_parquet(settings.data_root / "features" / "player_week_features.parquet")
+```
+
+Then baselines B0-B3 (task 1.10) — B0-B2 are pure functions over `player_week_features`, no fetch needed:
+
+```python
+from ffapp.models import baselines
+
+b0 = baselines.add_b0_positional_mean(player_week_features)
+b1 = baselines.add_b1_season_to_date_mean(player_week_features)
+b2 = baselines.add_b2_ewm_4(player_week_features)
+```
+
+B3 needs the FantasyPros weekly-archive git-history mining (real live network, ~13 GitHub API requests for the commit list + one raw fetch per real week needed — the full 2021-2025 validation range, 110 weeks, took ~26s this session):
+
+```python
+import json
+from ffapp.ingest import rankings
+
+commits = json.loads(rankings.fetch_fp_weekly_commits(offline=False, settings=settings).read_text())["commits"]
+
+weeks = (
+    schedule.filter(pl.col("season").is_in([2021, 2022, 2023, 2024, 2025]))
+    .group_by(["season", "week"]).agg(pl.col("kickoff_utc").min().alias("as_of_utc"))
+    .sort(["season", "week"])
+)
+frames = []
+for row in weeks.iter_rows(named=True):
+    sha = rankings.select_commit_before(commits, row["as_of_utc"])
+    if sha is None:
+        continue  # honestly before the archive's own real start (2021-08-29)
+    csv_text = rankings.fetch_fp_weekly_snapshot(sha, offline=False, settings=settings).read_text()
+    frames.append(rankings.normalize_fp_weekly(csv_text, season=row["season"], week=row["week"]))
+
+b3 = baselines.add_b3_fp_weekly_consensus(pl.concat(frames), players_dim)
 ```
 
 Then warm the 2025-season nflverse data the golden test (0.5) needs — same caveat as above, no CLI subcommand yet, only the underlying functions:

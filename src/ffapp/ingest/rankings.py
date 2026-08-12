@@ -1135,6 +1135,180 @@ def normalize_adp(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
     return pl.DataFrame(rows, infer_schema_length=None)
 
 
+# --- FantasyPros weekly historical archive (task 1.10, baseline B3) ----------------
+#
+# SPEC §12.3's B3 ("public consensus weekly projections") needs *historical*
+# weekly data spanning multiple past seasons, not just the current week --
+# the walk-forward backtest (SPEC §12.2) evaluates over "at least four
+# validation seasons." No public site publishes an archive of its own past
+# weekly projections going back years; live-scraping (this project's usual
+# approach, task 0.7) only ever gets the current week.
+#
+# Real solution, confirmed live: dynastyprocess/data's files/fp_latest_weekly
+# .csv (task 0.7's own trusted FantasyPros source) gets overwritten roughly
+# 1-2x/day, but its *git commit history* is a real point-in-time archive --
+# every real historical version of that file is still fetchable via
+# raw.githubusercontent.com/<repo>/<commit_sha>/<path>. Confirmed live: the
+# earliest commit touching this file is 2021-08-29 (the 2021 season's own
+# opening week), continuously updated through the present -- exactly SPEC's
+# example validation range (`ffapp evaluate --seasons 2021 2022 2023 2024
+# 2025`). Confirmed with you: PPR-scored only (the archive has no half-PPR/
+# standard variant for RB/WR/TE), and honestly null before 2021-08-29 --
+# both documented limitations, not guessed around.
+#
+# `r2p_pts` is FantasyPros' own already-computed point projection (not just
+# a rank) -- used directly as B3's prediction, no reference-curve conversion
+# needed (unlike task 0.7's draft-time ECR ingestion, which is rank-only).
+FP_WEEKLY_ARCHIVE_REPO = "dynastyprocess/data"
+FP_WEEKLY_ARCHIVE_PATH = "files/fp_latest_weekly.csv"
+FP_WEEKLY_COMMITS_API = f"https://api.github.com/repos/{FP_WEEKLY_ARCHIVE_REPO}/commits"
+FP_WEEKLY_RAW_TEMPLATE = (
+    f"https://raw.githubusercontent.com/{FP_WEEKLY_ARCHIVE_REPO}/{{sha}}/{FP_WEEKLY_ARCHIVE_PATH}"
+)
+FP_WEEKLY_PAGES = frozenset({"qb", "ppr-rb", "ppr-wr", "ppr-te"})
+FP_WEEKLY_PAGE_POSITIONS = {"qb": "QB", "ppr-rb": "RB", "ppr-wr": "WR", "ppr-te": "TE"}
+
+
+def _get_fp_weekly_commits_page(page: int) -> list[dict[str, Any]]:
+    """One page (100) of commit history for `fp_latest_weekly.csv`, newest
+    first (GitHub's own default order). The only network call this
+    function makes."""
+    response = _get_session().get(
+        FP_WEEKLY_COMMITS_API,
+        params={"path": FP_WEEKLY_ARCHIVE_PATH, "per_page": "100", "page": str(page)},
+        timeout=30,
+    )
+    response.raise_for_status()
+    result: list[dict[str, Any]] = response.json()
+    return result
+
+
+def _get_fp_weekly_commits_all() -> dict[str, Any]:
+    """Every real commit touching `fp_latest_weekly.csv`, oldest first.
+    Paginates until a short page signals the end -- confirmed live, ~1200+
+    commits as of this session, ~13 requests at 100/page, well under
+    GitHub's unauthenticated 60/hour rate limit."""
+    commits: list[dict[str, str]] = []
+    page = 1
+    while True:
+        batch = _get_fp_weekly_commits_page(page)
+        if not batch:
+            break
+        commits.extend({"sha": c["sha"], "date": c["commit"]["committer"]["date"]} for c in batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return {"commits": sorted(commits, key=lambda c: c["date"])}
+
+
+def fetch_fp_weekly_commits(
+    *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch + cache the full commit list to
+    data/raw/rankings/fp_weekly_commits.json."""
+    settings = _resolve_settings(settings)
+    return _fetch_json(
+        filename="fp_weekly_commits.json",
+        call_desc=f"GET {FP_WEEKLY_COMMITS_API}?path={FP_WEEKLY_ARCHIVE_PATH} (paginated)",
+        cache_key="rankings_fp_weekly_commits",
+        load=_get_fp_weekly_commits_all,
+        row_count=lambda payload: len(payload["commits"]),
+        artifact="fp_weekly_commits",
+        params="",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def select_commit_before(commits: list[dict[str, str]], cutoff_utc: str) -> str | None:
+    """The latest commit strictly before `cutoff_utc` (ISO 8601, `Z`
+    suffix -- same format as `schedule.kickoff_utc`, safe to compare as
+    plain strings) -- the as_of contract applied to this archive: a real
+    consensus snapshot published before a week's own kickoff, never after.
+    `commits` must already be sorted oldest-first
+    (`fetch_fp_weekly_commits`'s own output). `None` if no commit exists
+    before the cutoff (before the archive's real start, 2021-08-29, or a
+    genuinely malformed cutoff) -- an honest gap, not guessed.
+
+    Kept alongside the fetch functions rather than in a separate business-
+    logic module -- same deliberate departure `ingest.weather`'s own
+    docstring already documents: which commit to fetch is inseparable from
+    the fetch itself, so splitting it out would only relocate the same
+    lookup across a module boundary.
+    """
+    candidates = [c["sha"] for c in commits if c["date"] < cutoff_utc]
+    return candidates[-1] if candidates else None
+
+
+def _get_fp_weekly_snapshot_csv(sha: str) -> str:
+    """Fetch `fp_latest_weekly.csv`'s content as it existed at a specific
+    historical commit -- the real point-in-time snapshot. The only network
+    call this function makes."""
+    response = _get_session().get(FP_WEEKLY_RAW_TEMPLATE.format(sha=sha), timeout=30)
+    response.raise_for_status()
+    return response.text
+
+
+def fetch_fp_weekly_snapshot(
+    sha: str, *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch one historical snapshot to
+    data/raw/rankings/fp_weekly_<sha>.csv -- one real commit, one cached
+    file, idempotent (re-running for the same `sha` overwrites cleanly
+    with identical content)."""
+    settings = _resolve_settings(settings)
+    return _fetch_text(
+        filename=f"fp_weekly_{sha}.csv",
+        call_desc=f"GET {FP_WEEKLY_RAW_TEMPLATE.format(sha=sha)}",
+        cache_key="rankings_fp_weekly_snapshot",
+        load=lambda: _get_fp_weekly_snapshot_csv(sha),
+        row_count=lambda text: max(len(text.splitlines()) - 1, 0),
+        artifact="fp_weekly_snapshot",
+        params=f"sha={sha}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def normalize_fp_weekly(csv_text: str, *, season: int, week: int) -> pl.DataFrame:
+    """Extract QB/RB/WR/TE weekly consensus rows into the canonical
+    per-player schema, tagged with the real (season, week) this snapshot
+    was *selected* for (`select_commit_before`'s own choice -- not present
+    in the raw FantasyPros data itself, which only knows its own
+    `scrape_date`).
+
+    PPR-scored only -- confirmed live, `ppr-rb`/`ppr-wr`/`ppr-te` are the
+    only scoring variants this archive publishes for skill positions, no
+    half-PPR/standard alternative. `r2p_pts` is FantasyPros' own
+    already-computed point projection, used directly where present.
+
+    `r2p_pts` doesn't exist in every historical snapshot -- confirmed
+    live, this archive's own schema evolved over time and some 2021-era
+    commits have no `r2p_pts` column at all (`ecr`/`pos_rank` are present
+    throughout, `r2p_pts` was added later). `b3_points` is honestly null
+    for those snapshots rather than guessed at from rank -- the same
+    "leave it null, don't fake it" precedent this project has followed
+    for every other real data gap (weather, route_participation, proe's
+    first season, opponent adjustment's first season).
+    """
+    raw = pl.read_csv(io.StringIO(csv_text), null_values=["NA"], infer_schema_length=None)
+    filtered = raw.filter(pl.col("page").is_in(list(FP_WEEKLY_PAGES)))
+    b3_points = (
+        pl.col("r2p_pts").cast(pl.Float64, strict=False)
+        if "r2p_pts" in filtered.columns
+        else pl.lit(None, dtype=pl.Float64)
+    )
+    return filtered.select(
+        pl.col("player_name"),
+        pl.col("pos"),
+        pl.col("team"),
+        pl.col("ecr").cast(pl.Float64, strict=False),
+        b3_points.alias("b3_points"),
+        pl.lit(season).alias("season"),
+        pl.lit(week).alias("week"),
+    )
+
+
 __all__ = [
     "CBS_POSITIONS",
     "CBS_URL_TEMPLATE",
@@ -1151,6 +1325,12 @@ __all__ = [
     "FFTODAY_POSITIONS",
     "FFTODAY_POS_ID",
     "FFTODAY_URL_TEMPLATE",
+    "FP_WEEKLY_ARCHIVE_PATH",
+    "FP_WEEKLY_ARCHIVE_REPO",
+    "FP_WEEKLY_COMMITS_API",
+    "FP_WEEKLY_PAGES",
+    "FP_WEEKLY_PAGE_POSITIONS",
+    "FP_WEEKLY_RAW_TEMPLATE",
     "UnexpectedColumnLayoutError",
     "fetch_adp",
     "fetch_cbs",
@@ -1158,10 +1338,14 @@ __all__ = [
     "fetch_fantasypros",
     "fetch_fantasysharks",
     "fetch_fftoday",
+    "fetch_fp_weekly_commits",
+    "fetch_fp_weekly_snapshot",
     "normalize_adp",
     "normalize_cbs",
     "normalize_espn",
     "normalize_fantasypros",
     "normalize_fantasysharks",
+    "normalize_fp_weekly",
+    "select_commit_before",
     "normalize_fftoday",
 ]

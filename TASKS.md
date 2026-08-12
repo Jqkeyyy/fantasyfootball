@@ -127,7 +127,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Assemble the wide table including zero-target rows for players who did not play.
   **Done when:** `features/player_week_features.parquet` exists with `as_of_utc` on every row, and non-played rows are present.
 
-- [ ] **1.10 — Baselines** 🔴 ⏱ 2h — SPEC §12.3
+- [x] **1.10 — Baselines** 🔴 ⏱ 2h — SPEC §12.3
   B0–B3. B3 requires ingesting weekly consensus projections.
   **Done when:** all four produce weekly predictions over the validation range. These are the yardstick; a buggy baseline flatters the model.
 
