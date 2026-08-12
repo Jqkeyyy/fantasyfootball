@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "polars>=1.0",
     "rapidfuzz>=3.9",
+    "nflreadpy>=0.1.5",
 ]
 
 [project.scripts]
@@ -45,6 +46,10 @@ files = ["src"]
 
 [[tool.mypy.overrides]]
 module = "yaml.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "nflreadpy.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

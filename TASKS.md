@@ -30,12 +30,12 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Build `ids/mapping.py`: load the published ffverse player-id crosswalk as the base, layer Sleeper's cross-reference fields, fuzzy-match the remainder with `rapidfuzz` (floor 92), apply `config/id_overrides.csv` last. Implement `unmatched_report()` and the `ffapp ids check` command.
   **Done when:** `ffapp ids check` reports zero unmatched players inside the top 300 by ADP, and `tests/test_ids.py` asserts this.
 
-- [ ] **0.4 — Scoring keymap and engine** 🔴 ⏱ 4h
+- [x] **0.4 — Scoring keymap and engine** 🔴 ⏱ 4h
   SPEC §8.1–8.3
   Implement `scoring/keymap.py` (`STAT_KEY_MAP`, covering direct stats, bonuses, FG distance buckets, and DST points-allowed buckets) and `scoring/engine.py` (`score_stat_line`, `unhandled_keys`). The engine raises if any non-zero scoring key is unmapped.
   **Done when:** every non-zero key in the league's actual `scoring_settings` is mapped; `unhandled_keys()` returns empty for the real league.
 
-- [ ] **0.5 — Scoring golden test** 🔴 ⏱ 2h
+- [x] **0.5 — Scoring golden test** 🔴 ⏱ 2h
   SPEC §8.4
   Pull matchups for every completed week of the league's most recent season, extract `players_points`, independently recompute from nflverse stats, compare.
   **Done when:** ≥99% of player-weeks agree within 0.01 points, every disagreement is logged and explained, and `ffapp scoring validate` exits zero. **Do not proceed past this task with it failing.**

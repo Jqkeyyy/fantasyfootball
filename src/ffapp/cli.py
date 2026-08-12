@@ -3,9 +3,10 @@ import typer
 from ffapp import __version__
 from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
-from ffapp.config import load_primary_league, load_settings
+from ffapp.config import load_all_leagues, load_primary_league, load_settings
 from ffapp.env import load_env
 from ffapp.ids import mapping
+from ffapp.scoring import golden
 
 load_env()
 
@@ -13,9 +14,11 @@ app = typer.Typer(name="ffapp", help="Fantasy football decision-support CLI.")
 ingest_app = typer.Typer(name="ingest", help="Ingest raw data from external sources.")
 cache_app = typer.Typer(name="cache", help="Manage the offline data cache (SPEC-ADDENDUM-02.md).")
 ids_app = typer.Typer(name="ids", help="Cross-source player id resolution (SPEC.md §7).")
+scoring_app = typer.Typer(name="scoring", help="League scoring engine (SPEC.md §8).")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
+app.add_typer(scoring_app, name="scoring")
 
 
 def _version_callback(value: bool) -> None:
@@ -174,3 +177,54 @@ def ids_check(
         raise typer.Exit(code=1)
 
     typer.echo(f"{unmatched.height} unmatched player(s), none within top {top_n}.")
+
+
+def _validate_one(slug: str, *, offline: bool | None) -> bool:
+    try:
+        result = golden.run_golden_test(slug, offline=offline)
+    except golden.NoPlayedSeasonError as exc:
+        typer.echo(f"[{slug}] {exc}", err=True)
+        return False
+
+    verdict = "PASS" if result.passed else "FAIL"
+    typer.echo(
+        f"[{slug}] {verdict}: {result.agreement_rate:.2%} agreement "
+        f"({len(result.disagreements)} disagreement(s) / {result.total_player_weeks} player-weeks)"
+    )
+    for d in result.disagreements:
+        note = " (no computed row)" if d.missing_computed_row else ""
+        typer.echo(
+            f"    week {d.week} {d.player_id}: sleeper={d.sleeper_points:.2f} "
+            f"computed={d.computed_points:.2f}{note}"
+        )
+    return result.passed
+
+
+@scoring_app.command("validate")
+def scoring_validate(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    all_leagues: bool = typer.Option(False, "--all-leagues", help="Validate every league."),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Validate score_stat_line against Sleeper's own players_points (SPEC §8.4).
+
+    Runs against each league's most recently PLAYED season (its `previous_league_id`
+    at time of writing, since current-season config is still pre-draft), not the
+    league's current-season config -- scoring can change year to year.
+    """
+    if all_leagues:
+        slugs = [lg.slug for lg in load_all_leagues()]
+    elif league is not None:
+        slugs = [league]
+    else:
+        primary = load_primary_league()
+        typer.echo(f"No --league given; defaulting to primary league '{primary.slug}'.")
+        slugs = [primary.slug]
+
+    results = [_validate_one(slug, offline=offline) for slug in slugs]
+    if not all(results):
+        raise typer.Exit(code=1)
