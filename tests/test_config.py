@@ -44,6 +44,23 @@ def test_load_settings_reads_cache_staleness_hours() -> None:
     assert settings.cache.offline_default is True
 
 
+def test_load_settings_reads_draft_tier_method_and_adp_sd_fallback() -> None:
+    settings = load_settings(FIXTURES / "settings.yml")
+
+    assert settings.draft.tier_method == "kmeans"
+    assert settings.draft.adp_sd_fallback == pytest.approx(6.5)
+
+
+def test_load_settings_defaults_draft_section_when_absent(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text("paths:\n  data_root: './data'\n")
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.draft.tier_method == "gap"
+    assert settings.draft.adp_sd_fallback == pytest.approx(8.0)
+
+
 def test_load_league_reads_slug_and_scoring_settings() -> None:
     league = load_league("main-ppr", leagues_dir=FIXTURES / "leagues")
 

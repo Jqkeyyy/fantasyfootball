@@ -44,10 +44,17 @@ class CacheSettings:
 
 
 @dataclass(frozen=True)
+class DraftSettings:
+    tier_method: str
+    adp_sd_fallback: float
+
+
+@dataclass(frozen=True)
 class Settings:
     data_root: Path
     sleeper_username: str | None
     cache: CacheSettings
+    draft: DraftSettings = DraftSettings(tier_method="gap", adp_sd_fallback=8.0)
 
 
 @dataclass(frozen=True)
@@ -85,7 +92,15 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         warn_on_stale=bool(cache_raw.get("warn_on_stale", True)),
     )
 
-    return Settings(data_root=data_root, sleeper_username=sleeper_username, cache=cache)
+    draft_raw = raw.get("draft", {})
+    draft = DraftSettings(
+        tier_method=draft_raw.get("tier_method", "gap"),
+        adp_sd_fallback=float(draft_raw.get("adp_sd_fallback", 8.0)),
+    )
+
+    return Settings(
+        data_root=data_root, sleeper_username=sleeper_username, cache=cache, draft=draft
+    )
 
 
 def _league_from_dict(raw: dict[str, Any]) -> LeagueConfig:

@@ -12,6 +12,8 @@ dependencies = [
     "rapidfuzz>=3.9",
     "nflreadpy>=0.1.5",
     "lxml>=6.1.1",
+    "scikit-learn>=1.9.0",
+    "numpy<2.5",
 ]
 
 [project.scripts]
@@ -52,6 +54,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "nflreadpy.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "sklearn.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -50,17 +50,17 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Implement `ingest/rankings.py` for each chosen source (see Open Decision #2). Apply league scoring to per-stat projections *per source* before aggregating. Rank-only sources are mapped onto the value scale via the reference curve. Aggregate with a 20% trimmed mean; retain `dispersion` and `n_sources`.
   **Done when:** a per-player table exists with `proj_points`, `dispersion`, `n_sources`, `coverage`, sourced from at least four providers, with league scoring applied before aggregation (assert this in a test using a non-PPR scoring fixture).
 
-- [ ] **0.8 — Games-played prior** ⏱ 1h
+- [x] **0.8 — Games-played prior** ⏱ 1h
   SPEC §9.3
   Simple positional/age prior for expected games played. Convert source projections to points-per-game, multiply by expected games.
   **Done when:** `expected_games` is populated for every projected player and is visibly below 17 for the positions and age bands where it should be.
 
-- [ ] **0.9 — Value over replacement** ⏱ 3h
+- [x] **0.9 — Value over replacement** ⏱ 3h
   SPEC §9.4
   Implement the fixed-point replacement-level algorithm in `tools/vor.py`, driven entirely by `LeagueFormat`.
   **Done when:** the iteration converges in under 10 passes; `tests/test_vor.py` verifies known replacement ranks for a standard 12-team 1QB league and confirms the QB baseline shifts correctly under a superflex fixture.
 
-- [ ] **0.10 — Tiers** ⏱ 2h
+- [x] **0.10 — Tiers** ⏱ 2h
   SPEC §9.5
   Gap-based tiering with the k-means and GMM alternatives behind a common interface, selected by `settings.draft.tier_method`.
   **Done when:** tiers are assigned per position, no tier has fewer than 2 players, and the count is capped at 12.

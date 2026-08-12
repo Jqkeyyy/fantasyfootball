@@ -18,3 +18,7 @@ cache:
     odds: 12
     weather_forecast: 6
   warn_on_stale: true
+
+draft:
+  adp_sd_fallback: 6.5
+  tier_method: "kmeans"
