@@ -264,7 +264,7 @@ def draft_board_command(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    output_path = settings.data_root / "outputs" / f"draft_board_{resolved_season}.csv"
+    output_path = draft_board.draft_board_csv_path(settings, season=resolved_season)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_csv(output_path)
     typer.echo(f"Wrote {result.height} players to {output_path}")

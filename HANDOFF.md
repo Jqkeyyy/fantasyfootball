@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `839e730` — feat: draft board output (task 0.12)
+**Last commit:** `<pending>` — feat: Streamlit draft board page (task 0.13)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 0 — draft board
-**Next task:** 0.13 (Streamlit draft board page) — see SPEC §15. Nothing blocking it.
-**First concrete step:** Build a Streamlit page reading `data/outputs/draft_board_<season>.csv` (or calling `draft.board.build_draft_board` directly, live) as a sortable/filterable table with visible tier breaks — SPEC's own acceptance bar is "loads in under two seconds and supports filtering by position and tier." `draft.board.build_draft_board` takes several seconds against cold cache (five ingest sources, an ID crosswalk build, VOR, tiers) — cache the assembled board (`st.cache_data`) rather than rebuilding per interaction, and prefer reading the already-written CSV over recomputing.
+**Next task:** 0.14 (Live draft assistant) — see SPEC §9.8. Nothing blocking it.
+**First concrete step:** Poll `/draft/{draft_id}/picks` (Sleeper endpoint, not yet wrapped by `ingest/sleeper.py` -- only `fetch_draft_picks` exists, which is the same endpoint, so no new ingest function needed, just a polling loop around it), maintain the available player pool by removing picked players from `draft.board`'s output, and surface best-available-by-VOR, tier depth remaining per position, positional-run detection, and starting-lineup gaps. SPEC §9.8's acceptance bar wants this "tested end to end against a completed mock draft, replaying its picks" -- HANDOFF §5 already notes both real leagues have a completed prior-season draft cached (`data/raw/sleeper/draft_picks_*.json`) that's a candidate for replay-mode testing, though the *current* 2026 draft hasn't happened yet (picks list is empty pre-draft). SPEC §15 places this "as a sub-tab" of the draft board page (0.13) -- reasonable to build as a second `st.tabs()` entry in `streamlit_app.py` rather than a separate page, though TASKS.md doesn't mandate the UI shape, just the underlying pick-tracking logic.
 
 **Blocking on me (the human), not the agent:**
 
@@ -97,12 +97,18 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - **Provenance columns (`as_of_utc`, `git_commit`) go beyond SPEC §9.7's own literal column table** — added per CLAUDE.md's standing "every output artefact records model_version, as_of_utc, and the git commit hash" rule; `model_version` is omitted since Phase 0 has no trained model. `_current_git_commit()` shells out to `git rev-parse --short HEAD` and returns `None` (not an exception) if git is unavailable — provenance metadata degrading gracefully matters less than "the draft board must ship before the draft" (CLAUDE.md).
   - **Rankings-source failure handling is graceful, not fail-loud, and this is a deliberate departure from CLAUDE.md rule 4's spirit — reasoned through, not just guessed.** `_fetch_point_sources` catches any exception (or a 0-row result) per source, logs a warning, and continues with whatever sources succeeded, rather than the "never silently drop rows" instinct that governs everything else in this codebase. Reasoning: rule 4 is about a player silently vanishing from a join; this is about which of several *redundant* consensus sources contributed, which `aggregate_projections`'s own `n_sources`/`coverage`/`dispersion` columns already exist to represent honestly. The alternative (hard-crash the whole board because FFToday 403s) directly conflicts with CLAUDE.md's own Phase-0 priority: "the draft board must ship before the draft; model work does not gate it." Today's real board runs on 3 of 5 sources as a result (FantasyPros + FantasySharks + CBS) — visible in the CLI's printed warnings, not hidden.
   - **Not built:** the Streamlit page and its position/tier filters are task 0.13, not this one (SPEC §9.7 describes both together but TASKS.md splits them). `--league`/`--season` CLI options exist but only the primary league's real data has been run end-to-end this session.
+- **0.13** — Streamlit draft board page (SPEC §15 page 1). New `src/ffapp/app/` package: `draft_board_page.py` (`load_board`, `filter_board`, `tier_shade_groups`, `style_tier_breaks` — pure, pytest-tested logic) and `streamlit_app.py` (thin `st.*` glue on top, per SPEC §15's own layout: `streamlit_app.py` at the package root doubles as page 1 rather than needing a separate landing page, since "Draft board" is literally first in SPEC's page-build-order list; `pages/` stays empty until a second page exists). Reads the CSV `ffapp draft board` (task 0.12) already wrote rather than recomputing the pipeline live, per SPEC §15's explicit design constraint ("fast to load... nothing trained on page load"). Evidence:
+  - `tests/test_app_draft_board_page.py` (12 tests, TDD) — 342 tests pass total (`uv run pytest -q`, up from 329), `ruff check`/`ruff format --check`/`mypy src/` all clean. New dev dependency `pandas-stubs` (pandas itself arrived transitively via `streamlit`, needed directly here for the `Styler`-based tier shading).
+  - **Actually run in a browser and verified real (CLAUDE.md's UI rule — a passing test suite doesn't establish a UI works)**: started the app for real (`uv run streamlit run src/ffapp/app/streamlit_app.py`), drove it with Playwright against the real cached `data/outputs/draft_board_2026.csv`. Confirmed live: page loads with 0 console errors/warnings; 903 players shown, correctly VOR-sorted; tier shading visibly alternates exactly at tier boundaries (row 5→6, tier 1→2, confirmed in a screenshot); Position filter (QB) correctly narrows 903→110; combining Position=QB + Tier=1 correctly narrows to 3; page renders well within SPEC's two-second bar (a 903-row CSV read is inherently fast, and `st.cache_data` — keyed on file path + mtime, see below — makes every load after the first near-instant).
+  - **Design decision: `st.cache_data` keyed on `(csv_path, file mtime)`, not SPEC §15's literal "model_version and as_of."** Phase 0 has no `model_version`; using the CSV's own file mtime as the freshness signal (rather than parsing its `as_of_utc` column just to build a cache key) is simpler and automatically busts the Streamlit cache if `ffapp draft board` is re-run mid-session — e.g. a fresher ADP pull the morning of the real Aug 22 draft — without restarting the Streamlit process.
+  - **Small shared-code cleanup while touching this area:** factored `draft_board_csv_path(settings, season)` out of `cli.py` (which had it inlined) into `draft/board.py`, so the CLI command that writes the CSV and the Streamlit page that reads it can't drift on the path convention independently.
+  - **Not built:** live draft mode (SPEC §15's "as a sub-tab") is task 0.14. `pages/` (weekly rankings, my team, etc.) are Phase 1/2.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–0.12 are complete and verified. This entire session's work (tasks 0.11, 0.12) is uncommitted — see header.
+None. 0.1–0.13 are complete and verified. This entire session's work (task 0.13) is uncommitted — see header.
 
 ## 4. Decisions made during implementation
 
@@ -250,6 +256,7 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 **New dependency (task 0.7 session):** `lxml` (+ `lxml-stubs` dev-only, for mypy) — needed for CBS Sports/FFToday's HTML table parsing. Added via `uv add lxml` / `uv add --group dev lxml-stubs`; both are in `pyproject.toml`/`uv.lock`.
 **New dependency (task 0.10 session):** `scikit-learn` (+ transitively `numpy`, `joblib`, `threadpoolctl`) — needed for the `kmeans`/`gmm` tier methods. `numpy` is pinned `<2.5` (see task 0.10's HANDOFF entry above — 2.5.2's bundled stubs use PEP 695 syntax mypy's `python_version = "3.11"` config can't parse). `sklearn.*` has a `mypy.overrides` `ignore_missing_imports` entry, same pattern as `nflreadpy.*`.
 **New dependency (task 0.11 session):** `scipy` (was already present transitively via `scikit-learn`; made an explicit direct dependency now that `tools/adp.py` imports `scipy.stats.norm` for SPEC §9.6's `Φ`). `scipy.*` has a matching `mypy.overrides` `ignore_missing_imports` entry.
+**New dependency (task 0.13 session):** `streamlit` (pulls in `pandas` transitively, needed directly for the `Styler`-based tier shading) and dev-only `pandas-stubs` (real, actively-maintained stubs — no `ignore_missing_imports` override needed, unlike `sklearn`/`scipy`/`nflreadpy`).
 
 **Network reachability by location:**
 

@@ -19,6 +19,7 @@ import logging
 import subprocess
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -65,6 +66,15 @@ BOARD_COLUMNS = [
     "as_of_utc",
     "git_commit",
 ]
+
+
+def draft_board_csv_path(settings: Settings, *, season: int) -> Path:
+    """`data/outputs/draft_board_<season>.csv` (SPEC §9.7) -- the one place
+    that knows this path, shared by `ffapp draft board` (which writes it)
+    and the Streamlit page (which reads it, task 0.13).
+    """
+    return settings.data_root / "outputs" / f"draft_board_{season}.csv"
+
 
 # Sources with real per-stat projections (rescaled via league scoring before
 # aggregating, SPEC §9.2). FantasyPros is handled separately below -- it's
@@ -341,5 +351,6 @@ __all__ = [
     "NoRankingsSourcesAvailableError",
     "NotEnoughPicksError",
     "build_draft_board",
+    "draft_board_csv_path",
     "finalize_draft_board",
 ]

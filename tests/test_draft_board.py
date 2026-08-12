@@ -1,10 +1,29 @@
 import re
 import subprocess
+from pathlib import Path
 
 import polars as pl
 import pytest
 
+from ffapp.config import CacheSettings, Settings
 from ffapp.draft import board
+
+# --- draft_board_csv_path -----------------------------------------------------
+
+
+def test_draft_board_csv_path_matches_spec_9_7() -> None:
+    settings = Settings(
+        data_root=Path("data"),
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=Path("data/raw"), offline_default=True, staleness_hours={}, warn_on_stale=True
+        ),
+    )
+
+    result = board.draft_board_csv_path(settings, season=2026)
+
+    assert result == Path("data") / "outputs" / "draft_board_2026.csv"
+
 
 # --- _team_by_join_key ---------------------------------------------------------
 

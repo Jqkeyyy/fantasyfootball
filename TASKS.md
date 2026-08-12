@@ -75,7 +75,7 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Assemble every column from §9.7 into `data/outputs/draft_board_<season>.csv`. Include `bye_week` and, if §14.5 is not yet built, leave `playoff_sos` null rather than faking it.
   **Done when:** `ffapp draft board` produces a sorted, complete CSV you would actually draft from.
 
-- [ ] **0.13 — Streamlit draft board page** ⏱ 3h
+- [x] **0.13 — Streamlit draft board page** ⏱ 3h
   SPEC §15
   Sortable, filterable table with visible tier breaks.
   **Done when:** the page loads in under two seconds and supports filtering by position and tier.
