@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `<pending>` — feat: ffopportunity ingestion (task 1.2)
+**Last commit:** `5e6480f` — feat: ffopportunity ingestion (task 1.2)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
