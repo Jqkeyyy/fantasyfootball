@@ -91,9 +91,9 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
 
 Goal: automated weekly projections that beat baseline B2, with a working evaluation harness. Total ≈ 40–60 hours.
 
-- [ ] **1.1 — nflverse ingestion** ⏱ 3h — SPEC §6.1, §6.2, §6.3
+- [x] **1.1 — nflverse ingestion** ⏱ 3h — SPEC §6.1, §6.2, §6.3
   `nflreadpy` pulls for play-by-play, player weekly stats, snap counts, depth charts, rosters, injuries, schedules. Normalise to the canonical schemas.
-  **Done when:** all six canonical interim tables materialise for seasons 2015–2026 and row counts are sane per season.
+  **Done when:** all six canonical interim tables materialise for seasons 2015–2026 and row counts are sane per season. (2015–2025 — 2026 has no nflverse release yet, no games played; re-run once the season starts.)
 
 - [ ] **1.2 — ffopportunity ingestion** ⏱ 1.5h — SPEC §6.1
   Pull precomputed expected fantasy points releases; join `xfp` onto `player_week_usage`. Record the CC-BY-SA licence in the raw directory.

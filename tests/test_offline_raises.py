@@ -52,6 +52,10 @@ def empty_cache_settings(tmp_path: Path) -> Settings:
         lambda s: nflverse.fetch_team_stats(2025, offline=True, settings=s),
         lambda s: nflverse.fetch_schedules(2025, offline=True, settings=s),
         lambda s: nflverse.fetch_pbp(2025, offline=True, settings=s),
+        lambda s: nflverse.fetch_snap_counts(2025, offline=True, settings=s),
+        lambda s: nflverse.fetch_depth_charts(2025, offline=True, settings=s),
+        lambda s: nflverse.fetch_rosters(2025, offline=True, settings=s),
+        lambda s: nflverse.fetch_injuries(2025, offline=True, settings=s),
     ],
     ids=[
         "fetch_user",
@@ -71,6 +75,10 @@ def empty_cache_settings(tmp_path: Path) -> Settings:
         "fetch_team_stats",
         "fetch_schedules",
         "fetch_pbp",
+        "fetch_snap_counts",
+        "fetch_depth_charts",
+        "fetch_rosters",
+        "fetch_injuries",
     ],
 )
 def test_cache_miss_under_offline_raises_not_returns_empty(

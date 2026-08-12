@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `c43fb74` — feat: live draft assistant (task 0.14)
+**Last commit:** `<pending>` — feat: nflverse ingestion (task 1.1)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -12,9 +12,9 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 
 ## 1. Where things stand
 
-**Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed). **The draft board is real, ships today, and is safe to actually draft from on Aug 22** -- `ffapp draft board` + the Streamlit page both work end to end against live data, and two real correctness bugs that would have silently corrupted it were found and fixed this session (see task 0.14's entry below).
-**Next task:** 1.1 (nflverse ingestion) — see SPEC §6.1-6.3. Nothing blocking it. Per CLAUDE.md: "model work does not gate [the draft board] and must not delay it" -- that constraint is now moot, the board already shipped, so Phase 1 can proceed at normal pace.
-**First concrete step:** `nflreadpy` pulls for play-by-play, player weekly stats, snap counts, depth charts, rosters, injuries, schedules, normalised into the six canonical interim tables SPEC §6.2 defines, for seasons 2015-2026. `ingest/nflverse.py` already has four of the needed fetchers from tasks 0.5/0.8 (`fetch_player_stats`, `fetch_team_stats`, `fetch_schedules`, `fetch_pbp`, all single-season so far, called with explicit `season` args) -- 1.1's real new work is the snap-counts/depth-charts/rosters/injuries fetchers `nflreadpy` hasn't been asked for yet, a `--seasons 2015-2025` multi-season range (HANDOFF §6 already flags this doesn't exist yet), and the normalisation-to-canonical-schema step itself (today's fetchers hand back nflreadpy's own raw column names; SPEC's canonical `interim/` schemas are a separate, not-yet-built contract downstream code should read instead).
+**Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
+**Next task:** 1.2 (ffopportunity ingestion) — see SPEC §6.1. Nothing blocking it.
+**First concrete step:** Pull ffverse's precomputed expected-fantasy-points (`xfp`) releases and join onto `interim/player_week_usage.parquet` (task 1.1's real output, `data/interim/player_week_usage.parquet` — currently has `xfp` null for every row, explicitly deferred to this task). Record the CC-BY-SA licence in the raw directory per SPEC §6.1's licensing note (share-alike propagates to derived data — worth rereading before this lands, unlike the CC-BY nflverse data everything else here uses). Acceptance bar: `xfp` populated for ≥95% of played player-weeks in the training range (2015–2025, per task 1.1's real materialised range).
 
 **Blocking on me (the human), not the agent:**
 
@@ -113,12 +113,19 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
     3. Combined: **the real draft board went from 903 rows (14 known join-key collisions + an unknown number of split-coverage duplicates like James Cook) down to 854 genuinely distinct players**, all VOR/tiers/ranks recomputed correctly. Regression tests for both: `test_dedupe_to_one_row_per_name_position_prefers_a_real_sleeper_id` (`test_ids.py`), `test_player_ages_from_players_dim_dedupes_a_join_key_collision` (`test_projections_games_played.py`), `test_team_by_join_key_prefers_the_row_with_a_real_sleeper_id` (`test_draft_board.py`), `test_aggregate_projections_merges_sources_that_spell_a_name_differently` (`test_projections_aggregate.py`).
   - **Design decision, not required by TASKS.md's literal acceptance bar:** live-pick fetching is a manual "Refresh" button, not automatic 5-10s polling — Streamlit has no built-in auto-refresh primitive, and 0.14's own acceptance bar is about the available pool staying correct (a backend property, verified above), not the UI's refresh cadence. A real auto-refresh is a reasonable follow-up if it turns out to matter live on Aug 22.
   - **Not built:** `positional_run`'s "expected mix" baseline (SPEC doesn't define it) uses cumulative-picks-so-far-in-this-draft, confirmed with you before building. Live polling itself has only been exercised against the real, still-empty 2026 draft — the full flow (picks actually accumulating, runs actually firing, gaps actually shrinking) is untested against a *live, in-progress* draft, since none is happening yet; the 160-pick 2025 replay is the closest available proxy and it passed cleanly.
+- **1.1** — nflverse ingestion (SPEC §6.1-6.3) — **first Phase 1 task.** Scoped with you before building: two of SPEC §6.2's six tables (`team_week_context`, `defense_position_allowed`) have columns that need real statistical modelling SPEC itself reserves for dedicated later tasks (1.7 "Team context features", 1.8 "Opponent adjustment") — confirmed building basic/raw versions now (whatever's directly computable by mechanical aggregation) and leaving the genuinely model-dependent columns null, refined later, rather than either duplicating 1.7/1.8's future work or half-building throwaway placeholders. `ingest/nflverse.py`: all 4 existing fetchers (`fetch_player_stats`/`fetch_team_stats`/`fetch_schedules`/`fetch_pbp`) now take `seasons: int | list[int]` (nflreadpy's own `load_*` already accept either; renamed `season`→`seasons`, backward compatible since no caller used the keyword) plus 4 new fetchers (`fetch_snap_counts`, `fetch_depth_charts` — not consumed by anything yet, warmed for future use, `fetch_rosters`, `fetch_injuries`) and 2 simple normalizers (`normalize_schedule`, `normalize_injuries`, matching this project's ingest/-stays-pure precedent). New `src/ffapp/interim/build.py` holds the 4 tables needing real joins/aggregation across sources (business logic, deliberately kept out of ingest/): `build_player_week_stats` (thin wrapper reusing `scoring.stats.build_stat_frame`, task 0.5's golden-test assembly, exactly as that module's own docstring said this task would), `build_team_week_context`, `build_defense_position_allowed`, `build_player_week_usage`. Evidence:
+  - `tests/test_ingest_nflverse.py` (+11 new tests) + `tests/test_interim_build.py` (11 tests, TDD) — 391 tests pass total (`uv run pytest -q`, up from 379 at end of 0.14), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+  - **Real end-to-end run against live data, all 11 complete seasons (2015-2025) — not just unit fixtures.** All 6 interim tables materialised to `data/interim/*.parquet` in ~38 seconds total (pbp for 11 seasons, the historically slow part per earlier sessions' notes, took 15s). Row counts are sane and internally consistent per season: `schedule` correctly shows 267 games/season 2015-2020 jumping to 285 from 2021 on — the real 16-to-17-game season expansion, an unprompted sanity check the data itself confirmed. Cross-table joins verified clean: `player_week_stats` × `player_week_usage` inner-join 199,630/205,921 rows (the ~3% gap is exactly `player_week_stats`' DST rows, which have no individual usage stats — expected, not a bug).
+  - **2015-2026 (SPEC's literal range) isn't fully achievable: nflverse has no 2026 release for anything yet** — confirmed live, every `load_*` call for season 2026 404s (`stats_player_week_2026.parquet` doesn't exist on nflverse's GitHub releases). This is a hard external constraint, not a bug: 2026 has had zero real games played as of this session (mid-August, preseason). Materialised 2015-2025 instead; re-running for 2026 is a matter of re-invoking the same fetchers once the season starts, no code change needed.
+  - **A real dtype bug found only by materialising the full range, not by any unit test:** `nflreadpy`'s `load_injuries()` hands back `season`/`week` as `Float64` — confirmed live, every other source (`player_stats`, `schedules`, `pbp`, ...) uses `Int32`. Undetected, this would have broken any join between `interim/injuries.parquet` and the other five interim tables the moment task 1.9 (feature table build) tried one — the exact `SchemaError` this session's own test fixtures hit twice already while under construction (see below). Fixed with an explicit `.cast(pl.Int32)` in `normalize_injuries`; regression test added (`test_normalize_injuries_casts_season_and_week_to_int32`).
+  - **`player_week_usage`'s share/ratio columns come straight from `player_stats` itself, not hand-derived** — confirmed live: nflreadpy's own `load_player_stats()` already computes `target_share`, `air_yards_share`, and `wopr` per player-week. Only `offense_snaps`/`offense_snap_pct` (needs `snap_counts`, PFR-sourced and keyed by `pfr_player_id` — resolved via `players_dim`'s existing `pfr_id` column, task 0.3's crosswalk, not a new lookup) and `rz_targets`/`rz_carries`/`gz_carries`/`rz_touch_share`/`adot`/`carry_share` (need real play-by-play aggregation) required this task's own derivation.
+  - **Not built:** `depth_charts` is fetched (warmed into the cache) but not yet consumed by any normalizer — no §6.2 canonical table needs it directly; kept for whichever later feature actually wants depth-chart-derived signal (e.g. a "starter" flag). No CLI command for any of this (matches the no-CLI precedent every task since 0.6 has set); materialising the tables is a one-off script, documented in §6 below, same pattern as `tests/test_scoring_golden.py`'s fixture-vs-live-run convention.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–0.14 are complete and verified — **Phase 0 (draft board) is done.** Task 0.14's work (plus the two `ids.mapping`/`projections.aggregate` bug fixes it surfaced) is uncommitted — see header. Tasks 0.11–0.13 were committed and pushed earlier this same session.
+None. 0.1–1.1 are complete and verified. Task 1.1's work is uncommitted — see header.
 
 ## 4. Decisions made during implementation
 
@@ -191,7 +198,40 @@ uv run python -c "from ffapp.ingest import nflverse; from ffapp.config import lo
 uv run ffapp ids check --season 2026
 ```
 
-`--seasons 2015-2025` historical nflverse warming doesn't exist yet — that lands with task 1.1.
+Then materialise the six canonical interim tables for 2015-2025 (task 1.1) — no CLI subcommand yet, only the underlying functions. `fetch_*` now take `seasons: int | list[int]`, so the whole range is one call per source rather than a loop:
+
+```python
+import polars as pl
+from ffapp.config import load_settings
+from ffapp.ids import mapping
+from ffapp.ingest import nflverse, sleeper
+from ffapp.interim import build
+
+SEASONS = list(range(2015, 2026))  # 2026 has no nflverse release yet -- see gotchas §5
+settings = load_settings()
+interim_dir = settings.data_root / "interim"
+interim_dir.mkdir(parents=True, exist_ok=True)
+
+player_stats = pl.read_parquet(nflverse.fetch_player_stats(SEASONS, offline=False, settings=settings))
+team_stats = pl.read_parquet(nflverse.fetch_team_stats(SEASONS, offline=False, settings=settings))
+schedules_raw = pl.read_parquet(nflverse.fetch_schedules(SEASONS, offline=False, settings=settings))
+snap_counts = pl.read_parquet(nflverse.fetch_snap_counts(SEASONS, offline=False, settings=settings))
+injuries_raw = pl.read_parquet(nflverse.fetch_injuries(SEASONS, offline=False, settings=settings))
+pbp = pl.read_parquet(nflverse.fetch_pbp(SEASONS, offline=False, settings=settings))  # the slow one, ~15s for 11 seasons
+
+crosswalk_path = nflverse.fetch_player_ids(offline=True, settings=settings)
+sleeper_players_path = sleeper.fetch_players(offline=True, settings=settings)
+players_dim = mapping.build_players_dim(crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH)
+
+nflverse.normalize_schedule(schedules_raw).write_parquet(interim_dir / "schedule.parquet")
+nflverse.normalize_injuries(injuries_raw).write_parquet(interim_dir / "injuries.parquet")
+build.build_player_week_stats(player_stats, team_stats, schedules_raw, pbp).write_parquet(interim_dir / "player_week_stats.parquet")
+build.build_team_week_context(pbp).write_parquet(interim_dir / "team_week_context.parquet")
+build.build_defense_position_allowed(pbp, player_stats).write_parquet(interim_dir / "defense_position_allowed.parquet")
+build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim).write_parquet(interim_dir / "player_week_usage.parquet")
+```
+
+`fetch_depth_charts`/`fetch_rosters` also exist (warmed for later use) but nothing consumes them yet — no §6.2 canonical table needs them directly today.
 
 Then warm the 2025-season nflverse data the golden test (0.5) needs — same caveat as above, no CLI subcommand yet, only the underlying functions:
 
@@ -254,6 +294,8 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 - `data/raw/sleeper/traded_picks_*.json` and `rosters_*.json` (keepers) — also time-sensitive; trades and keeper locks change until the real draft.
 - Odds snapshots, if the paid API is enabled — same reasoning, but cheap to lose.
 
+**2026 nflverse data doesn't exist yet.** Every `nflverse.fetch_*` call for season 2026 will 404 until real games are played (confirmed live this session, mid-August preseason). Re-run the task 1.1 materialisation script above with `2026` added to `SEASONS` once the season starts — no code change needed, `fetch_*` already accepts it, nflverse just hasn't published anything for it yet.
+
 **Must be supplied by hand on a new machine:** `.env` (copy from `.env.example`; `FFAPP_OFFLINE=1` and `FFAPP_CACHE_STRICT=1` are sane defaults, both already used here).
 
 ---
@@ -272,7 +314,8 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 
 | Location | Sleeper | nflverse / GitHub | PyPI | Rankings sites |
 |---|---|---|---|---|
-| This session (2026-08-12, hostname `Maybe`) | ✓ (live `traded_picks`, `drafts`, `rosters` pulled for the primary league's real 2026 draft) | ✓ | ✓ (added `scipy` as a direct dep) | ✓ for FantasyPros/FantasySharks/CBS Sports and the new FantasyFootballCalculator ADP source. **ESPN's bulk endpoint now returns 0 rows and FFToday now 403s — both worked in the 0.7 session, both broken now, see §5.** FantasyPros' own ADP page was tried and rejected (client-rendered, see §5/task 0.11 entry) in favor of FantasyFootballCalculator. |
+| This session (2026-08-12, hostname `Maybe`), task 1.1 | n/a | ✓ for seasons 2015-2025 (`nflreadpy` pulled real player_stats/team_stats/schedules/snap_counts/injuries/pbp for the full 11-season range in one call each). **Season 2026 404s on every `load_*` call — no nflverse release exists yet** (zero games played as of mid-August preseason), not a bug. | ✓ | n/a |
+| This session (2026-08-12, hostname `Maybe`), tasks 0.11-0.14 | ✓ (live `traded_picks`, `drafts`, `rosters` pulled for the primary league's real 2026 draft) | ✓ | ✓ (added `scipy` as a direct dep) | ✓ for FantasyPros/FantasySharks/CBS Sports and the new FantasyFootballCalculator ADP source. **ESPN's bulk endpoint now returns 0 rows and FFToday now 403s — both worked in the 0.7 session, both broken now, see §5.** FantasyPros' own ADP page was tried and rejected (client-rendered, see §5/task 0.11 entry) in favor of FantasyFootballCalculator. |
 | This session (2026-08-11/12, hostname `Maybe`) | ✓ (live matchups pulled for both leagues' 2025 seasons) | ✓ (`nflreadpy` pulled real player_stats/team_stats/schedules/pbp for 2025) | ✓ | ✓ for FantasyPros/ESPN/FantasySharks/CBS Sports/FFToday (all fetched real live data at the time). NFL.com/Yahoo/Sharp Football Analysis were reachable (HTTP 200) but have no accessible data — see HANDOFF §4, not a network problem. |
 | Home | ? | ? | ? | ? |
 | Work | ✗ | ? | ? | ✗ |

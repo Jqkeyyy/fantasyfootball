@@ -178,7 +178,7 @@ def test_fetch_player_stats_offline_without_cache_raises_offline_cache_miss(
 
     message = str(exc_info.value)
     assert "nflverse" in message
-    assert "season=2025" in message
+    assert "seasons=2025" in message
 
 
 def test_fetch_team_stats_online_calls_load_team_stats(
@@ -215,3 +215,238 @@ def test_fetch_schedules_online_calls_load_schedules(
 
     assert pl.read_parquet(path).equals(fixture_df)
     assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_schedules"
+
+
+# --- multi-season support (task 1.1) --------------------------------------------
+
+
+def test_fetch_player_stats_accepts_a_season_range(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    calls = []
+    fixture_df = pl.DataFrame({"player_id": ["1"], "season": [2015]})
+    monkeypatch.setattr(
+        nflverse.nfl, "load_player_stats", lambda seasons: calls.append(seasons) or fixture_df
+    )
+
+    path = nflverse.fetch_player_stats([2015, 2016, 2017], offline=False, settings=stats_settings)
+
+    assert calls == [[2015, 2016, 2017]]
+    assert path.name == "player_stats_2015-2017.parquet"
+
+
+def test_fetch_player_stats_single_season_filename_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    """Backward compatible with task 0.5's golden test, which calls with a
+    bare int and expects the same filename as before this task."""
+    monkeypatch.setattr(nflverse.nfl, "load_player_stats", lambda seasons: pl.DataFrame({"a": [1]}))
+
+    path = nflverse.fetch_player_stats(2025, offline=False, settings=stats_settings)
+
+    assert path.name == "player_stats_2025.parquet"
+
+
+# --- fetch_snap_counts / fetch_depth_charts / fetch_rosters / fetch_injuries ------
+
+
+def test_fetch_snap_counts_online_calls_load_snap_counts(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame({"player": ["A"], "week": [1], "offense_snaps": [50]})
+    monkeypatch.setattr(nflverse.nfl, "load_snap_counts", lambda seasons: fixture_df)
+
+    path = nflverse.fetch_snap_counts(2025, offline=False, settings=stats_settings)
+
+    assert pl.read_parquet(path).equals(fixture_df)
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_snap_counts"
+
+
+def test_fetch_depth_charts_online_calls_load_depth_charts(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame({"gsis_id": ["1"], "week": [1], "depth_position": ["WR1"]})
+    monkeypatch.setattr(nflverse.nfl, "load_depth_charts", lambda seasons: fixture_df)
+
+    path = nflverse.fetch_depth_charts(2025, offline=False, settings=stats_settings)
+
+    assert pl.read_parquet(path).equals(fixture_df)
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_depth_charts"
+
+
+def test_fetch_rosters_online_calls_load_rosters(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame({"gsis_id": ["1"], "team": ["KC"], "position": ["QB"]})
+    monkeypatch.setattr(nflverse.nfl, "load_rosters", lambda seasons: fixture_df)
+
+    path = nflverse.fetch_rosters(2025, offline=False, settings=stats_settings)
+
+    assert pl.read_parquet(path).equals(fixture_df)
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_rosters"
+
+
+def test_fetch_injuries_online_calls_load_injuries(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame({"gsis_id": ["1"], "week": [1], "report_status": ["Questionable"]})
+    monkeypatch.setattr(nflverse.nfl, "load_injuries", lambda seasons: fixture_df)
+
+    path = nflverse.fetch_injuries(2025, offline=False, settings=stats_settings)
+
+    assert pl.read_parquet(path).equals(fixture_df)
+    assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_injuries"
+
+
+# --- normalize_schedule -----------------------------------------------------------
+
+
+def test_normalize_schedule_maps_to_canonical_columns() -> None:
+    raw = pl.DataFrame(
+        {
+            "game_id": ["2025_01_KC_BAL"],
+            "season": [2025],
+            "week": [1],
+            "game_type": ["REG"],
+            "home_team": ["KC"],
+            "away_team": ["BAL"],
+            "gameday": ["2025-09-05"],
+            "gametime": ["20:20"],
+            "spread_line": [-2.5],
+            "total_line": [48.5],
+            "roof": ["outdoors"],
+            "surface": ["grass"],
+            "stadium_id": ["KAN00"],
+            "home_rest": [7],
+            "away_rest": [7],
+        }
+    )
+
+    result = nflverse.normalize_schedule(raw)
+
+    row = result.row(0, named=True)
+    assert row["season_type"] == "REG"
+    assert row["home_rest"] == 7
+    assert row["away_rest"] == 7
+    assert row["spread_line"] == -2.5
+    # explicitly deferred to task 1.3 -- not guessed here (see docstring)
+    assert row["kickoff_utc"] is None
+    assert row["home_implied_total"] is None
+    assert row["away_implied_total"] is None
+
+
+def test_normalize_schedule_output_column_order_matches_spec() -> None:
+    raw = pl.DataFrame(
+        {
+            "game_id": ["1"],
+            "season": [2025],
+            "week": [1],
+            "game_type": ["REG"],
+            "home_team": ["KC"],
+            "away_team": ["BAL"],
+            "gameday": ["2025-09-05"],
+            "gametime": ["20:20"],
+            "spread_line": [-2.5],
+            "total_line": [48.5],
+            "roof": ["outdoors"],
+            "surface": ["grass"],
+            "stadium_id": ["KAN00"],
+            "home_rest": [7],
+            "away_rest": [7],
+        }
+    )
+
+    result = nflverse.normalize_schedule(raw)
+
+    assert result.columns == [
+        "game_id",
+        "season",
+        "week",
+        "season_type",
+        "home_team",
+        "away_team",
+        "gameday",
+        "gametime",
+        "kickoff_utc",
+        "spread_line",
+        "total_line",
+        "home_implied_total",
+        "away_implied_total",
+        "roof",
+        "surface",
+        "stadium_id",
+        "home_rest",
+        "away_rest",
+    ]
+
+
+# --- normalize_injuries -----------------------------------------------------------
+
+
+def test_normalize_injuries_maps_gsis_id_to_player_id() -> None:
+    raw = pl.DataFrame(
+        {
+            "gsis_id": ["00-0031234"],
+            "season": [2025],
+            "week": [3],
+            "report_status": ["Questionable"],
+            "practice_status": ["Limited Participation in Practice"],
+            "report_primary_injury": ["Ankle"],
+            "date_modified": ["2025-09-20T18:00:00Z"],
+        }
+    )
+
+    result = nflverse.normalize_injuries(raw)
+
+    row = result.row(0, named=True)
+    assert row["player_id"] == "00-0031234"
+    assert row["report_status"] == "Questionable"
+    assert row["date_modified"] == "2025-09-20T18:00:00Z"
+
+
+def test_normalize_injuries_casts_season_and_week_to_int32() -> None:
+    """Real gotcha, found by running the actual 2015-2025 build: nflreadpy's
+    load_injuries() hands back season/week as Float64 (no nulls, just an
+    upstream quirk unique to this source), which would break any join
+    against the other five interim tables' Int32 season/week columns."""
+    raw = pl.DataFrame(
+        {
+            "gsis_id": ["00-0031234"],
+            "season": [2025.0],
+            "week": [3.0],
+            "report_status": ["Questionable"],
+            "practice_status": ["Limited Participation in Practice"],
+            "report_primary_injury": ["Ankle"],
+            "date_modified": ["2025-09-20T18:00:00Z"],
+        }
+    )
+
+    result = nflverse.normalize_injuries(raw)
+
+    assert result.schema["season"] == pl.Int32
+    assert result.schema["week"] == pl.Int32
+    row = result.row(0, named=True)
+    assert row["season"] == 2025
+    assert row["week"] == 3
+
+
+def test_normalize_injuries_keeps_rows_with_no_gsis_id() -> None:
+    """CLAUDE.md rule 4: never silently drop rows -- a practice-squad player
+    nflverse hasn't linked a gsis_id for yet still gets a row, just with a
+    null player_id."""
+    raw = pl.DataFrame(
+        {
+            "gsis_id": [None],
+            "season": [2025],
+            "week": [3],
+            "report_status": ["Out"],
+            "practice_status": [None],
+            "report_primary_injury": ["Hamstring"],
+            "date_modified": ["2025-09-20T18:00:00Z"],
+        }
+    )
+
+    result = nflverse.normalize_injuries(raw)
+
+    assert result.height == 1
+    assert result.row(0, named=True)["player_id"] is None

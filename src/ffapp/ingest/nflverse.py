@@ -13,10 +13,18 @@ Two network paths:
 Both paths follow the same offline-cache shape: offline reads the cache or raises
 `OfflineCacheMiss`; online fetches and archives the raw payload plus a sidecar.
 
-Scope note (see HANDOFF.md §4): only enough of nflreadpy is wired up here to
-unblock task 0.5's golden test -- one season of weekly player/team stats and
-schedules. Full multi-season ingestion (play-by-play, snap counts, depth charts,
-rosters, injuries) is task 1.1, Phase 1.
+Every `fetch_*` here accepts `seasons: int | list[int]` (nflreadpy's own
+`load_*` functions already take either natively) -- a single season for
+task 0.5's golden test, or the full historical range for task 1.1's
+interim-table build. Schema normalisation for the *simple* tables (pure
+1:1 column reshaping -- `schedule`, `injuries`) lives here too, per
+§6.3's `fetch()`/`normalise()` pairing; anything that needs real joins or
+aggregation across sources (player_week_usage, team_week_context,
+defense_position_allowed) lives in `interim/build.py` instead, matching
+this project's established ingest/-stays-pure precedent (`projections/
+aggregate.py` vs. `ingest/rankings.py`; `scoring/stats.py` vs. this
+module) -- CLAUDE.md: no business logic in ingest/ beyond schema
+normalisation.
 """
 
 from __future__ import annotations
@@ -122,6 +130,20 @@ def fetch_player_ids(*, offline: bool | None = None, settings: Settings | None =
     return path
 
 
+def _season_label(seasons: int | list[int]) -> str:
+    """Filename-safe label for one season (`"2025"`) or a contiguous-ish
+    range (`"2015-2026"`) -- used for both the cache filename and the
+    human-readable `params` string in cache-miss/staleness messages."""
+    season_list = _as_season_list(seasons)
+    if len(season_list) == 1:
+        return str(season_list[0])
+    return f"{min(season_list)}-{max(season_list)}"
+
+
+def _as_season_list(seasons: int | list[int]) -> list[int]:
+    return [seasons] if isinstance(seasons, int) else list(seasons)
+
+
 def _fetch_nflreadpy_parquet(
     *,
     filename: str,
@@ -163,87 +185,256 @@ def _fetch_nflreadpy_parquet(
 
 
 def fetch_player_stats(
-    season: int, *, offline: bool | None = None, settings: Settings | None = None
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
-    """Fetch nflreadpy's per-player-week stat table for one season to
-    data/raw/nflverse/player_stats_<season>.parquet.
+    """Fetch nflreadpy's per-player-week stat table for one season or a
+    range (task 1.1: seasons 2015-2026) to
+    data/raw/nflverse/player_stats_<label>.parquet.
     """
     settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
     return _fetch_nflreadpy_parquet(
-        filename=f"player_stats_{season}.parquet",
-        call_desc=f"load_player_stats(seasons=[{season}])",
+        filename=f"player_stats_{label}.parquet",
+        call_desc=f"load_player_stats(seasons={season_list})",
         cache_key="nflverse_player_stats",
-        load=lambda: nfl.load_player_stats(seasons=[season]),
+        load=lambda: nfl.load_player_stats(seasons=season_list),
         artifact="player-stats",
-        params=f"season={season}",
+        params=f"seasons={label}",
         offline=offline,
         settings=settings,
     )
 
 
 def fetch_team_stats(
-    season: int, *, offline: bool | None = None, settings: Settings | None = None
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
-    """Fetch nflreadpy's per-team-week stat table for one season (DST scoring
-    inputs) to data/raw/nflverse/team_stats_<season>.parquet.
+    """Fetch nflreadpy's per-team-week stat table (DST scoring inputs) for
+    one season or a range to data/raw/nflverse/team_stats_<label>.parquet.
     """
     settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
     return _fetch_nflreadpy_parquet(
-        filename=f"team_stats_{season}.parquet",
-        call_desc=f"load_team_stats(seasons=[{season}])",
+        filename=f"team_stats_{label}.parquet",
+        call_desc=f"load_team_stats(seasons={season_list})",
         cache_key="nflverse_team_stats",
-        load=lambda: nfl.load_team_stats(seasons=[season]),
+        load=lambda: nfl.load_team_stats(seasons=season_list),
         artifact="team-stats",
-        params=f"season={season}",
+        params=f"seasons={label}",
         offline=offline,
         settings=settings,
     )
 
 
 def fetch_pbp(
-    season: int, *, offline: bool | None = None, settings: Settings | None = None
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
-    """Fetch nflreadpy's play-by-play for one season (needed to derive genuine
-    defensive/return touchdowns -- see scoring/stats.py's `_defensive_return_tds`)
-    to data/raw/nflverse/pbp_<season>.parquet.
+    """Fetch nflreadpy's play-by-play (needed to derive genuine
+    defensive/return touchdowns -- see scoring/stats.py's
+    `_defensive_return_tds` -- and team_week_context/defense_position_allowed's
+    EPA/success-rate aggregations, task 1.1) for one season or a range to
+    data/raw/nflverse/pbp_<label>.parquet.
     """
     settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
     return _fetch_nflreadpy_parquet(
-        filename=f"pbp_{season}.parquet",
-        call_desc=f"load_pbp(seasons=[{season}])",
+        filename=f"pbp_{label}.parquet",
+        call_desc=f"load_pbp(seasons={season_list})",
         cache_key="nflverse_pbp",
-        load=lambda: nfl.load_pbp(seasons=[season]),
+        load=lambda: nfl.load_pbp(seasons=season_list),
         artifact="pbp",
-        params=f"season={season}",
+        params=f"seasons={label}",
         offline=offline,
         settings=settings,
     )
 
 
 def fetch_schedules(
-    season: int, *, offline: bool | None = None, settings: Settings | None = None
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
-    """Fetch nflreadpy's schedule (game scores, for points_allowed) for one season
-    to data/raw/nflverse/schedules_<season>.parquet.
+    """Fetch nflreadpy's schedule (game scores, spread/total lines, rest
+    days) for one season or a range to
+    data/raw/nflverse/schedules_<label>.parquet.
     """
     settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
     return _fetch_nflreadpy_parquet(
-        filename=f"schedules_{season}.parquet",
-        call_desc=f"load_schedules(seasons=[{season}])",
+        filename=f"schedules_{label}.parquet",
+        call_desc=f"load_schedules(seasons={season_list})",
         cache_key="nflverse_schedules",
-        load=lambda: nfl.load_schedules(seasons=[season]),
+        load=lambda: nfl.load_schedules(seasons=season_list),
         artifact="schedules",
-        params=f"season={season}",
+        params=f"seasons={label}",
         offline=offline,
         settings=settings,
     )
 
 
+def fetch_snap_counts(
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch nflreadpy's PFR-sourced snap counts (offense_snaps/offense_pct,
+    task 1.1's player_week_usage input) for one season or a range to
+    data/raw/nflverse/snap_counts_<label>.parquet.
+    """
+    settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
+    return _fetch_nflreadpy_parquet(
+        filename=f"snap_counts_{label}.parquet",
+        call_desc=f"load_snap_counts(seasons={season_list})",
+        cache_key="nflverse_snap_counts",
+        load=lambda: nfl.load_snap_counts(seasons=season_list),
+        artifact="snap-counts",
+        params=f"seasons={label}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def fetch_depth_charts(
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch nflreadpy's weekly depth charts for one season or a range to
+    data/raw/nflverse/depth_charts_<label>.parquet.
+    """
+    settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
+    return _fetch_nflreadpy_parquet(
+        filename=f"depth_charts_{label}.parquet",
+        call_desc=f"load_depth_charts(seasons={season_list})",
+        cache_key="nflverse_depth_charts",
+        load=lambda: nfl.load_depth_charts(seasons=season_list),
+        artifact="depth-charts",
+        params=f"seasons={label}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def fetch_rosters(
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch nflreadpy's weekly rosters (position/team history, ids) for one
+    season or a range to data/raw/nflverse/rosters_<label>.parquet.
+    """
+    settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
+    return _fetch_nflreadpy_parquet(
+        filename=f"rosters_{label}.parquet",
+        call_desc=f"load_rosters(seasons={season_list})",
+        cache_key="nflverse_rosters",
+        load=lambda: nfl.load_rosters(seasons=season_list),
+        artifact="rosters",
+        params=f"seasons={label}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def fetch_injuries(
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch nflreadpy's weekly official injury report for one season or a
+    range to data/raw/nflverse/injuries_<label>.parquet.
+    """
+    settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
+    return _fetch_nflreadpy_parquet(
+        filename=f"injuries_{label}.parquet",
+        call_desc=f"load_injuries(seasons={season_list})",
+        cache_key="nflverse_injuries",
+        load=lambda: nfl.load_injuries(seasons=season_list),
+        artifact="injuries",
+        params=f"seasons={label}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def normalize_schedule(raw: pl.DataFrame) -> pl.DataFrame:
+    """nflreadpy's `load_schedules()` output -> `interim/schedule.parquet`
+    (SPEC §6.2). `home_rest`/`away_rest` are already nflverse's own
+    precomputed columns, not derived here.
+
+    `kickoff_utc` and `home_implied_total`/`away_implied_total` are left
+    null -- both need real work task 1.3 owns, not guessed here: converting
+    `gametime` (local kickoff time) to UTC needs a per-stadium timezone
+    lookup (`config/stadiums.csv`, task 1.3's own deliverable), and the
+    implied-total formula needs `spread_line`'s sign convention verified
+    first (SPEC §10.2/1.3: "positive spread = home favoured (verify sign at
+    ingest and document)" -- not yet verified). `kickoff_utc` is explicitly
+    the as_of boundary (SPEC §6.2) -- guessing it wrong here would be a
+    silent leakage bug, the single most expensive failure mode this project
+    has (CLAUDE.md rule 2), so it stays null rather than approximated.
+    """
+    return raw.select(
+        "game_id",
+        "season",
+        "week",
+        pl.col("game_type").alias("season_type"),
+        "home_team",
+        "away_team",
+        "gameday",
+        "gametime",
+        pl.lit(None, dtype=pl.Utf8).alias("kickoff_utc"),
+        "spread_line",
+        "total_line",
+        pl.lit(None, dtype=pl.Float64).alias("home_implied_total"),
+        pl.lit(None, dtype=pl.Float64).alias("away_implied_total"),
+        "roof",
+        "surface",
+        "stadium_id",
+        "home_rest",
+        "away_rest",
+    )
+
+
+def normalize_injuries(raw: pl.DataFrame) -> pl.DataFrame:
+    """nflreadpy's `load_injuries()` output -> `interim/injuries.parquet`
+    (SPEC §6.2). `player_id` <- `gsis_id` -- nflverse's own primary key,
+    matching this project's canonical `player_id` scheme directly
+    (`ids.mapping.assign_canonical_id`: `player_id = gsis_id` when
+    present). Rows with no `gsis_id` (rare; a practice-squad-only player
+    nflverse hasn't linked yet) are kept, not dropped -- CLAUDE.md rule 4 --
+    with a null `player_id`, same as any other unresolved-id case elsewhere
+    in this project.
+
+    `season`/`week` are cast `Int32` -- confirmed live, nflreadpy's own
+    `load_injuries()` hands both back as `Float64` (no nulls, just an
+    upstream schema quirk unique to this one source), which would silently
+    break any join against the other five interim tables' `Int32`
+    season/week columns (the exact `SchemaError` this project's own tests
+    for this module hit while under construction).
+    """
+    return raw.select(
+        pl.col("gsis_id").alias("player_id"),
+        pl.col("season").cast(pl.Int32),
+        pl.col("week").cast(pl.Int32),
+        "report_status",
+        "practice_status",
+        "report_primary_injury",
+        "date_modified",
+    )
+
+
 __all__ = [
     "CROSSWALK_URL",
+    "fetch_depth_charts",
+    "fetch_injuries",
     "fetch_pbp",
     "fetch_player_ids",
     "fetch_player_stats",
+    "fetch_rosters",
     "fetch_schedules",
+    "fetch_snap_counts",
     "fetch_team_stats",
+    "normalize_injuries",
+    "normalize_schedule",
 ]
