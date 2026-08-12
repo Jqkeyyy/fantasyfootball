@@ -18,6 +18,7 @@ def _pbp_row(**kwargs: object) -> dict:
         "yardline_100": 50,
         "receiver_player_id": None,
         "rusher_player_id": None,
+        "qb_scramble": 0,
     }
     row.update(kwargs)
     return row
@@ -612,6 +613,99 @@ def test_build_player_week_usage_excludes_non_skill_positions() -> None:
     result = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
 
     assert result["player_id"].to_list() == ["wr1"]
+
+
+def test_build_player_week_usage_keeps_team_and_computes_gz_carry_share() -> None:
+    player_stats = pl.DataFrame(
+        {
+            "player_id": ["rb1", "rb2"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "team": ["KC", "KC"],
+            "position": ["RB", "RB"],
+            "targets": [0, 0],
+            "target_share": [0.0, 0.0],
+            "receiving_air_yards": [0, 0],
+            "air_yards_share": [0.0, 0.0],
+            "wopr": [0.0, 0.0],
+            "carries": [10, 5],
+        }
+    )
+    snap_counts = pl.DataFrame(
+        {"pfr_player_id": [], "season": [], "week": [], "offense_snaps": [], "offense_pct": []},
+        schema={
+            "pfr_player_id": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "offense_snaps": pl.Float64,
+            "offense_pct": pl.Float64,
+        },
+    )
+    players_dim = pl.DataFrame({"pfr_id": ["x"], "player_id": ["y"]})
+    pbp = _pbp(
+        [
+            _pbp_row(play_type="run", rusher_player_id="rb1", yardline_100=3),  # GZ
+            _pbp_row(play_type="run", rusher_player_id="rb1", yardline_100=3),  # GZ
+            _pbp_row(play_type="run", rusher_player_id="rb2", yardline_100=3),  # GZ
+        ]
+    )
+
+    result = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
+
+    rows = {row["player_id"]: row for row in result.iter_rows(named=True)}
+    assert rows["rb1"]["team"] == "KC"
+    assert rows["rb1"]["gz_carries"] == 2
+    assert rows["rb1"]["gz_carry_share"] == pytest.approx(
+        2 / 3
+    )  # 2 of the team's 3 real GZ carries
+    assert rows["rb2"]["gz_carry_share"] == pytest.approx(1 / 3)
+
+
+def test_build_player_week_usage_designed_rush_share_excludes_scrambles() -> None:
+    """SPEC §10.2's designed_rush_share is specifically a called run, not
+    a QB scramble -- qb_scramble=1 plays must not count toward it, even
+    though they're still real carries counted in carry_share."""
+    player_stats = pl.DataFrame(
+        {
+            "player_id": ["qb1"],
+            "season": [2025],
+            "week": [1],
+            "team": ["KC"],
+            "position": ["QB"],
+            "targets": [0],
+            "target_share": [0.0],
+            "receiving_air_yards": [0],
+            "air_yards_share": [0.0],
+            "wopr": [0.0],
+            "carries": [4],
+        }
+    )
+    snap_counts = pl.DataFrame(
+        {"pfr_player_id": [], "season": [], "week": [], "offense_snaps": [], "offense_pct": []},
+        schema={
+            "pfr_player_id": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "offense_snaps": pl.Float64,
+            "offense_pct": pl.Float64,
+        },
+    )
+    players_dim = pl.DataFrame({"pfr_id": ["x"], "player_id": ["y"]})
+    pbp = _pbp(
+        [
+            _pbp_row(play_type="run", rusher_player_id="qb1", qb_scramble=0),
+            _pbp_row(play_type="run", rusher_player_id="qb1", qb_scramble=0),
+            _pbp_row(play_type="run", rusher_player_id="qb1", qb_scramble=0),
+            _pbp_row(play_type="run", rusher_player_id="qb1", qb_scramble=1),  # scramble, excluded
+        ]
+    )
+
+    result = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
+
+    row = result.row(0, named=True)
+    assert row["carries"] == 4  # all 4 real carries, scramble included
+    assert row["designed_rush_attempts"] == 3  # scramble excluded
+    assert row["designed_rush_share"] == pytest.approx(0.75)  # 3 / 4 team carries
 
 
 # --- add_xfp (task 1.2) -------------------------------------------------------------

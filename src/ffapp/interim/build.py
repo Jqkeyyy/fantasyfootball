@@ -381,6 +381,28 @@ def _red_zone_touch_counts(pbp: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _designed_rush_attempts(pbp: pl.DataFrame) -> pl.DataFrame:
+    """One row per (player_id, season, week): rush attempts excluding QB
+    scrambles (task 1.6, SPEC §10.2's `designed_rush_share` -- a called
+    run, not the passer improvising out of the pocket). Real for any
+    rusher, not just QBs: pbp's own `qb_scramble` flag is only ever 1 when
+    the play's rusher is the quarterback (confirmed live: 10,039 of
+    156,789 real 2015-2025 runs), so this equals a non-QB's plain carry
+    count -- the QB/non-QB distinction the feature actually needs falls
+    out naturally rather than needing a position filter here.
+    """
+    plays = _scrimmage_plays(pbp)
+    return (
+        plays.filter(
+            (pl.col("play_type") == "run")
+            & (pl.col("qb_scramble") == 0)
+            & pl.col("rusher_player_id").is_not_null()
+        )
+        .group_by(["season", "week", pl.col("rusher_player_id").alias("player_id")])
+        .agg(pl.len().alias("designed_rush_attempts"))
+    )
+
+
 def build_player_week_usage(
     player_stats: pl.DataFrame,
     snap_counts: pl.DataFrame,
@@ -396,26 +418,37 @@ def build_player_week_usage(
     play-by-play. `route_participation`/`xfp` stay null -- see module
     docstring.
 
+    `team` is kept in the output -- task 1.6's window features need it for
+    per-team-week joins (and it costs nothing extra; `base` already joins
+    it in). `gz_carry_share` (task 1.6, SPEC §10.2) mirrors
+    `rz_touch_share`'s own team-denominator pattern.
+    `designed_rush_attempts`/`designed_rush_share` (task 1.6, QB rushing
+    floor) come from `_designed_rush_attempts` above.
+
     Output rows are scoped to `SKILL_POSITIONS` (see its own comment) --
-    but `_team_carries`/`_team_rz_touches` denominators are computed from
-    the *unfiltered* `player_stats`/play-by-play first, since a team's real
-    rushing total can include a non-skill-position trick-play carry (a
-    fullback, a wildcat snap) that a skill-position-only sum would
-    undercount.
+    but `_team_carries`/`_team_rz_touches`/`_team_gz_carries` denominators
+    are computed from the *unfiltered* `player_stats`/play-by-play first,
+    since a team's real rushing total can include a non-skill-position
+    trick-play carry (a fullback, a wildcat snap) that a skill-position-only
+    sum would undercount.
     """
     team_carries = player_stats.group_by(["season", "week", "team"]).agg(
         pl.col("carries").sum().alias("_team_carries")
     )
+    rz_touches = _red_zone_touch_counts(pbp)
     team_rz_touches = (
-        _red_zone_touch_counts(pbp)
-        .join(
+        rz_touches.join(
             player_stats.select("player_id", "season", "week", "team"),
             on=["player_id", "season", "week"],
             how="left",
         )
         .group_by(["season", "week", "team"])
-        .agg((pl.col("rz_targets").sum() + pl.col("rz_carries").sum()).alias("_team_rz_touches"))
+        .agg(
+            (pl.col("rz_targets").sum() + pl.col("rz_carries").sum()).alias("_team_rz_touches"),
+            pl.col("gz_carries").sum().alias("_team_gz_carries"),
+        )
     )
+    designed_rush = _designed_rush_attempts(pbp)
 
     base = (
         player_stats.filter(pl.col("position").is_in(SKILL_POSITIONS))
@@ -432,6 +465,7 @@ def build_player_week_usage(
             "carries",
         )
         .join(team_carries, on=["season", "week", "team"], how="left")
+        .join(designed_rush, on=["player_id", "season", "week"], how="left")
         .with_columns(
             pl.when(pl.col("targets") > 0)
             .then(pl.col("air_yards") / pl.col("targets"))
@@ -441,6 +475,13 @@ def build_player_week_usage(
             .then(pl.col("carries") / pl.col("_team_carries"))
             .otherwise(None)
             .alias("carry_share"),
+            pl.col("designed_rush_attempts").fill_null(0),
+        )
+        .with_columns(
+            pl.when(pl.col("_team_carries") > 0)
+            .then(pl.col("designed_rush_attempts") / pl.col("_team_carries"))
+            .otherwise(None)
+            .alias("designed_rush_share")
         )
     )
 
@@ -451,7 +492,7 @@ def build_player_week_usage(
     )
 
     with_rz = (
-        with_snaps.join(_red_zone_touch_counts(pbp), on=["player_id", "season", "week"], how="left")
+        with_snaps.join(rz_touches, on=["player_id", "season", "week"], how="left")
         .join(team_rz_touches, on=["season", "week", "team"], how="left")
         .with_columns(
             pl.col("rz_targets").fill_null(0),
@@ -462,7 +503,11 @@ def build_player_week_usage(
             pl.when(pl.col("_team_rz_touches").fill_null(0) > 0)
             .then((pl.col("rz_targets") + pl.col("rz_carries")) / pl.col("_team_rz_touches"))
             .otherwise(None)
-            .alias("rz_touch_share")
+            .alias("rz_touch_share"),
+            pl.when(pl.col("_team_gz_carries").fill_null(0) > 0)
+            .then(pl.col("gz_carries") / pl.col("_team_gz_carries"))
+            .otherwise(None)
+            .alias("gz_carry_share"),
         )
     )
 
@@ -473,6 +518,7 @@ def build_player_week_usage(
         "player_id",
         "season",
         "week",
+        "team",
         "offense_snaps",
         "offense_snap_pct",
         "targets",
@@ -487,6 +533,9 @@ def build_player_week_usage(
         "rz_carries",
         "rz_touch_share",
         "gz_carries",
+        "gz_carry_share",
+        "designed_rush_attempts",
+        "designed_rush_share",
         "route_participation",
         "xfp",
     )

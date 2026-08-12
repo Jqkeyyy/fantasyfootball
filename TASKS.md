@@ -111,7 +111,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   `FeatureSpec` dataclass, registry, and the build-time assertions on `lag_weeks` and `available_at_inference`.
   **Done when:** the assertions are active and a deliberately mis-specified feature fails the build in a test.
 
-- [ ] **1.6 — Usage features** ⏱ 5h — SPEC §10.2
+- [x] **1.6 — Usage features** ⏱ 5h — SPEC §10.2
   Every feature in the player usage block, with the specified windows.
   **Done when:** spot-checked against known player-seasons (pick a WR1 and confirm target share matches published figures).
 
