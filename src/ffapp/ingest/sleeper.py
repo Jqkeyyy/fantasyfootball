@@ -252,6 +252,29 @@ def fetch_draft_picks(
     )
 
 
+def fetch_traded_picks(
+    league_id: str, *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Not in SPEC.md's §18 endpoint table -- added for task 0.11 once a real
+    draft slot turned out to trade picks. Each record is
+    `{round, season, roster_id, owner_id, previous_owner_id}`: `roster_id`
+    identifies the pick by its *original* owner, `owner_id` is who currently
+    holds it. Confirmed live against the primary league: no record appears
+    twice for the same (season, round, roster_id), so `owner_id` is always
+    the final owner, not one hop in a longer chain.
+    """
+    settings = _resolve_settings(settings)
+    return _fetch_or_read(
+        filename=f"traded_picks_{league_id}.json",
+        call=f"/league/{league_id}/traded_picks",
+        artifact="traded_picks",
+        params=f"league_id={league_id}",
+        cache_key="sleeper_rosters",
+        offline=offline,
+        settings=settings,
+    )
+
+
 def fetch_trending(
     kind: Literal["add", "drop"] = "add",
     lookback_hours: int = 24,

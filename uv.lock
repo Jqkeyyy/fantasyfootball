@@ -195,6 +195,8 @@ dependencies = [
     { name = "rapidfuzz" },
     { name = "requests" },
     { name = "scikit-learn" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "typer" },
 ]
 
@@ -219,6 +221,7 @@ requires-dist = [
     { name = "rapidfuzz", specifier = ">=3.9" },
     { name = "requests", specifier = ">=2.31" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "typer", specifier = ">=0.12" },
 ]
 

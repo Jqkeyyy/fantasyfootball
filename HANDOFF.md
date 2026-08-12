@@ -1,8 +1,8 @@
 # HANDOFF.md — current state
 
-**Last updated:** 2026-08-11
+**Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `f35496d` — feat: games-played prior, value over replacement, tiers (tasks 0.8, 0.9, 0.10)
+**Last commit:** `<pending>` — feat: ADP and survival probability (task 0.11)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,16 +13,16 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 0 — draft board
-**Next task:** 0.11 (ADP and survival probability) — see SPEC §9.6. Nothing blocking it.
-**First concrete step:** Ingest ADP with spread (`sd ≈ (high − low) / 4`, falling back to `settings.draft.adp_sd_fallback` when a source gives no spread). Given a draft slot and league size, compute `P(player available at pick k) = 1 − Φ((k − adp_mean) / adp_sd)`, then `p_avail_next`/`p_avail_after_next` and `opportunity_cost(p) = vor[p] − E[best available VOR at position(p) at my next pick]`.
+**Next task:** 0.12 (draft board output) — see SPEC §9.7. Nothing blocking it.
+**First concrete step:** Assemble `data/outputs/draft_board_2026.csv` from the columns already produced by 0.6–0.11: `overall_rank`/`pos_rank` (new, from `vor` descending), `tier` (`tools/tiers.assign_tiers`), `player`/`position`/`team`/`bye_week` (bye isn't wired in anywhere yet — `rankings.normalize_adp`'s payload has it per-player if a dedicated source is wanted, or pull from nflverse schedules), `proj_points_adj`/`proj_ppg`/`expected_games` (`projections/games_played.py`), `vor` (`tools/vor.py`), `dispersion`/`n_sources` (`projections/aggregate.py`), `adp`/`adp_sd`/`value_vs_adp` (`tools/adp.py` + `adp_rank − overall_rank`, new), `p_avail_next`/`opportunity_cost` (`tools/adp.py`, task 0.11 — **remember `opportunity_cost` needs `fallback_pick` = the picker's pick *after* the one being evaluated, not the same pick as `p_avail_next`**, see task 0.11's decision entry below), `playoff_sos` (not built yet — leave null per the task's own instruction, don't fake it). No CLI command exists yet for any of 0.6–0.11's outputs — 0.12 is the first task that needs one (`ffapp draft board`).
 
 **Blocking on me (the human), not the agent:**
 
 - [x] GitHub remote created and pushed
 - [x] Sleeper username supplied for task 0.2 (`Maybe17`)
 - [x] Primary league chosen for model development (ADDENDUM-01 §F, decision #9) — `rogan-radinator-league`
-- [x] Ranking sources chosen (SPEC §17 decision #2) — resolved: FantasyPros, ESPN, FantasySharks, CBS Sports, FFToday (see task 0.7 entry below for why NFL.com/Yahoo/Sharp Football Analysis were dropped)
-- [ ] Draft date and slot per league (decision #5) — blocks task 0.11
+- [x] Ranking sources chosen (SPEC §17 decision #2) — resolved: FantasyPros, ESPN, FantasySharks, CBS Sports, FFToday (see task 0.7 entry below for why NFL.com/Yahoo/Sharp Football Analysis were dropped). **FFToday now 403s live and ESPN's bulk endpoint now returns 0 season-total rows — see task 0.11's gotchas.** Not re-investigated this session (out of scope for 0.11); 0.12 or a dedicated fix-up task should check both again before trusting the draft board's source count.
+- [x] Draft date and slot per league (decision #5) — resolved: slot 3 of 10, Aug 22 2026 (real Sleeper `draft.start_time`, confirmed live). **This league trades draft picks (45 real traded-pick records for 2026) and is a 1-keeper league** — SPEC §9.6 assumes a plain fixed-slot redraft, neither of which holds here. See task 0.11's entry below for how both are handled.
 - [ ] Waiver type/budget — already captured automatically per league via `--discover` (`rogan-radinator-league`: type 1, $100 FAAB; `bdff-chopped`: type 2, $1000 FAAB), so decision #6 is effectively resolved unless you want to override it.
 
 ---
@@ -82,12 +82,19 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - **New dependency:** `scikit-learn` (task text explicitly requires the k-means/GMM alternatives, not just gap). Pulled in `numpy`/`scipy`/`joblib`/`threadpoolctl` transitively. **Real gotcha:** `numpy` latest (2.5.2 at the time) ships `__init__.pyi` using unconditional PEP 695 `type X = ...` syntax, which mypy's parser rejects outright under this project's `python_version = "3.11"` config (`Type statement is only supported in Python 3.12 and greater [syntax]`) — not an import/stub-missing issue `ignore_missing_imports` can suppress, since it's a hard parse failure in a *found* stub file. Fixed by pinning `numpy<2.5` (`pyproject.toml`), which resolved to 2.4.6 and doesn't hit this stub. `sklearn.*` itself still needed the ordinary `ignore_missing_imports = true` override (same pattern as `nflreadpy.*`) since it ships no stubs/`py.typed` marker at all.
   - **Decision, not required by the acceptance bar but flagged in the module docstring:** SPEC's "rolling_median(gaps, window=9)" doesn't specify centered vs. trailing windowing. Implemented as a centered window (shrinking at sequence edges) since a local-density threshold should look both ways rather than being biased by an already-passed trend; documented as a judgment call since any reasonable windowing convention satisfies 0.10's stated acceptance bar.
   - **Not built:** wiring `assign_tiers` into a CLI command (same no-CLI precedent as 0.6–0.9); the live-assistant requirement in SPEC §9.5's closing note ("shows how many players remain in the current tier at each position") is task 0.14's job, not this task's.
+- **0.11** — ADP and survival probability (SPEC §9.6). Scope grew beyond SPEC's literal text once the real draft slot turned out to sit in a league that trades picks and keeps one player per team — confirmed with you before building rather than guessed at. Four new pieces:
+  - `ingest/sleeper.py`'s new `fetch_traded_picks` — SPEC §18's endpoint table doesn't list `/league/{id}/traded_picks` at all; added once real data showed the primary league has 45 traded-pick records for 2026. Confirmed live: no `(season, round, roster_id)` key repeats, so each record's `owner_id` is always the final owner, never one hop in a longer chain — a pick traded more than once isn't exercised by any real data seen so far and isn't handled.
+  - `ingest/rankings.py`'s new `fetch_adp`/`normalize_adp`, sourced from FantasyFootballCalculator's public JSON API (`fantasyfootballcalculator.com/api/v1/adp/<scoring>?teams=<n>&year=<season>`), not FantasyPros. FantasyPros' own ADP page (`fantasypros.com/nfl/adp/overall.php`) was tried first and rejected: its server response only SSRs a 5-row teaser (`window.FP.reportConfig.table.rows`) with the real list loaded client-side — confirmed live, the same "empty JS-mount shell" problem HANDOFF already hit with Sharp Football Analysis in task 0.7. FFC has no such gap (real per-player ADP from actual recent live drafts, `teams=10` matched to this league exactly) and hands back `high`/`low`/`stdev` directly, so `adp_sd` is the source's own real stdev, not SPEC §9.6's `(high−low)/4` estimate — strictly better data than the fallback formula assumes, so used directly rather than re-derived.
+  - New `src/ffapp/draft/pick_order.py` (`TradedPick`, `parse_traded_picks`, `roster_id_by_slot`, `snake_pick_number`, `pick_owner`, `my_pick_numbers`) — resolves real per-round pick ownership (`draft_order` + `rosters` + `traded_picks`) instead of assuming a fixed slot every round. Verified against the real primary league: roster 7 (this project's own team, slot 3) has lost 7 of its own picks to trades and gained 11 from other rosters (one of the 45 records is a pick traded away and back to its original owner in round 16 — handled correctly, not a double-count), netting 19 real picks across 16 rounds, first at overall pick 3 as expected from slot 3.
+  - New `src/ffapp/tools/adp.py` (`keeper_sleeper_ids`, `keeper_join_keys`, `exclude_keepers`, `join_adp`, `p_available`, `add_survival_probabilities`, `expected_best_available_vor`, `add_opportunity_cost`) — the SPEC §9.6 math itself, plus keeper handling. Keepers: Sleeper's roster objects carry a `keepers` field directly (`max_keepers: 1` for this league); 9 of 10 rosters had one locked in at cache time, roster 7 (this project's own team) had none yet — confirmed with you to treat that as "no keeper" for now rather than guess, and re-check before the real Aug 22 draft.
+  - Evidence: `tests/test_ingest_sleeper.py`/`test_offline_raises.py` (traded_picks), `tests/test_ingest_rankings.py` (fetch_adp/normalize_adp), new `tests/test_draft_pick_order.py` (11 tests) and `tests/test_tools_adp.py` (17 tests) — 310 tests pass total (`uv run pytest -q`, up from 276), `ruff check`/`ruff format --check`/`mypy src/` all clean. Ran the full pipeline for real against live-refreshed cache data (see gotchas below for two sources that degraded): survival probabilities are sensible exactly as the task's acceptance bar describes — late-ADP players (adp ≈ 122, my picks 3/8) show `p_avail_next = p_avail_after_next = 1.0`; Ja'Marr Chase (adp 3.9) shows `p_avail_next = 0.816` (still plausibly there at my very early pick 3) collapsing to `p_avail_after_next = 0.00002` (essentially certain to be gone two picks later). `opportunity_cost` populated for all 839 in-scope rows.
+  - **Real ambiguity found only by running against live data, resolved with you before finalizing:** SPEC §9.6 reuses the phrase "my next pick" for both `p_avail_next` and the `opportunity_cost` formula. Read literally (same pick number for both), `opportunity_cost` came out near-self-referential — comparing drafting player P now against the pool available at the very pick used to draft him, which produced nonsensical negative costs for very good (not-quite-best) players purely because a still-likely-available superstar dominated the position's expected value at that same pick. Confirmed with you: `add_opportunity_cost`'s pick parameter (named `fallback_pick`, deliberately not `next_pick`, to make the trap harder to fall into again) must be the picker's pick *after* the one currently being evaluated — `my_pick_numbers[1]` when deciding at `my_pick_numbers[0]`. With that fix, real numbers are sensible and decision-useful: Chase +71.9 (draft him now, he won't last), Justin Jefferson −24.7 (safe to wait, deep WR bench remains), a same-shape regression test (`test_add_opportunity_cost_needs_the_pick_after_the_current_one_not_the_current_one`) locks in both the broken and correct behavior.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–0.10 are complete and verified. This entire session's work (tasks 0.8, 0.9, 0.10) is uncommitted — see header.
+None. 0.1–0.11 are complete and verified. This entire session's work (task 0.11) is uncommitted — see header.
 
 ## 4. Decisions made during implementation
 
@@ -138,6 +145,8 @@ Places where the spec/addenda were silent, ambiguous, or (in one case) internall
 - **The dynastyprocess crosswalk can link a `sleeper_id` to a row with no `gsis_id` at all.** This isn't a matching-algorithm failure — nflverse itself never assigned that player a `gsis_id` (no NFL regular-season box score). No amount of better fuzzy matching fixes this; the only fix is `config/id_overrides.csv`. One instance found and overridden this session (`sleeper_id 8008`).
 - **The real dynastyprocess crosswalk CSV (`db_playerids.csv`) uses the literal string `"NA"` for missing values**, not empty cells — `load_crosswalk_base` reads it with `null_values=["NA"]`. Team codes in the crosswalk can also differ from Sleeper's own (e.g. `LVR`/`KCC` vs Sleeper's `LV`/`KC`), which is part of why the exact `(name, position, team)` tier misses more than you'd expect and players fall through to the bare-name fuzzy tier.
 - **`pl.DataFrame(list[dict])` silently infers its schema from only the first 100 rows by default (`infer_schema_length`) and drops any column that first appears later, with no warning or error.** Found live in `ingest/rankings.py`'s ESPN normaliser: a real 500-player payload sorted by overall draft rank put every kicker past row 100, so `fg_made`/`pat_made` vanished entirely from the output DataFrame — the DataFrame just quietly had fewer columns than the input rows actually carried. Fixed everywhere this project builds a DataFrame from a list of heterogeneous-keyed dicts (`normalize_espn`, `normalize_fantasysharks`, `normalize_cbs`, `normalize_fftoday`) by passing `infer_schema_length=None`. **Worth checking for in any future code that does `pl.DataFrame(rows)` from dicts of varying shape — the failure is silent, not a crash.**
+- **Two of task 0.7's five rankings sources degraded externally since that session, found while smoke-testing 0.11 against a live re-fetch, not by any test.** FFToday's `fftoday.com/rankings/playerproj.php` now returns `403 Forbidden` on every position page (site added bot-blocking; confirmed on a clean retry, not transient). ESPN's undocumented bulk `leaguedefaults` endpoint now returns 0 rows matching the season-total filter (`scoringPeriodId==0, statSourceId==1, statSplitTypeId==0`) — the endpoint itself still responds, but either the payload shape changed or that filter no longer matches anything live. Neither is a bug in 0.11's own code; both are pre-existing task-0.7 ingest sources whose external contract moved. Not investigated further this session (out of scope) — whichever task next needs a full 5-source aggregate (likely 0.12) should check both again before trusting `n_sources`. The 0.11 end-to-end smoke test ran on the 3 sources that still work (FantasyPros ranks-only + FantasySharks + CBS), which was sufficient to validate 0.11's own logic.
+- **`data/raw/rankings/adp_2026_10_ppr.json` and the four still-working rankings sources are now genuinely warmed in `data/` from this session's live run** (previously only ESPN/FantasySharks/CBS/FFToday/FantasyPros had been warmed in task 0.7's own session; per that task's HANDOFF entry, this was "the first time these commands need to actually run for real" for a fresh checkout). `data/raw/sleeper/traded_picks_1317324091266457600.json` is new too.
 
 ---
 
@@ -185,18 +194,32 @@ from ffapp.ingest import rankings
 from ffapp.config import load_settings
 settings = load_settings()
 rankings.fetch_fantasypros(offline=False, settings=settings)
-rankings.fetch_espn(2026, offline=False, settings=settings)
+rankings.fetch_espn(2026, offline=False, settings=settings)  # returns 0 rows live as of this session -- see gotchas §5
 rankings.fetch_fantasysharks(offline=False, settings=settings)
 rankings.fetch_cbs(2026, offline=False, settings=settings)
-rankings.fetch_fftoday(2026, offline=False, settings=settings)
+rankings.fetch_fftoday(2026, offline=False, settings=settings)  # 403s live as of this session -- see gotchas §5
 "
 ```
 
 Each `normalize_*` function then takes that source's raw payload (parsed JSON dict / CSV text / HTML-per-position dict, matching what its `fetch_*` wrote) plus `season=2026`. `projections/aggregate.py`'s `apply_league_scoring` → `add_join_key` → (`build_reference_curve` + `map_ranks_to_points` for FantasyPros only) → `aggregate_projections` chain then produces the per-player table — see `tests/test_projections_aggregate.py`'s end-to-end test for the exact call sequence against real `scoring_settings`.
 
+Then warm ADP (task 0.11) and the primary league's traded-pick data — also no CLI subcommand yet:
+
+```bash
+uv run python -c "
+from ffapp.ingest import rankings, sleeper
+from ffapp.config import load_settings, load_primary_league
+settings = load_settings()
+league = load_primary_league()
+rankings.fetch_adp(2026, teams=10, offline=False, settings=settings)  # teams must match this league's real n_teams
+sleeper.fetch_traded_picks(league.league_id, offline=False, settings=settings)
+"
+```
+
 **Not reproducible by re-running the above:**
 
 - `data/raw/rankings/` — consensus projections and ADP are time-sensitive; re-pulling on a different day gives different numbers. These are committed to git as the exception in `CLAUDE.md`. Do not delete them.
+- `data/raw/sleeper/traded_picks_*.json` and `rosters_*.json` (keepers) — also time-sensitive; trades and keeper locks change until the real draft.
 - Odds snapshots, if the paid API is enabled — same reasoning, but cheap to lose.
 
 **Must be supplied by hand on a new machine:** `.env` (copy from `.env.example`; `FFAPP_OFFLINE=1` and `FFAPP_CACHE_STRICT=1` are sane defaults, both already used here).
@@ -209,17 +232,19 @@ Each `normalize_*` function then takes that source's raw payload (parsed JSON di
 **Offline default:** `FFAPP_OFFLINE=1` in `.env`. Cache warming and league discovery need `--no-offline` explicitly — both commands refuse to run offline with a clear message rather than failing deep inside an HTTP call.
 **Vendored wheels:** not currently needed. If PyPI becomes unreachable, see ADDENDUM-02 §F.
 **New dependency (task 0.7 session):** `lxml` (+ `lxml-stubs` dev-only, for mypy) — needed for CBS Sports/FFToday's HTML table parsing. Added via `uv add lxml` / `uv add --group dev lxml-stubs`; both are in `pyproject.toml`/`uv.lock`.
-**New dependency (task 0.10 session):** `scikit-learn` (+ transitively `numpy`, `scipy`, `joblib`, `threadpoolctl`) — needed for the `kmeans`/`gmm` tier methods. `numpy` is pinned `<2.5` (see task 0.10's HANDOFF entry above — 2.5.2's bundled stubs use PEP 695 syntax mypy's `python_version = "3.11"` config can't parse). `sklearn.*` has a `mypy.overrides` `ignore_missing_imports` entry, same pattern as `nflreadpy.*`.
+**New dependency (task 0.10 session):** `scikit-learn` (+ transitively `numpy`, `joblib`, `threadpoolctl`) — needed for the `kmeans`/`gmm` tier methods. `numpy` is pinned `<2.5` (see task 0.10's HANDOFF entry above — 2.5.2's bundled stubs use PEP 695 syntax mypy's `python_version = "3.11"` config can't parse). `sklearn.*` has a `mypy.overrides` `ignore_missing_imports` entry, same pattern as `nflreadpy.*`.
+**New dependency (task 0.11 session):** `scipy` (was already present transitively via `scikit-learn`; made an explicit direct dependency now that `tools/adp.py` imports `scipy.stats.norm` for SPEC §9.6's `Φ`). `scipy.*` has a matching `mypy.overrides` `ignore_missing_imports` entry.
 
 **Network reachability by location:**
 
 | Location | Sleeper | nflverse / GitHub | PyPI | Rankings sites |
 |---|---|---|---|---|
-| This session (2026-08-11/12, hostname `Maybe`) | ✓ (live matchups pulled for both leagues' 2025 seasons) | ✓ (`nflreadpy` pulled real player_stats/team_stats/schedules/pbp for 2025) | ✓ | ✓ for FantasyPros/ESPN/FantasySharks/CBS Sports/FFToday (all fetched real live data). NFL.com/Yahoo/Sharp Football Analysis were reachable (HTTP 200) but have no accessible data — see HANDOFF §4, not a network problem. |
+| This session (2026-08-12, hostname `Maybe`) | ✓ (live `traded_picks`, `drafts`, `rosters` pulled for the primary league's real 2026 draft) | ✓ | ✓ (added `scipy` as a direct dep) | ✓ for FantasyPros/FantasySharks/CBS Sports and the new FantasyFootballCalculator ADP source. **ESPN's bulk endpoint now returns 0 rows and FFToday now 403s — both worked in the 0.7 session, both broken now, see §5.** FantasyPros' own ADP page was tried and rejected (client-rendered, see §5/task 0.11 entry) in favor of FantasyFootballCalculator. |
+| This session (2026-08-11/12, hostname `Maybe`) | ✓ (live matchups pulled for both leagues' 2025 seasons) | ✓ (`nflreadpy` pulled real player_stats/team_stats/schedules/pbp for 2025) | ✓ | ✓ for FantasyPros/ESPN/FantasySharks/CBS Sports/FFToday (all fetched real live data at the time). NFL.com/Yahoo/Sharp Football Analysis were reachable (HTTP 200) but have no accessible data — see HANDOFF §4, not a network problem. |
 | Home | ? | ? | ? | ? |
 | Work | ✗ | ? | ? | ✗ |
 
-> **Fourth session in a row now, all on hostname `Maybe`.** Treating this as the same machine going forward unless told otherwise — the "different machine" framing from earlier sessions hasn't been re-raised and the hostname keeps matching. If a genuinely different machine shows up, add it as a new row rather than overwriting this one.
+> **Fifth session in a row now, all on hostname `Maybe`.** Treating this as the same machine going forward unless told otherwise — the "different machine" framing from earlier sessions hasn't been re-raised and the hostname keeps matching. If a genuinely different machine shows up, add it as a new row rather than overwriting this one.
 
 ---
 

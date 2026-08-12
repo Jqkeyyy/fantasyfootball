@@ -65,7 +65,7 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Gap-based tiering with the k-means and GMM alternatives behind a common interface, selected by `settings.draft.tier_method`.
   **Done when:** tiers are assigned per position, no tier has fewer than 2 players, and the count is capped at 12.
 
-- [ ] **0.11 — ADP and survival probability** ⏱ 2h
+- [x] **0.11 — ADP and survival probability** ⏱ 2h
   SPEC §9.6
   Ingest ADP with spread, compute `p_avail_next`, `p_avail_after_next`, and `opportunity_cost` given draft slot and league size.
   **Done when:** given a draft slot, the board shows sensible survival probabilities (near 1.0 for late-ADP players at an early pick, near 0 for the reverse) and `opportunity_cost` is populated.
@@ -202,5 +202,5 @@ Resolve these from `SPEC.md` §17. Several block Phase 0.
 
 - [x] League format confirmed from Sleeper (Open Decision #1) — blocks 0.6
 - [x] Ranking sources chosen, and which publish per-stat projections (#2) — blocks 0.7
-- [ ] Draft slot and date known (#5) — blocks 0.11
+- [x] Draft slot and date known (#5) — blocks 0.11. Slot 3 of 10, Aug 22 2026 (confirmed live: `draft.start_time` = 2026-08-23 01:00 UTC). This league trades draft picks and is a 1-keeper league — neither is in SPEC §9.6's plain-redraft model; see task 0.11's HANDOFF entry.
 - [ ] Waiver type and budget read from Sleeper (#6) — blocks 2.6

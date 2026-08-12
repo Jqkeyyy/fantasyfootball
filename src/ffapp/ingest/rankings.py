@@ -1027,6 +1027,109 @@ def normalize_fftoday(payload: dict[str, str], *, season: int) -> pl.DataFrame:
     return pl.DataFrame(rows, infer_schema_length=None)
 
 
+# --- ADP (FantasyFootballCalculator) ---------------------------------------
+
+# FantasyPros' own ADP page (fantasypros.com/nfl/adp/overall.php) renders its
+# full player table client-side -- the server response only SSRs a 5-row
+# teaser (confirmed live), the same "empty JS-mount shell" problem HANDOFF.md
+# §4 already hit with Sharp Football Analysis. FantasyFootballCalculator's
+# public JSON API has no such gap: real per-player ADP aggregated from actual
+# recent live drafts (not an editorial ranking), with `high`/`low`/`stdev`
+# already computed server-side -- better than SPEC §9.6's own high/low->sd
+# fallback formula, so `adp_sd` is taken directly rather than derived. No
+# auth, documented, widely used by other fantasy tools.
+FFC_URL_TEMPLATE = (
+    "https://fantasyfootballcalculator.com/api/v1/adp/{scoring}?teams={teams}&year={season}"
+)
+
+# FantasyFootballCalculator's own position codes -> this project's canonical
+# ones (same DEF->DST/PK->K aliasing FantasySharks' "PK" bucket already
+# needed).
+FFC_POSITION_MAP: dict[str, str] = {
+    "QB": "QB",
+    "RB": "RB",
+    "WR": "WR",
+    "TE": "TE",
+    "PK": "K",
+    "DEF": "DST",
+}
+
+
+def _get_ffc_json(season: int, teams: int, scoring: str) -> dict[str, Any]:
+    """Fetch FantasyFootballCalculator's ADP payload. The only network call
+    this function makes."""
+    response = _get_session().get(
+        FFC_URL_TEMPLATE.format(scoring=scoring, teams=teams, season=season), timeout=30
+    )
+    response.raise_for_status()
+    result: dict[str, Any] = response.json()
+    return result
+
+
+def fetch_adp(
+    season: int,
+    *,
+    teams: int,
+    scoring: str = "ppr",
+    offline: bool | None = None,
+    settings: Settings | None = None,
+) -> Path:
+    """Fetch consensus ADP (with spread) for `season` to
+    data/raw/rankings/adp_<season>_<teams>_<scoring>.json.
+
+    `teams` should be the league's own `LeagueFormat.n_teams` -- ADP shifts
+    materially with league size (a 10-team league's pick 100 sits in a very
+    different part of the player pool than a 12-team league's pick 100).
+    `scoring` defaults to "ppr" (FantasyFootballCalculator's own vocabulary:
+    standard/half-ppr/ppr) as the closest approximation to this project's
+    real leagues (both score a full point per reception) -- unlike
+    `apply_league_scoring`'s per-stat rescale, this is a coarse format
+    match, not a real rescore: ADP reflects actual human drafts across many
+    real league formats, not a single stat line this project can recompute.
+    """
+    settings = _resolve_settings(settings)
+    return _fetch_json(
+        filename=f"adp_{season}_{teams}_{scoring}.json",
+        call_desc=f"GET {FFC_URL_TEMPLATE.format(scoring=scoring, teams=teams, season=season)}",
+        cache_key="rankings_adp",
+        load=lambda: _get_ffc_json(season, teams, scoring),
+        row_count=lambda payload: len(payload.get("players", [])),
+        artifact="adp",
+        params=f"season={season} teams={teams} scoring={scoring}",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def normalize_adp(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
+    """Extract each player's consensus ADP + spread into the canonical
+    per-player ADP schema (`player_name`, `position`, `team`, `adp`,
+    `adp_sd`, `adp_high`, `adp_low`, `times_drafted`). Positions outside
+    `FFC_POSITION_MAP` (none in real payloads today, but a future site
+    change could add one) are dropped rather than guessed at.
+    """
+    rows: list[dict[str, Any]] = []
+    for player in payload.get("players", []):
+        position = FFC_POSITION_MAP.get(player.get("position"))
+        if position is None:
+            continue
+        rows.append(
+            {
+                "source": "fantasyfootballcalculator",
+                "season": season,
+                "player_name": player["name"],
+                "position": position,
+                "team": player.get("team"),
+                "adp": player["adp"],
+                "adp_sd": player["stdev"],
+                "adp_high": player["high"],
+                "adp_low": player["low"],
+                "times_drafted": player.get("times_drafted"),
+            }
+        )
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
 __all__ = [
     "CBS_POSITIONS",
     "CBS_URL_TEMPLATE",
@@ -1038,15 +1141,19 @@ __all__ = [
     "FANTASYPROS_URL",
     "FANTASYSHARKS_POS_BUCKETS",
     "FANTASYSHARKS_URL_TEMPLATE",
+    "FFC_POSITION_MAP",
+    "FFC_URL_TEMPLATE",
     "FFTODAY_POSITIONS",
     "FFTODAY_POS_ID",
     "FFTODAY_URL_TEMPLATE",
     "UnexpectedColumnLayoutError",
+    "fetch_adp",
     "fetch_cbs",
     "fetch_espn",
     "fetch_fantasypros",
     "fetch_fantasysharks",
     "fetch_fftoday",
+    "normalize_adp",
     "normalize_cbs",
     "normalize_espn",
     "normalize_fantasypros",

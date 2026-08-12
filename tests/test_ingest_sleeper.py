@@ -201,6 +201,18 @@ def test_fetch_draft_picks_writes_expected_path(
     assert path.name == "draft_picks_d1.json"
 
 
+def test_fetch_traded_picks_writes_expected_path(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    calls = []
+    monkeypatch.setattr(sleeper, "_get", lambda path: calls.append(path) or [])
+
+    path = sleeper.fetch_traded_picks("111", offline=False, settings=settings)
+
+    assert calls == ["/league/111/traded_picks"]
+    assert path.name == "traded_picks_111.json"
+
+
 def test_fetch_trending_writes_expected_path(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:

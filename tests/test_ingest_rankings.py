@@ -19,7 +19,7 @@ def settings(tmp_path: Path) -> Settings:
         cache=CacheSettings(
             root=tmp_path / "raw",
             offline_default=True,
-            staleness_hours={"rankings_espn": 24},
+            staleness_hours={"rankings_espn": 24, "rankings_adp": 24},
             warn_on_stale=True,
         ),
     )
@@ -1115,3 +1115,132 @@ def test_normalize_fftoday_raises_if_a_position_page_layout_changes() -> None:
 
     with pytest.raises(rankings.UnexpectedColumnLayoutError):
         rankings.normalize_fftoday({"QB": malformed_html}, season=2026)
+
+
+# --- fetch_adp / normalize_adp (FantasyFootballCalculator) -----------------
+
+FFC_FIXTURE_PAYLOAD = {
+    "status": "Success",
+    "meta": {"type": "PPR", "teams": 10, "rounds": 15},
+    "players": [
+        {
+            "player_id": 1,
+            "name": "Jahmyr Gibbs",
+            "position": "RB",
+            "team": "DET",
+            "adp": 1.8,
+            "adp_formatted": "1.02",
+            "times_drafted": 1176,
+            "high": 1,
+            "low": 4,
+            "stdev": 0.8,
+            "bye": 6,
+        },
+        {
+            "player_id": 2,
+            "name": "Denver Defense",
+            "position": "DEF",
+            "team": "DEN",
+            "adp": 94.3,
+            "adp_formatted": "10.04",
+            "times_drafted": 243,
+            "high": 68,
+            "low": 114,
+            "stdev": 9.8,
+            "bye": 10,
+        },
+        {
+            "player_id": 3,
+            "name": "Some Kicker",
+            "position": "PK",
+            "team": "SF",
+            "adp": 150.0,
+            "adp_formatted": "15.10",
+            "times_drafted": 50,
+            "high": 130,
+            "low": 170,
+            "stdev": 8.0,
+            "bye": 9,
+        },
+    ],
+}
+
+
+def test_fetch_adp_online_writes_raw_json_and_sidecar(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        rankings,
+        "_get_ffc_json",
+        lambda season, teams, scoring: (
+            calls.append((season, teams, scoring)) or FFC_FIXTURE_PAYLOAD
+        ),
+    )
+
+    path = rankings.fetch_adp(2026, teams=10, offline=False, settings=settings)
+
+    assert calls == [(2026, 10, "ppr")]
+    assert path.name == "adp_2026_10_ppr.json"
+    assert json.loads(path.read_text()) == FFC_FIXTURE_PAYLOAD
+    meta = json.loads(sidecar_path(path).read_text())
+    assert meta["source"] == "rankings"
+    assert meta["cache_key"] == "rankings_adp"
+    assert meta["rows"] == 3
+
+
+def test_fetch_adp_offline_without_cache_raises_offline_cache_miss(
+    settings: Settings,
+) -> None:
+    with pytest.raises(OfflineCacheMiss) as exc_info:
+        rankings.fetch_adp(2026, teams=10, offline=True, settings=settings)
+
+    message = str(exc_info.value)
+    assert "rankings" in message
+    assert "season=2026" in message
+    assert "teams=10" in message
+
+
+def test_normalize_adp_maps_positions_and_carries_spread_columns() -> None:
+    df = rankings.normalize_adp(FFC_FIXTURE_PAYLOAD, season=2026)
+
+    assert df.height == 3
+    gibbs = df.filter(pl.col("player_name") == "Jahmyr Gibbs").row(0, named=True)
+    assert gibbs["position"] == "RB"
+    assert gibbs["team"] == "DET"
+    assert gibbs["season"] == 2026
+    assert gibbs["adp"] == 1.8
+    assert gibbs["adp_sd"] == 0.8
+    assert gibbs["adp_high"] == 1
+    assert gibbs["adp_low"] == 4
+    assert gibbs["times_drafted"] == 1176
+
+    dst = df.filter(pl.col("player_name") == "Denver Defense").row(0, named=True)
+    assert dst["position"] == "DST"  # DEF -> DST
+
+    kicker = df.filter(pl.col("player_name") == "Some Kicker").row(0, named=True)
+    assert kicker["position"] == "K"  # PK -> K
+
+
+def test_normalize_adp_drops_unknown_positions() -> None:
+    payload = {
+        "players": [
+            *FFC_FIXTURE_PAYLOAD["players"],
+            {
+                "player_id": 4,
+                "name": "Some Punter",
+                "position": "PN",
+                "team": "SF",
+                "adp": 200.0,
+                "times_drafted": 5,
+                "high": 190,
+                "low": 210,
+                "stdev": 3.0,
+            },
+        ]
+    }
+
+    df = rankings.normalize_adp(payload, season=2026)
+
+    assert df.height == 3
+    assert "Some Punter" not in df["player_name"].to_list()
