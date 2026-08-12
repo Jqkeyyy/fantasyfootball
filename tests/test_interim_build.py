@@ -34,6 +34,11 @@ def _pbp_row(**kwargs: object) -> dict:
         "drive_quarter_start": 1.0,
         "drive_time_of_possession": "2:00",
         "drive_play_count": 5.0,
+        # task 1.8: QB_passing is passer-scoped, not receiver-scoped.
+        "passer_player_id": None,
+        "yards_gained": 0.0,
+        "touchdown": 0,
+        "posteam_type": "home",
     }
     row.update(kwargs)
     if row["pass"] is None:
@@ -42,12 +47,18 @@ def _pbp_row(**kwargs: object) -> dict:
 
 
 def _pbp(rows: list[dict]) -> pl.DataFrame:
-    """Real nflverse pbp always types receiver_player_id/rusher_player_id as
-    Utf8 -- a small fixture where one of them is None in every row would
-    otherwise get inferred as Null dtype, breaking the join against a real
-    Utf8 column downstream. Force the real dtype explicitly."""
+    """Real nflverse pbp always types receiver_player_id/rusher_player_id/
+    passer_player_id as Utf8 -- a small fixture where one of them is None
+    in every row would otherwise get inferred as Null dtype, breaking the
+    join against a real Utf8 column downstream. Force the real dtype
+    explicitly."""
     return pl.DataFrame(
-        rows, schema_overrides={"receiver_player_id": pl.Utf8, "rusher_player_id": pl.Utf8}
+        rows,
+        schema_overrides={
+            "receiver_player_id": pl.Utf8,
+            "rusher_player_id": pl.Utf8,
+            "passer_player_id": pl.Utf8,
+        },
     )
 
 
@@ -679,13 +690,30 @@ def test_player_position_by_season_takes_the_players_own_position() -> None:
 
 
 def test_build_defense_position_allowed_counts_plays_by_position_group() -> None:
+    """QB_passing is passer-scoped (task 1.8 fix), not receiver-scoped --
+    a real pass play contributes to *both* its receiver's own group (WR/
+    TE/RB_receiving) *and* QB_passing, since they're different signals
+    over an overlapping population (the receiver-specific defensive
+    effect vs. the defense's overall effect on the passer). A sack (real
+    pass attempt, no receiver_player_id at all) still counts toward
+    QB_passing -- it's a real pass-defense outcome the receiver-scoped
+    groups can never see."""
     pbp = _pbp(
         [
-            _pbp_row(play_type="pass", receiver_player_id="wr1", defteam="BAL"),
-            _pbp_row(play_type="pass", receiver_player_id="te1", defteam="BAL"),
+            _pbp_row(
+                play_type="pass", receiver_player_id="wr1", passer_player_id="qb1", defteam="BAL"
+            ),
+            _pbp_row(
+                play_type="pass", receiver_player_id="te1", passer_player_id="qb1", defteam="BAL"
+            ),
             _pbp_row(play_type="run", rusher_player_id="rb1", defteam="BAL"),
             _pbp_row(play_type="run", rusher_player_id="qb1", defteam="BAL"),
-            _pbp_row(play_type="pass", receiver_player_id="rb1", defteam="BAL"),
+            _pbp_row(
+                play_type="pass", receiver_player_id="rb1", passer_player_id="qb1", defteam="BAL"
+            ),
+            _pbp_row(  # sack: no receiver, still a real pass attempt
+                play_type="pass", receiver_player_id=None, passer_player_id="qb1", defteam="BAL"
+            ),
         ]
     )
     player_stats = pl.DataFrame(
@@ -700,7 +728,41 @@ def test_build_defense_position_allowed_counts_plays_by_position_group() -> None
     result = build.build_defense_position_allowed(pbp, player_stats)
 
     groups = {row["position_group"]: row["n_plays"] for row in result.iter_rows(named=True)}
-    assert groups == {"WR": 1, "TE": 1, "RB_rushing": 1, "QB_rushing": 1, "RB_receiving": 1}
+    assert groups == {
+        "WR": 1,
+        "TE": 1,
+        "RB_rushing": 1,
+        "QB_rushing": 1,
+        "RB_receiving": 1,
+        "QB_passing": 4,
+    }
+
+
+def test_build_defense_position_allowed_excludes_a_non_qb_passer_from_qb_passing() -> None:
+    """A trick-play pass thrown by a non-QB (e.g. a WR halfback pass) is a
+    real pass attempt, but it isn't what QB_passing means -- confirmed:
+    only resolves to QB_passing when the passer's own resolved position
+    is QB."""
+    pbp = _pbp(
+        [
+            _pbp_row(
+                play_type="pass", receiver_player_id="wr2", passer_player_id="wr1", defteam="BAL"
+            )
+        ]
+    )
+    player_stats = pl.DataFrame(
+        {
+            "player_id": ["wr1", "wr2"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "position": ["WR", "WR"],
+        }
+    )
+
+    result = build.build_defense_position_allowed(pbp, player_stats)
+
+    groups = {row["position_group"] for row in result.iter_rows(named=True)}
+    assert "QB_passing" not in groups
 
 
 def test_build_defense_position_allowed_leaves_adjusted_columns_null() -> None:
@@ -730,6 +792,183 @@ def test_build_defense_position_allowed_drops_plays_with_no_position_match() -> 
     result = build.build_defense_position_allowed(pbp, player_stats)
 
     assert result.height == 0
+
+
+# --- add_opponent_adjustment (task 1.8) -----------------------------------------------
+
+
+def _opp_wr_play(season: int, week: int, posteam: str, defteam: str, epa: float) -> dict:
+    """A single real WR target -- epa drives the other three rate
+    outcomes deterministically (success/touchdown as epa thresholds,
+    yards_gained proportional) so one lever tests all four adj_* columns
+    consistently."""
+    return _pbp_row(
+        season=season,
+        week=week,
+        posteam=posteam,
+        defteam=defteam,
+        play_type="pass",
+        receiver_player_id="wr1",
+        rusher_player_id=None,
+        passer_player_id=None,
+        epa=epa,
+        success=1 if epa > 0.5 else 0,
+        yards_gained=epa * 10.0,
+        touchdown=1 if epa > 1.0 else 0,
+    )
+
+
+def _wr_player_stats(seasons: list[int]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player_id": ["wr1"] * len(seasons),
+            "season": seasons,
+            "week": [1] * len(seasons),
+            "position": ["WR"] * len(seasons),
+        }
+    )
+
+
+def _balanced_wr_plays(
+    season: int, n_weeks: int, good_epa: float, bad_epa: float, offenses: list[str]
+) -> list[dict]:
+    """Every offense plays both "GOOD" and "BAD" once per week, with a
+    small deterministic per-offense delta so the design isn't perfectly
+    degenerate (still fully deterministic -- no randomness)."""
+    rows = []
+    for week in range(1, n_weeks + 1):
+        for i, off in enumerate(offenses):
+            delta = 0.2 if i % 2 == 0 else -0.2
+            rows.append(_opp_wr_play(season, week, off, "GOOD", good_epa + delta))
+            rows.append(_opp_wr_play(season, week, off, "BAD", bad_epa + delta))
+    return rows
+
+
+_OFFENSES = ["OFF1", "OFF2", "OFF3"]
+
+
+def test_add_opponent_adjustment_ranks_a_worse_defense_higher_on_all_four_outcomes() -> None:
+    """No prior season exists (2024 is the only season in the input), so
+    week 11's estimate is the current-season ridge fit alone (10 full
+    trailing weeks) -- isolates the ridge-fit-and-extract logic from the
+    shrinkage blend."""
+    plays = _balanced_wr_plays(2024, n_weeks=11, good_epa=0.0, bad_epa=1.0, offenses=_OFFENSES)
+    pbp = _pbp(plays)
+    player_stats = _wr_player_stats([2024])
+    dpa = build.build_defense_position_allowed(pbp, player_stats)
+
+    result = build.add_opponent_adjustment(dpa, pbp, player_stats)
+
+    rows = {
+        row["defteam"]: row
+        for row in result.filter(
+            (pl.col("season") == 2024) & (pl.col("week") == 11) & (pl.col("position_group") == "WR")
+        ).iter_rows(named=True)
+    }
+    assert rows["BAD"]["adj_epa_allowed"] > rows["GOOD"]["adj_epa_allowed"]
+    assert rows["BAD"]["adj_success_allowed"] > rows["GOOD"]["adj_success_allowed"]
+    assert rows["BAD"]["adj_ypt_allowed"] > rows["GOOD"]["adj_ypt_allowed"]
+    assert rows["BAD"]["adj_td_rate_allowed"] > rows["GOOD"]["adj_td_rate_allowed"]
+
+
+def test_add_opponent_adjustment_is_null_with_no_trailing_data_and_no_prior_season() -> None:
+    """Season 2024's own week 1: no current-season trailing weeks (week 1
+    is the season's first) and no prior season in the input (2024 is the
+    first tracked season) -- nothing to estimate from, same precedent as
+    task 1.7's proe for the identical reason."""
+    plays = [_opp_wr_play(2024, 1, off, d, 0.5) for off in _OFFENSES for d in ("GOOD", "BAD")]
+    pbp = _pbp(plays)
+    player_stats = _wr_player_stats([2024])
+    dpa = build.build_defense_position_allowed(pbp, player_stats)
+
+    result = build.add_opponent_adjustment(dpa, pbp, player_stats)
+
+    row = result.filter((pl.col("season") == 2024) & (pl.col("week") == 1)).row(0, named=True)
+    assert row["adj_epa_allowed"] is None
+    assert row["adj_success_allowed"] is None
+    assert row["adj_ypt_allowed"] is None
+    assert row["adj_td_rate_allowed"] is None
+
+
+def test_add_opponent_adjustment_week_one_equals_the_prior_season_fit_exactly() -> None:
+    """A new season's own week 1 has zero current-season trailing plays
+    (w=0 for every team), so the blended estimate should equal the
+    separately-fit prior-season estimate exactly -- verified against
+    `_ridge_defense_coefficients` called directly on the same 2024 data,
+    not a hand-derived number (this test is about the fallback *wiring*,
+    not re-verifying ridge regression's own arithmetic)."""
+    prior_plays = _balanced_wr_plays(
+        2024, n_weeks=10, good_epa=0.0, bad_epa=1.0, offenses=_OFFENSES
+    )
+    week1_plays = [_opp_wr_play(2025, 1, off, d, 0.5) for off in _OFFENSES for d in ("GOOD", "BAD")]
+    pbp = _pbp(prior_plays + week1_plays)
+    player_stats = _wr_player_stats([2024, 2025])
+    dpa = build.build_defense_position_allowed(pbp, player_stats)
+
+    result = build.add_opponent_adjustment(dpa, pbp, player_stats)
+
+    prior_group_plays = build._position_group_plays(pbp, player_stats).filter(
+        (pl.col("season") == 2024) & (pl.col("position_group") == "WR")
+    )
+    expected = build._ridge_defense_coefficients(prior_group_plays)
+
+    row = result.filter(
+        (pl.col("season") == 2025)
+        & (pl.col("week") == 1)
+        & (pl.col("position_group") == "WR")
+        & (pl.col("defteam") == "GOOD")
+    ).row(0, named=True)
+    assert row["adj_epa_allowed"] == pytest.approx(expected["GOOD"]["epa"])
+    assert row["adj_success_allowed"] == pytest.approx(expected["GOOD"]["success"])
+    assert row["adj_ypt_allowed"] == pytest.approx(expected["GOOD"]["yards_gained"])
+    assert row["adj_td_rate_allowed"] == pytest.approx(expected["GOOD"]["touchdown"])
+
+
+def test_add_opponent_adjustment_blends_toward_a_flipped_current_season_signal() -> None:
+    """2024 (prior): GOOD is the better defense. 2025 (current): the roles
+    flip -- GOOD becomes genuinely worse. Week 1 of 2025 has zero trailing
+    2025 data, so it's pure prior (GOOD still looks good). By week 11 (10
+    trailing weeks of the flipped signal blended in), the estimate should
+    have moved toward the new reality, even though k=250 means it's nowhere
+    near fully converged at this small a trailing sample -- this is a
+    directional shrinkage check, not a magnitude one."""
+    prior_plays = _balanced_wr_plays(
+        2024, n_weeks=10, good_epa=0.0, bad_epa=1.0, offenses=_OFFENSES
+    )
+    flipped_plays = _balanced_wr_plays(
+        2025, n_weeks=11, good_epa=2.0, bad_epa=-1.0, offenses=_OFFENSES
+    )
+    pbp = _pbp(prior_plays + flipped_plays)
+    player_stats = _wr_player_stats([2024, 2025])
+    dpa = build.build_defense_position_allowed(pbp, player_stats)
+
+    result = build.add_opponent_adjustment(dpa, pbp, player_stats)
+
+    week1 = result.filter(
+        (pl.col("season") == 2025) & (pl.col("week") == 1) & (pl.col("defteam") == "GOOD")
+    ).row(0, named=True)
+    week11 = result.filter(
+        (pl.col("season") == 2025) & (pl.col("week") == 11) & (pl.col("defteam") == "GOOD")
+    ).row(0, named=True)
+
+    assert week11["adj_epa_allowed"] > week1["adj_epa_allowed"]
+
+
+# --- _shrinkage_weight ------------------------------------------------------------------
+
+
+def test_shrinkage_weight_is_zero_with_no_plays() -> None:
+    assert build._shrinkage_weight(0) == 0.0
+
+
+def test_shrinkage_weight_increases_with_more_plays() -> None:
+    assert (
+        build._shrinkage_weight(10) < build._shrinkage_weight(100) < build._shrinkage_weight(1000)
+    )
+
+
+def test_shrinkage_weight_approaches_one_for_large_n() -> None:
+    assert build._shrinkage_weight(1_000_000) == pytest.approx(1.0, abs=1e-3)
 
 
 # --- _snap_counts_by_player_id -----------------------------------------------------

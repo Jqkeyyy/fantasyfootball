@@ -36,8 +36,9 @@ missing one:
   actual home-away score margin, and the extreme cases are unambiguous --
   positive `spread_line` means the home team is favoured by that many
   points, confirming SPEC's own stated assumption.
-- `defense_position_allowed.adj_*` -- task 1.8 ("Opponent adjustment");
-  needs the real ridge-regression/shrinkage model, not raw allowed rates.
+- `defense_position_allowed.adj_*` *are* populated now (task 1.8,
+  `add_opponent_adjustment`) -- see that function's own docstring for the
+  walk-forward/shrinkage design.
 - `defense_position_allowed`'s position groups collapse `WR_perimeter`/
   `WR_slot` into one undifferentiated `WR` -- splitting by alignment needs
   the same missing NGS/FTN charting data as the route_participation gap
@@ -46,8 +47,9 @@ missing one:
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 
 from ffapp.scoring.stats import build_stat_frame
 
@@ -80,16 +82,20 @@ _PROE_DOWNS = (1.0, 2.0, 3.0, 4.0)
 # ffopportunity correctly has no data for.
 SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
 
-# (position, play_type) -> SPEC §6.2's defense_position_allowed group.
-# WR_perimeter/WR_slot collapsed to "WR" -- see module docstring.
-_POSITION_GROUP_MAP = {
-    ("QB", "pass"): "QB_passing",
-    ("QB", "run"): "QB_rushing",
-    ("RB", "run"): "RB_rushing",
+# (receiver position, play_type) -> SPEC §6.2's defense_position_allowed
+# group. WR_perimeter/WR_slot collapsed to "WR" -- see module docstring.
+# QB_passing is deliberately *not* here -- see _passer_scoped_plays.
+_RECEIVER_POSITION_GROUP_MAP = {
     ("RB", "pass"): "RB_receiving",
     ("TE", "pass"): "TE",
     ("WR", "pass"): "WR",
 }
+# (rusher position, play_type) -> group.
+_RUSHER_POSITION_GROUP_MAP = {
+    ("QB", "run"): "QB_rushing",
+    ("RB", "run"): "RB_rushing",
+}
+QB_PASSING_GROUP = "QB_passing"
 
 
 def build_player_week_stats(
@@ -421,44 +427,7 @@ def build_defense_position_allowed(pbp: pl.DataFrame, player_stats: pl.DataFrame
     version: `n_plays` per (defteam, season, week, position_group), from
     real play-by-play. `adj_*` columns stay null -- see module docstring.
     """
-    positions = _player_position_by_season(player_stats)
-    plays = _scrimmage_plays(pbp)
-
-    pass_plays = (
-        plays.filter((pl.col("play_type") == "pass") & pl.col("receiver_player_id").is_not_null())
-        .join(
-            positions.rename({"player_id": "receiver_player_id"}),
-            on=["receiver_player_id", "season"],
-            how="left",
-        )
-        .with_columns(pl.lit("pass").alias("_play_kind"))
-    )
-    rush_plays = (
-        plays.filter((pl.col("play_type") == "run") & pl.col("rusher_player_id").is_not_null())
-        .join(
-            positions.rename({"player_id": "rusher_player_id"}),
-            on=["rusher_player_id", "season"],
-            how="left",
-        )
-        .with_columns(pl.lit("run").alias("_play_kind"))
-    )
-
-    combined = pl.concat(
-        [
-            pass_plays.select("season", "week", "defteam", "position", "_play_kind"),
-            rush_plays.select("season", "week", "defteam", "position", "_play_kind"),
-        ],
-        how="vertical_relaxed",
-    )
-
-    with_group = combined.with_columns(
-        pl.struct(["position", "_play_kind"])
-        .map_elements(
-            lambda s: _POSITION_GROUP_MAP.get((s["position"], s["_play_kind"])),
-            return_dtype=pl.Utf8,
-        )
-        .alias("position_group")
-    ).filter(pl.col("position_group").is_not_null())
+    with_group = _position_group_plays(pbp, player_stats)
 
     return (
         with_group.group_by(["defteam", "season", "week", "position_group"])
@@ -480,6 +449,307 @@ def build_defense_position_allowed(pbp: pl.DataFrame, player_stats: pl.DataFrame
             "adj_td_rate_allowed",
             "n_plays",
         )
+    )
+
+
+_POSITION_GROUP_PLAY_COLUMNS = (
+    "season",
+    "week",
+    "posteam",
+    "defteam",
+    "position_group",
+    "epa",
+    "success",
+    "yards_gained",
+    "touchdown",
+    "home",
+)
+
+
+def _receiver_scoped_plays(plays: pl.DataFrame, positions: pl.DataFrame) -> pl.DataFrame:
+    """WR/TE/RB_receiving: one row per real target, grouped by the
+    *receiver's* own position -- a defense's differential effect on plays
+    where the ball actually went to a given position group."""
+    return (
+        plays.filter((pl.col("play_type") == "pass") & pl.col("receiver_player_id").is_not_null())
+        .join(
+            positions.rename({"player_id": "receiver_player_id"}),
+            on=["receiver_player_id", "season"],
+            how="left",
+        )
+        .with_columns(
+            pl.struct(["position"])
+            .map_elements(
+                lambda s: _RECEIVER_POSITION_GROUP_MAP.get((s["position"], "pass")),
+                return_dtype=pl.Utf8,
+            )
+            .alias("position_group")
+        )
+    )
+
+
+def _rusher_scoped_plays(plays: pl.DataFrame, positions: pl.DataFrame) -> pl.DataFrame:
+    """QB_rushing/RB_rushing: one row per real carry, grouped by the
+    *rusher's* own position (a QB scramble/designed run is a real QB_rushing
+    play; a QB kneel is excluded upstream by `_scrimmage_plays`'s own
+    pass/run scoping only in the sense that kneels are still `play_type ==
+    "run"` -- not filtered here, since defense_position_allowed has no
+    reason to exclude a real clock-killing snap the way proe's baseline
+    model does)."""
+    return (
+        plays.filter((pl.col("play_type") == "run") & pl.col("rusher_player_id").is_not_null())
+        .join(
+            positions.rename({"player_id": "rusher_player_id"}),
+            on=["rusher_player_id", "season"],
+            how="left",
+        )
+        .with_columns(
+            pl.struct(["position"])
+            .map_elements(
+                lambda s: _RUSHER_POSITION_GROUP_MAP.get((s["position"], "run")),
+                return_dtype=pl.Utf8,
+            )
+            .alias("position_group")
+        )
+    )
+
+
+def _passer_scoped_plays(plays: pl.DataFrame, positions: pl.DataFrame) -> pl.DataFrame:
+    """QB_passing (task 1.8 fix): one row per real pass *attempt* -- not
+    joined on the intended receiver's position, which almost never
+    resolves to "QB" (confirmed live: only 123 real plays across the full
+    2015-2025 range under the old receiver-based join, versus 118k-132k
+    for every other group). Joined on the *passer's* own position instead,
+    scoped to real pass attempts with a resolvable `passer_player_id` --
+    a broader population than the receiver-scoped groups, since a sack has
+    no `receiver_player_id` at all but is still a real pass-defense
+    outcome (heavily negative EPA) that QB_passing should capture.
+    Deliberately overlaps the receiver-scoped groups: a single completed
+    pass to a WR contributes to *both* "WR" (the receiver-specific signal)
+    and "QB_passing" (the defense's overall effect on the passer) -- two
+    different signals over intersecting populations, not a partition.
+    """
+    return (
+        plays.filter((pl.col("play_type") == "pass") & pl.col("passer_player_id").is_not_null())
+        .join(
+            positions.rename({"player_id": "passer_player_id"}),
+            on=["passer_player_id", "season"],
+            how="left",
+        )
+        .filter(pl.col("position") == "QB")
+        .with_columns(pl.lit(QB_PASSING_GROUP).alias("position_group"))
+    )
+
+
+def _position_group_plays(pbp: pl.DataFrame, player_stats: pl.DataFrame) -> pl.DataFrame:
+    """The real per-play population behind both `n_plays`
+    (`build_defense_position_allowed`) and the ridge opponent-adjustment
+    fit (task 1.8) -- computed once here so the two can never drift apart
+    on which plays actually count for a given position_group.
+    """
+    positions = _player_position_by_season(player_stats)
+    plays = _scrimmage_plays(pbp).with_columns(
+        (pl.col("posteam_type") == "home").cast(pl.Float64).alias("home")
+    )
+
+    combined = pl.concat(
+        [
+            _receiver_scoped_plays(plays, positions),
+            _rusher_scoped_plays(plays, positions),
+            _passer_scoped_plays(plays, positions),
+        ],
+        how="vertical_relaxed",
+    )
+    return (
+        combined.filter(pl.col("position_group").is_not_null())
+        .select(*_POSITION_GROUP_PLAY_COLUMNS)
+        # task 1.8: the ridge fit needs every outcome column populated --
+        # a stray null (rare; hasn't been confirmed in real data) would
+        # otherwise reach numpy as NaN and silently poison an entire fit.
+        .drop_nulls(["epa", "success", "yards_gained", "touchdown", "home"])
+    )
+
+
+OPPONENT_ADJUSTMENT_SHRINKAGE_K = 250.0
+OPPONENT_ADJUSTMENT_RECENCY_SPAN = 8
+RIDGE_ALPHA = 1.0
+_RATE_OUTCOMES = ("epa", "success", "yards_gained", "touchdown")
+_RATE_OUTCOME_ADJ_COLUMNS = {
+    "epa": "adj_epa_allowed",
+    "success": "adj_success_allowed",
+    "yards_gained": "adj_ypt_allowed",
+    "touchdown": "adj_td_rate_allowed",
+}
+
+
+def _recency_weights(as_of_week: int, play_weeks: pl.Series, span: int) -> np.ndarray:
+    """Exponential recency weight, span `span` -- same span semantics as
+    `features.usage.ewm`'s `.ewm_mean(span=k)` (`alpha = 2/(k+1)`), applied
+    manually here since sklearn's `Ridge.fit` takes a plain
+    `sample_weight` array, not a polars ewm expression. A play `L` weeks
+    before `as_of_week` gets weight `(1-alpha)**L` -- defences change
+    through a season (injuries, coordinator adjustments), so a play from
+    8 weeks ago should count for much less than one from last week."""
+    alpha = 2.0 / (span + 1)
+    weeks_ago = (as_of_week - play_weeks).to_numpy()
+    return (1.0 - alpha) ** weeks_ago
+
+
+def _ridge_defense_coefficients(
+    plays: pl.DataFrame, sample_weight: np.ndarray | None = None
+) -> dict[str, dict[str, float]]:
+    """SPEC §10.4's formula, literally: `y = mu + offense_team +
+    defense_team + home + eps`, ridge-regularised, one-hot team factors,
+    fit once across all 4 rate outcomes simultaneously (`Ridge` supports a
+    multi-output `y`, since every outcome shares the same design matrix --
+    a single `.fit()` call rather than 4). Ridge's own L2 penalty handles
+    the intercept/one-hot collinearity without needing to drop a reference
+    team the way plain OLS would.
+
+    Returns `{defteam: {outcome: coefficient}}` -- the fitted
+    `defense_team` block of the coefficient matrix, which SPEC calls "the
+    opponent-adjusted values" directly. A team that never appears in
+    `plays` has no entry (not a 0.0 -- see `add_opponent_adjustment`'s own
+    per-team shrinkage handling for why that distinction matters).
+    """
+    offense_teams = sorted(plays["posteam"].unique().to_list())
+    defense_teams = sorted(plays["defteam"].unique().to_list())
+
+    offense_cols = [
+        (pl.col("posteam") == team).cast(pl.Float64).alias(f"_off_{i}")
+        for i, team in enumerate(offense_teams)
+    ]
+    defense_cols = [
+        (pl.col("defteam") == team).cast(pl.Float64).alias(f"_def_{i}")
+        for i, team in enumerate(defense_teams)
+    ]
+    design = plays.select(*offense_cols, *defense_cols, "home")
+    x = design.to_numpy()
+    y = plays.select(list(_RATE_OUTCOMES)).to_numpy()
+
+    model = Ridge(alpha=RIDGE_ALPHA)
+    model.fit(x, y, sample_weight=sample_weight)
+
+    n_offense = len(offense_teams)
+    defense_block = model.coef_[:, n_offense : n_offense + len(defense_teams)]
+
+    return {
+        team: {outcome: float(defense_block[i, j]) for i, outcome in enumerate(_RATE_OUTCOMES)}
+        for j, team in enumerate(defense_teams)
+    }
+
+
+def _team_n_plays(plays: pl.DataFrame) -> dict[str, int]:
+    return dict(plays.group_by("defteam").agg(pl.len().alias("n")).iter_rows())
+
+
+def _shrinkage_weight(n_plays: int, k: float = OPPONENT_ADJUSTMENT_SHRINKAGE_K) -> float:
+    """SPEC §10.4's empirical-Bayes blend weight: `w = n_plays / (n_plays
+    + k)`. `w=0` with no trailing data (pure prior-season estimate);
+    approaches 1 as trailing volume grows large relative to `k`."""
+    return n_plays / (n_plays + k)
+
+
+def add_opponent_adjustment(
+    defense_position_allowed: pl.DataFrame, pbp: pl.DataFrame, player_stats: pl.DataFrame
+) -> pl.DataFrame:
+    """Task 1.8, SPEC §10.4: fills in `defense_position_allowed.parquet`'s
+    `adj_epa_allowed`/`adj_success_allowed`/`adj_ypt_allowed`/
+    `adj_td_rate_allowed` (null since task 1.1).
+
+    Walk-forward per (position_group, season, week): the "current-season"
+    ridge estimate is fit only on that season's *strictly prior* weeks
+    (never the target week itself or later -- the as_of contract), with
+    exponential recency weighting (`_recency_weights`, span 8). This is
+    blended with a *separately* fit prior-season estimate (one ridge fit
+    per (position_group, season) using that whole season's plays) via
+    SPEC's own shrinkage formula: `w = n_plays / (n_plays + k)`, `k=250`,
+    where `n_plays` is that specific *team's* own trailing play count in
+    the current season so far -- not the group-wide total, so a defense
+    that's individually thin on data (bye weeks, a short trailing window)
+    shrinks harder even mid-season while its opponents don't.
+
+    A team with zero current-season trailing plays (every season's own
+    week 1, or a team missing from the ridge fit entirely) gets `w=0` --
+    the estimate is the prior-season value alone. A team with no
+    prior-season estimate either (the first tracked season, 2015, or a
+    team that didn't exist last season) falls back to the current-season
+    estimate alone once one exists, and stays honestly null before that
+    (season 2015's own week 1: no prior season, no current-season trailing
+    data -- nothing to estimate from, same precedent as task 1.7's `proe`
+    for the same reason).
+    """
+    plays = _position_group_plays(pbp, player_stats)
+
+    prior_season_fits: dict[tuple[str, int], dict[str, dict[str, float]]] = {}
+    for position_group in plays["position_group"].unique().sort().to_list():
+        group_plays = plays.filter(pl.col("position_group") == position_group)
+        for season in group_plays["season"].unique().sort().to_list():
+            season_plays = group_plays.filter(pl.col("season") == season)
+            prior_season_fits[(position_group, season)] = _ridge_defense_coefficients(season_plays)
+
+    rows: list[dict[str, object]] = []
+    for position_group in plays["position_group"].unique().sort().to_list():
+        group_plays = plays.filter(pl.col("position_group") == position_group)
+        for season in group_plays["season"].unique().sort().to_list():
+            season_plays = group_plays.filter(pl.col("season") == season)
+            prior_estimate = prior_season_fits.get((position_group, season - 1))
+
+            for week in season_plays["week"].unique().sort().to_list():
+                trailing = season_plays.filter(pl.col("week") < week)
+                current_estimate: dict[str, dict[str, float]] | None = None
+                n_plays_by_team: dict[str, int] = {}
+                if trailing.height > 0:
+                    n_plays_by_team = _team_n_plays(trailing)
+                    weights = _recency_weights(
+                        week, trailing["week"], OPPONENT_ADJUSTMENT_RECENCY_SPAN
+                    )
+                    current_estimate = _ridge_defense_coefficients(trailing, sample_weight=weights)
+
+                teams = set(n_plays_by_team) | (set(prior_estimate) if prior_estimate else set())
+                for team in teams:
+                    n = n_plays_by_team.get(team, 0)
+                    w = _shrinkage_weight(n)
+                    cur_team = current_estimate.get(team) if current_estimate else None
+                    pri_team = prior_estimate.get(team) if prior_estimate else None
+
+                    row: dict[str, object] = {
+                        "defteam": team,
+                        "season": season,
+                        "week": week,
+                        "position_group": position_group,
+                    }
+                    for outcome, col in _RATE_OUTCOME_ADJ_COLUMNS.items():
+                        cur = cur_team.get(outcome) if cur_team else None
+                        pri = pri_team.get(outcome) if pri_team else None
+                        if cur is None and pri is None:
+                            adj = None
+                        elif pri is None:
+                            adj = cur
+                        elif cur is None:
+                            adj = pri
+                        else:
+                            adj = w * cur + (1 - w) * pri
+                        row[col] = adj
+                    rows.append(row)
+
+    # season/week must match `defense_position_allowed`'s own real dtypes
+    # exactly (Int32 in real nflverse-derived data) -- a mismatched-width
+    # join key doesn't error in polars, it just silently matches zero rows
+    # (the same footgun task 1.2's ff_opportunity join already hit once).
+    schema: dict[str, pl.DataType | type[pl.DataType]] = {
+        "defteam": pl.Utf8,
+        "season": defense_position_allowed.schema["season"],
+        "week": defense_position_allowed.schema["week"],
+        "position_group": pl.Utf8,
+        **{col: pl.Float64 for col in _RATE_OUTCOME_ADJ_COLUMNS.values()},
+    }
+    adjustments = pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+
+    return (
+        defense_position_allowed.drop(list(_RATE_OUTCOME_ADJ_COLUMNS.values()))
+        .join(adjustments, on=["defteam", "season", "week", "position_group"], how="left")
+        .select(defense_position_allowed.columns)
     )
 
 
@@ -804,11 +1074,16 @@ __all__ = [
     "INJURY_REPORT_LAG_DAYS",
     "NEUTRAL_SCRIPT_QUARTERS",
     "NEUTRAL_SCRIPT_SCORE_MARGIN",
+    "OPPONENT_ADJUSTMENT_RECENCY_SPAN",
+    "OPPONENT_ADJUSTMENT_SHRINKAGE_K",
+    "QB_PASSING_GROUP",
     "RED_ZONE_YARDLINE",
+    "RIDGE_ALPHA",
     "SCORE_DIFFERENTIAL_CAP",
     "SKILL_POSITIONS",
     "YDSTOGO_CAP",
     "add_neutral_pace",
+    "add_opponent_adjustment",
     "add_proe",
     "add_schedule_context",
     "add_xfp",
