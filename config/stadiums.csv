@@ -1,0 +1,45 @@
+stadium_id,name,city,lat,lon,tz,dome
+ATL00,Georgia Dome,Atlanta GA,33.7573,-84.4006,America/New_York,true
+ATL97,Mercedes-Benz Stadium,Atlanta GA,33.7554,-84.4008,America/New_York,true
+BAL00,M&T Bank Stadium,Baltimore MD,39.2780,-76.6227,America/New_York,false
+BOS00,Gillette Stadium,Foxborough MA,42.0909,-71.2643,America/New_York,false
+BUF00,Highmark Stadium,Orchard Park NY,42.7738,-78.7870,America/New_York,false
+CAR00,Bank of America Stadium,Charlotte NC,35.2258,-80.8528,America/New_York,false
+CHI98,Soldier Field,Chicago IL,41.8623,-87.6167,America/Chicago,false
+CIN00,Paycor Stadium,Cincinnati OH,39.0955,-84.5160,America/New_York,false
+CLE00,Cleveland Browns Stadium,Cleveland OH,41.5061,-81.6995,America/New_York,false
+DAL00,AT&T Stadium,Arlington TX,32.7473,-97.0945,America/Chicago,true
+DEN00,Empower Field at Mile High,Denver CO,39.7439,-105.0201,America/Denver,false
+DET00,Ford Field,Detroit MI,42.3400,-83.0456,America/Detroit,true
+FRA00,Deutsche Bank Park,Frankfurt Germany,50.0685,8.6455,Europe/Berlin,false
+GER00,Allianz Arena,Munich Germany,48.2188,11.6247,Europe/Berlin,false
+GNB00,Lambeau Field,Green Bay WI,44.5013,-88.0622,America/Chicago,false
+HOU00,NRG Stadium,Houston TX,29.6847,-95.4107,America/Chicago,true
+IND00,Lucas Oil Stadium,Indianapolis IN,39.7601,-86.1639,America/Indiana/Indianapolis,true
+JAX00,EverBank Stadium,Jacksonville FL,30.3239,-81.6373,America/New_York,false
+KAN00,GEHA Field at Arrowhead Stadium,Kansas City MO,39.0489,-94.4839,America/Chicago,false
+LAX01,SoFi Stadium,Inglewood CA,33.9535,-118.3392,America/Los_Angeles,true
+LAX97,Dignity Health Sports Park,Carson CA,33.8644,-118.2611,America/Los_Angeles,false
+LAX99,Los Angeles Memorial Coliseum,Los Angeles CA,34.0141,-118.2879,America/Los_Angeles,false
+LON00,Wembley Stadium,London UK,51.5560,-0.2795,Europe/London,false
+LON01,Twickenham Stadium,London UK,51.4560,-0.3419,Europe/London,false
+LON02,Tottenham Hotspur Stadium,London UK,51.6043,-0.0664,Europe/London,false
+MEX00,Estadio Azteca,Mexico City Mexico,19.3029,-99.1505,America/Mexico_City,false
+MIA00,Hard Rock Stadium,Miami Gardens FL,25.9580,-80.2389,America/New_York,false
+MIN01,U.S. Bank Stadium,Minneapolis MN,44.9738,-93.2575,America/Chicago,true
+MIN98,TCF Bank Stadium,Minneapolis MN,44.9762,-93.2244,America/Chicago,false
+NAS00,Nissan Stadium,Nashville TN,36.1665,-86.7713,America/Chicago,false
+NOR00,Caesars Superdome,New Orleans LA,29.9511,-90.0812,America/Chicago,true
+NYC01,MetLife Stadium,East Rutherford NJ,40.8135,-74.0745,America/New_York,false
+OAK00,Oakland Coliseum,Oakland CA,37.7516,-122.2005,America/Los_Angeles,false
+PHI00,Lincoln Financial Field,Philadelphia PA,39.9008,-75.1675,America/New_York,false
+PHO00,State Farm Stadium,Glendale AZ,33.5276,-112.2626,America/Phoenix,true
+PIT00,Acrisure Stadium,Pittsburgh PA,40.4468,-80.0158,America/New_York,false
+SAO00,Neo Quimica Arena,Sao Paulo Brazil,-23.5453,-46.4742,America/Sao_Paulo,false
+SDG00,Qualcomm Stadium,San Diego CA,32.7831,-117.1196,America/Los_Angeles,false
+SEA00,Lumen Field,Seattle WA,47.5952,-122.3316,America/Los_Angeles,false
+SFO01,Levi's Stadium,Santa Clara CA,37.4030,-121.9700,America/Los_Angeles,false
+STL00,Edward Jones Dome,St. Louis MO,38.6329,-90.1885,America/Chicago,true
+TAM00,Raymond James Stadium,Tampa FL,27.9759,-82.5033,America/New_York,false
+VEG00,Allegiant Stadium,Las Vegas NV,36.0909,-115.1833,America/Los_Angeles,true
+WAS00,FedExField,Landover MD,38.9077,-76.8645,America/New_York,false

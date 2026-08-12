@@ -19,17 +19,23 @@ missing one:
   ingestion), a separate step from `build_player_week_usage` since it needs
   a second source (`ingest.nflverse.fetch_ff_opportunity`) task 1.1 didn't
   fetch.
-- `team_week_context.proe`, `.neutral_pace_sec`, `.implied_total`,
-  `.spread` -- task 1.7 ("Team context features") for the first two (both
-  need real modelling -- an expected-pass-rate baseline, careful
-  play-sequencing to measure real elapsed time -- not mechanical
-  aggregation); `.implied_total`/`.spread` need `spread_line`'s sign
-  convention verified first, which is explicitly task 1.3's job (SPEC:
-  "positive spread = home favoured (verify sign at ingest and
-  document)") -- not yet verified, so not guessed at here.
-- `schedule.kickoff_utc`, `.home_implied_total`, `.away_implied_total` --
-  task 1.3, same sign-convention dependency plus a per-stadium timezone
-  lookup (`config/stadiums.csv`, also 1.3's own deliverable).
+- `team_week_context.proe`, `.neutral_pace_sec` -- task 1.7 ("Team context
+  features"); both need real modelling (an expected-pass-rate baseline,
+  careful play-sequencing to measure real elapsed time), not mechanical
+  aggregation. `.implied_total`/`.spread` *are* populated (task 1.3,
+  `add_schedule_context`) now that `spread_line`'s sign convention has
+  been verified against real data.
+- `schedule.kickoff_utc` -- *is* populated now too (`add_kickoff_utc`,
+  task 1.3), via `config/stadiums.csv`'s per-venue timezone, keyed by
+  `stadium_id` (the actual game venue, correct for a relocated team or an
+  international game, not just the home team's usual city).
+  `.home_implied_total`/`.away_implied_total` *are* populated
+  (`ingest.nflverse.normalize_schedule`, task 1.3) now that
+  `spread_line`'s sign convention has been verified: across all 3,028
+  real completed games 2015-2025, `spread_line` correlates +0.44 with the
+  actual home-away score margin, and the extreme cases are unambiguous --
+  positive `spread_line` means the home team is favoured by that many
+  points, confirming SPEC's own stated assumption.
 - `defense_position_allowed.adj_*` -- task 1.8 ("Opponent adjustment");
   needs the real ridge-regression/shrinkage model, not raw allowed rates.
 - `defense_position_allowed`'s position groups collapse `WR_perimeter`/
@@ -94,8 +100,11 @@ def build_team_week_context(pbp: pl.DataFrame) -> pl.DataFrame:
     """`interim/team_week_context.parquet` (SPEC §6.2), basic version:
     `plays`, raw `pass_rate`, `epa_per_play_off`, `success_rate_off` --
     all direct per-play aggregation from real nflverse `epa`/`success`
-    columns, no modelling needed. `proe`/`neutral_pace_sec`/
-    `implied_total`/`spread` stay null -- see module docstring.
+    columns, no modelling needed. `proe`/`neutral_pace_sec`/`implied_total`/
+    `spread` all start null; `implied_total`/`spread` are filled in
+    separately by `add_schedule_context` (task 1.3) since they need a
+    second source (`schedule`) this function doesn't take. `proe`/
+    `neutral_pace_sec` stay null -- see module docstring.
     """
     plays = _scrimmage_plays(pbp)
     return (
@@ -127,6 +136,104 @@ def build_team_week_context(pbp: pl.DataFrame) -> pl.DataFrame:
             "spread",
         )
     )
+
+
+# nflverse's `schedule` table keeps each game's period-accurate team code
+# (the Rams as "STL" in 2015; the Chargers as "SD" through 2016; the
+# Raiders as "OAK" through 2019), but `pbp.posteam`/`.defteam` -- which
+# `team_week_context` is built from -- backfills every historical row to
+# the team's current/final franchise code. Confirmed live: joining this
+# function's schedule-derived rows straight onto real `team_week_context`
+# (2015-2025) left exactly 129 real rows with a null `spread`/
+# `implied_total` -- every one a pre-move season for one of these three
+# franchises, not an honest data gap -- because `team_week_context`
+# contains zero "STL"/"SD"/"OAK" rows at all, only the modern codes.
+_RELOCATED_TEAM_ALIASES = {"STL": "LA", "SD": "LAC", "OAK": "LV"}
+
+
+def add_schedule_context(team_week_context: pl.DataFrame, schedule: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.3: join `spread`/`implied_total` (team's own perspective)
+    from `schedule`'s real `spread_line`/`home_implied_total`/
+    `away_implied_total` onto `team_week_context` (null from
+    `build_team_week_context` until this runs).
+
+    A home team's row gets `spread_line`/`home_implied_total` directly
+    (positive `spread_line` = home favoured, verified -- see module
+    docstring); an away team's row gets the mirrored `spread`
+    (`-spread_line`, since a team's own spread is *its* margin of
+    expected victory, not necessarily the home team's) and
+    `away_implied_total`. `home_team`/`away_team` are remapped through
+    `_RELOCATED_TEAM_ALIASES` first so a relocated franchise's pre-move
+    seasons join correctly against `team_week_context`'s modern-code-only
+    rows (see that mapping's own comment).
+    """
+    home_side = schedule.select(
+        "season",
+        "week",
+        pl.col("home_team").replace(_RELOCATED_TEAM_ALIASES).alias("team"),
+        pl.col("spread_line").alias("spread"),
+        pl.col("home_implied_total").alias("implied_total"),
+    )
+    away_side = schedule.select(
+        "season",
+        "week",
+        pl.col("away_team").replace(_RELOCATED_TEAM_ALIASES).alias("team"),
+        (-pl.col("spread_line")).alias("spread"),
+        pl.col("away_implied_total").alias("implied_total"),
+    )
+    per_team = pl.concat([home_side, away_side], how="vertical_relaxed")
+
+    return team_week_context.drop(["spread", "implied_total"]).join(
+        per_team, on=["season", "week", "team"], how="left"
+    )
+
+
+def add_kickoff_utc(schedule: pl.DataFrame, stadiums: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.3: derive `kickoff_utc` (SPEC §6.2's `as_of` boundary) from
+    `gameday`+`gametime` (local kickoff wall-clock time, both already
+    confirmed non-null across the full real 2015-2025 range) and each
+    game's real venue timezone (`config/stadiums.csv`, joined on
+    `stadium_id` -- the actual game venue, which already disambiguates a
+    relocated team's old stadium or a neutral-site/international game
+    from the current row's `home_team`).
+
+    polars' `dt.replace_time_zone` takes one fixed timezone string per
+    call, not a per-row value, so this loops over the small number of
+    distinct real timezones in `stadiums` (currently 8: five US zones
+    plus Berlin/London/Mexico_City/Sao_Paulo for international games)
+    rather than one replace_time_zone call per row. A game whose
+    `stadium_id` has no match in `stadiums` keeps `kickoff_utc` null
+    rather than guessed -- CLAUDE.md rule 2: this is the single most
+    leakage-sensitive column in the project, so an honest gap beats a
+    wrong timestamp.
+    """
+    with_tz = (
+        schedule.drop("kickoff_utc")
+        .join(stadiums.select("stadium_id", "tz"), on="stadium_id", how="left")
+        .with_columns(
+            pl.concat_str([pl.col("gameday"), pl.lit(" "), pl.col("gametime")])
+            .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M")
+            .alias("_local_dt")
+        )
+    )
+
+    tzs = with_tz.select("tz").unique().drop_nulls().to_series().to_list()
+    parts = [
+        with_tz.filter(pl.col("tz") == tz).with_columns(
+            pl.col("_local_dt")
+            .dt.replace_time_zone(tz)
+            .dt.convert_time_zone("UTC")
+            .dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            .alias("kickoff_utc")
+        )
+        for tz in tzs
+    ]
+    unmatched = with_tz.filter(pl.col("tz").is_null()).with_columns(
+        pl.lit(None, dtype=pl.Utf8).alias("kickoff_utc")
+    )
+
+    combined = pl.concat(parts + [unmatched], how="vertical_relaxed").drop(["tz", "_local_dt"])
+    return combined.select(schedule.columns)
 
 
 def _player_position_by_season(player_stats: pl.DataFrame) -> pl.DataFrame:
@@ -412,6 +519,7 @@ __all__ = [
     "GOAL_ZONE_YARDLINE",
     "RED_ZONE_YARDLINE",
     "SKILL_POSITIONS",
+    "add_schedule_context",
     "add_xfp",
     "build_defense_position_allowed",
     "build_player_week_stats",

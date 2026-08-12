@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `5e6480f` — feat: ffopportunity ingestion (task 1.2)
+**Last commit:** `PENDING` — feat: schedule/weather ingestion (task 1.3)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
-**Next task:** 1.3 (Schedule, betting lines, weather) — see SPEC §6.2, §10.3. Nothing blocking it.
-**First concrete step:** `interim/schedule.parquet` (task 1.1) already has real `spread_line`/`total_line`/`roof`/`surface`/`stadium_id`/`home_rest`/`away_rest` — 1.3's job is `home_implied_total`/`away_implied_total` (currently null, deliberately deferred here), which needs `spread_line`'s sign convention **verified first** (SPEC: "positive spread = home favoured (verify sign at ingest and document)" — not yet checked against real data by any task so far), `kickoff_utc` (also null, needs a new `config/stadiums.csv` with per-stadium timezones), and Open-Meteo forecast/historical weather with the dome override (`schedule.roof` already distinguishes `"outdoors"`/`"closed"`/etc., confirmed live in task 1.1). `team_week_context.implied_total`/`.spread` (also null) can be filled in once 1.3's sign-verified implied totals exist.
+**Next task:** 1.4 (Injury ingestion) — see SPEC §6.2. Nothing blocking it.
+**First concrete step:** check before building anything new — `interim/injuries.parquet` (task 1.1's `ingest.nflverse.fetch_injuries`/`normalize_injuries`) already exists, materialised for real 2015-2025 data, with `player_id`/`season`/`week`/`report_status`/`practice_status`/`report_primary_injury`/`date_modified` all populated (60,788 real rows; `date_modified` null on ~10% of rows, `report_status` null on ~48% — both plausibly legitimate: a Wed/Thu practice report often has no game-status designation yet, only Friday's does, per how the NFL's real injury report actually works, not investigated further this session). 1.4's literal acceptance bar ("designations are available per player-week with publication timestamps") may already be met — the first step is verifying that against 1.4's specific bar and either checking it off with evidence or identifying what's actually still missing, not assuming new ingestion work is needed.
 
 **Blocking on me (the human), not the agent:**
 
@@ -126,12 +126,19 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - **A real, more consequential bug found by chasing the ≥95% coverage bar down from an initial 30%:** `task 1.1`'s `build_player_week_usage` never filtered `player_stats` to actual offensive skill positions. nflreadpy's `player_stats` carries a row for *any* position that recorded *any* stat that week — confirmed live, 26 distinct position codes including LB/CB/DE/DL/OL/LS (the same "IDP-style columns present on every player row" quirk task 0.4/0.5 already found, now caught again one layer downstream). `interim/player_week_usage.parquet` had ~200k rows before this fix, ~140k of them non-skill-position players with meaningless all-zero usage columns; `ffopportunity` correctly has no data for a linebacker's "receiving opportunity," so the coverage check surfaced the scoping bug immediately. Fixed by filtering to `SKILL_POSITIONS = ("QB","RB","WR","TE")` for *output rows only* — the team-total denominators (`_team_carries`, `_team_rz_touches`) still sum from the full unfiltered data, since a real team rushing total can include a non-skill-position trick-play carry a skill-position-only sum would undercount. Real `player_week_usage` row count: 199,866 → 64,711.
   - **Real coverage, verified against the full 2015-2025 `data/interim/player_week_usage.parquet`:** 90.29% across *all* skill-position player-weeks (64,711) — short of 95% purely because it includes weeks where a rostered skill player had zero targets/carries (inactive, healthy scratch, gunner-only special-teams role), for which "expected fantasy points from opportunity" is trivially undefined and ffopportunity correctly has no row. Scoped to player-weeks with real recorded opportunity (`targets > 0` or `carries > 0`) — the natural reading of "played" for *this specific feature* — coverage is **100.00%** (57,381/57,383; the 2 unmatched are real, unexplained gaps, not investigated further, well within any reasonable tolerance). Not re-confirmed with you as a separate question — the same "expected points from opportunity has no meaning without opportunity" logic that already justifies `player_week_usage`'s own existence, and the empirical result (100% vs. a required 95%) leaves essentially no room for the interpretation to matter either way.
   - **Not built:** no CLI command (same no-CLI precedent). `data/raw/ffopportunity/` isn't warmed for season 2026 for the same reason task 1.1's nflverse sources aren't — no games played yet, nothing published.
+- **1.3** — Schedule, betting lines, weather (SPEC §6.2, §10.3). Picked up mid-flight this session: the `spread_line` sign-convention verification, `home_implied_total`/`away_implied_total`, and their tests already existed uncommitted in the working tree from an earlier, un-handed-off session (HANDOFF itself still said "next task: 1.3, nothing blocking it" and "work in progress: none" — both stale; see the resume conversation for how this was caught and confirmed with you before continuing). This entry covers the full task, including that inherited piece. New `config/stadiums.csv` (44 real venues 2015-2025: all 32 current stadiums plus relocated/former ones — Rams' STL/LAX99, Chargers' SDG00/LAX97, Raiders' OAK00, the old Georgia Dome, Edward Jones Dome, TCF Bank Stadium — and 7 international/neutral-site venues: 3 London stadiums, Mexico City, Frankfurt, Munich, São Paulo), keyed by `stadium_id` (the real game venue) rather than by team, since a team's "home" isn't a stable 1:1 with one stadium across this range. `interim/build.py::add_kickoff_utc` derives `kickoff_utc` (SPEC's `as_of` boundary) from `gameday`+`gametime` in the venue's own real timezone. New `ingest/weather.py`: `fetch_weather`/`normalize_weather` (Open-Meteo forecast + historical archive) and `fetch_weather_for_schedule`, which applies SPEC §10.3's dome override (`roof` in `{"dome","closed"}` → wind/precip/temp are fixed constants, no network call) and otherwise picks forecast vs. historical per game from its own kickoff date vs. now. Evidence:
+  - `tests/test_interim_build.py` (+11 tests: 5 for `add_kickoff_utc` including a real DST-boundary case and a cross-UTC-midnight case, 1 for the relocated-franchise fix below) + new `tests/test_ingest_weather.py` (12 tests, TDD) — 420 tests pass total (`uv run pytest -q`, up from 407 at the start of this session), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+  - **Real end-to-end verification against the full 2015-2025 range, not just fixtures.** Hand-checked implied totals and `kickoff_utc` on 6 real games spanning 4 different real timezones (Chicago, Denver, Pacific, and Eastern via a `closed`-roof dome game) plus one that crosses a UTC-day boundary (a Monday night Denver kickoff at 20:15 local landing on the *next* UTC calendar day) — all correct by hand. Live-called real Open-Meteo endpoints for 3 real games: a dome game (Colts, `roof="closed"`) correctly took the override with zero network calls; two real outdoor 2025 games got real historical wind/temperature back from the archive API (Seattle 5.1 mph/71.2°F, Denver 0.4 mph/82.5°F — both plausible for early-September afternoon kickoffs); the forecast endpoint was separately live-verified against tomorrow's real forecast for Kansas City. The synthetic verification artifact was deleted from `data/raw/weather/` afterward; the two real-game historical payloads were kept (same precedent as other tasks' live-warmed cache data).
+  - **A second real bug found only by regenerating the actual `data/interim/` tables against the full historical range, not by any test:** `add_schedule_context`'s join left 129 real rows with a null `spread`/`implied_total` — every one a relocated franchise's pre-move season (Rams 2015, Chargers 2015-2016, Raiders 2015-2019). Root cause: nflverse's `schedule` table keeps each game's *period-accurate* team code (the Rams as `"STL"` in 2015), but `pbp.posteam`/`.defteam` — which `team_week_context` is built from — backfills every historical row to the team's *current* franchise code (`"LA"` even for 2015). Confirmed live: `team_week_context` has zero `"STL"`/`"SD"`/`"OAK"` rows across the entire real 2015-2025 range. Fixed with `_RELOCATED_TEAM_ALIASES = {"STL": "LA", "SD": "LAC", "OAK": "LV"}` applied to `schedule.home_team`/`.away_team` before the join. After the fix, real `data/interim/schedule.parquet` (3,028 rows) and `data/interim/team_week_context.parquet` (6,056 rows) were regenerated end to end: `kickoff_utc` 0 nulls, `spread`/`implied_total` 0 nulls (both were previously all-null and 129-null respectively). Same lesson as 0.5/0.7/1.1/1.2's own gotchas: a narrow unit fixture can't see a real cross-table code mismatch that only exists because two different upstream tables made two different backfilling choices.
+  - **Design decision, not required by 1.3's literal acceptance bar:** `fetch_weather_for_schedule` decides forecast-vs-historical-vs-dome-override *and* does the network call, all inside `ingest/weather.py`, rather than splitting fetch from a separate `interim/build.py` business-logic step the way every other source in this project does. Documented in the module's own docstring as a deliberate, narrow exception: the decision is inseparable from the fetch itself (you can't know which endpoint to call, or whether to call one at all, without evaluating the game first), so moving it to `interim/build.py` would only relocate the same per-game loop across a module boundary. CLAUDE.md's actual rule (no network calls outside `ingest/`) still holds.
+  - **Documented simplification:** Open-Meteo's historical archive endpoint has no forecast-style `precipitation_probability` for actuals, only measured `precipitation` (mm) — `normalize_weather` converts this to a binary 0.0/100.0 proxy (any measurable rain that hour → 100.0) for `source="historical"` rows. SPEC §10.3 itself says not to over-engineer weather; wind is the feature that matters, not precipitation.
+  - **Not built, deliberately scoped out:** full historical weather materialisation for all ~3,000 non-dome games 2015-2025. 1.3's actual acceptance bar ("implied totals correct on a hand-checked sample of five games; dome games show wind 0") doesn't require it, and SPEC §10.3 explicitly says not to over-engineer this feature. The mechanism is real, tested, and live-verified end to end (see above); running it at full scale is a one-off script for whichever later task (1.10+ baselines/backtesting) actually needs weather features materialised, following the same precedent as task 0.7's rankings sources and task 1.1/1.2's own "not built: CLI command" notes. `config/stadiums.csv`'s own `dome` column is unused by any code path today — the real per-game override reads `schedule.roof`, not this static reference field — kept only because SPEC's repo-layout comment names it as part of the file's intended shape.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–1.2 are complete and verified. Task 1.2's work (plus the task 1.1 `build_player_week_usage` fix it surfaced) is uncommitted — see header.
+None. 0.1–1.3 are complete and verified.
 
 ## 4. Decisions made during implementation
 
@@ -229,10 +236,16 @@ crosswalk_path = nflverse.fetch_player_ids(offline=True, settings=settings)
 sleeper_players_path = sleeper.fetch_players(offline=True, settings=settings)
 players_dim = mapping.build_players_dim(crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH)
 
-nflverse.normalize_schedule(schedules_raw).write_parquet(interim_dir / "schedule.parquet")
+stadiums = pl.read_csv("config/stadiums.csv")  # committed, task 1.3 -- no fetch needed
+
+schedule = nflverse.normalize_schedule(schedules_raw)
+schedule = build.add_kickoff_utc(schedule, stadiums)  # task 1.3
+schedule.write_parquet(interim_dir / "schedule.parquet")
 nflverse.normalize_injuries(injuries_raw).write_parquet(interim_dir / "injuries.parquet")
 build.build_player_week_stats(player_stats, team_stats, schedules_raw, pbp).write_parquet(interim_dir / "player_week_stats.parquet")
-build.build_team_week_context(pbp).write_parquet(interim_dir / "team_week_context.parquet")
+twc = build.build_team_week_context(pbp)
+twc = build.add_schedule_context(twc, schedule)  # task 1.3
+twc.write_parquet(interim_dir / "team_week_context.parquet")
 build.build_defense_position_allowed(pbp, player_stats).write_parquet(interim_dir / "defense_position_allowed.parquet")
 
 usage = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
@@ -241,6 +254,18 @@ build.add_xfp(usage, ff_opportunity).write_parquet(interim_dir / "player_week_us
 ```
 
 `fetch_depth_charts`/`fetch_rosters` also exist (warmed for later use) but nothing consumes them yet — no §6.2 canonical table needs them directly today. `fetch_ff_opportunity` also writes `data/raw/ffopportunity/LICENSE.txt` (CC-BY-SA, see task 1.2's HANDOFF entry) the first time it runs.
+
+**Weather (task 1.3) is deliberately not part of the script above** — see that task's HANDOFF entry ("Not built, deliberately scoped out"). To materialise it for a real range once a later task actually needs it:
+
+```python
+from datetime import UTC, datetime
+from ffapp.ingest import weather
+
+interim_weather = weather.fetch_weather_for_schedule(
+    schedule, stadiums, now=datetime.now(UTC), offline=False, settings=settings
+)  # one live Open-Meteo call per non-dome game -- slow at full 2015-2025 scale, not run that way yet
+interim_weather.write_parquet(interim_dir / "weather.parquet")
+```
 
 Then warm the 2025-season nflverse data the golden test (0.5) needs — same caveat as above, no CLI subcommand yet, only the underlying functions:
 
@@ -319,6 +344,8 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 **New dependency (task 0.11 session):** `scipy` (was already present transitively via `scikit-learn`; made an explicit direct dependency now that `tools/adp.py` imports `scipy.stats.norm` for SPEC §9.6's `Φ`). `scipy.*` has a matching `mypy.overrides` `ignore_missing_imports` entry.
 **New dependency (task 0.13 session):** `streamlit` (pulls in `pandas` transitively, needed directly for the `Styler`-based tier shading) and dev-only `pandas-stubs` (real, actively-maintained stubs — no `ignore_missing_imports` override needed, unlike `sklearn`/`scipy`/`nflreadpy`).
 
+**No new dependency (task 1.3 session):** `ingest/weather.py` reuses `requests` (already a dependency, same session-with-retry pattern as `sleeper.py`/`nflverse.py`) and polars' own `dt.replace_time_zone`/`dt.convert_time_zone` for `add_kickoff_utc` — no timezone-data package needed.
+
 **Network reachability by location:**
 
 | Location | Sleeper | nflverse / GitHub | PyPI | Rankings sites |
@@ -326,10 +353,11 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 | This session (2026-08-12, hostname `Maybe`), task 1.1 | n/a | ✓ for seasons 2015-2025 (`nflreadpy` pulled real player_stats/team_stats/schedules/snap_counts/injuries/pbp for the full 11-season range in one call each). **Season 2026 404s on every `load_*` call — no nflverse release exists yet** (zero games played as of mid-August preseason), not a bug. | ✓ | n/a |
 | This session (2026-08-12, hostname `Maybe`), tasks 0.11-0.14 | ✓ (live `traded_picks`, `drafts`, `rosters` pulled for the primary league's real 2026 draft) | ✓ | ✓ (added `scipy` as a direct dep) | ✓ for FantasyPros/FantasySharks/CBS Sports and the new FantasyFootballCalculator ADP source. **ESPN's bulk endpoint now returns 0 rows and FFToday now 403s — both worked in the 0.7 session, both broken now, see §5.** FantasyPros' own ADP page was tried and rejected (client-rendered, see §5/task 0.11 entry) in favor of FantasyFootballCalculator. |
 | This session (2026-08-11/12, hostname `Maybe`) | ✓ (live matchups pulled for both leagues' 2025 seasons) | ✓ (`nflreadpy` pulled real player_stats/team_stats/schedules/pbp for 2025) | ✓ | ✓ for FantasyPros/ESPN/FantasySharks/CBS Sports/FFToday (all fetched real live data at the time). NFL.com/Yahoo/Sharp Football Analysis were reachable (HTTP 200) but have no accessible data — see HANDOFF §4, not a network problem. |
+| This session (2026-08-12, hostname `Maybe`), task 1.3 | n/a | ✓ | n/a | n/a — but **Open-Meteo confirmed reachable**, both `api.open-meteo.com/v1/forecast` and `archive-api.open-meteo.com/v1/archive`, live-called successfully for real stadium coordinates. |
 | Home | ? | ? | ? | ? |
 | Work | ✗ | ? | ? | ✗ |
 
-> **Fifth session in a row now, all on hostname `Maybe`.** Treating this as the same machine going forward unless told otherwise — the "different machine" framing from earlier sessions hasn't been re-raised and the hostname keeps matching. If a genuinely different machine shows up, add it as a new row rather than overwriting this one.
+> **Sixth session in a row now, all on hostname `Maybe`.** This session opened with "resuming on a different machine" — checked the actual hostname, it still reads `Maybe`, so no new row was added and this is being treated as the same machine per the standing rule below. If a genuinely different machine shows up (different hostname), add it as a new row rather than overwriting this one.
 
 ---
 

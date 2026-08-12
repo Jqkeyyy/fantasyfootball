@@ -99,7 +99,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Pull precomputed expected fantasy points releases; join `xfp` onto `player_week_usage`. Record the CC-BY-SA licence in the raw directory.
   **Done when:** `xfp` is populated for ≥95% of played player-weeks in the training range. (100% for player-weeks with real target/carry opportunity — see HANDOFF for how "played" was scoped.)
 
-- [ ] **1.3 — Schedule, betting lines, weather** ⏱ 3h — SPEC §6.2, §10.3
+- [x] **1.3 — Schedule, betting lines, weather** ⏱ 3h — SPEC §6.2, §10.3
   Derive `home_implied_total` / `away_implied_total` from spread and total; **verify and document the sign convention of `spread_line`**. Build `config/stadiums.csv`. Open-Meteo forecast plus historical archive, with the dome override.
   **Done when:** implied totals are correct on a hand-checked sample of five games; dome games show wind 0.
 

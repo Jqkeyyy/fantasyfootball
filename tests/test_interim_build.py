@@ -64,6 +64,186 @@ def test_build_team_week_context_leaves_deferred_columns_null() -> None:
     assert row["spread"] is None
 
 
+# --- add_schedule_context (task 1.3) -----------------------------------------------
+
+
+def test_add_schedule_context_fills_home_and_away_from_the_teams_own_perspective() -> None:
+    twc = pl.DataFrame(
+        {
+            "team": ["KC", "BAL"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "plays": [60, 55],
+            "spread": [None, None],
+            "implied_total": [None, None],
+        },
+        schema_overrides={"spread": pl.Float64, "implied_total": pl.Float64},
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2025],
+            "week": [1],
+            "home_team": ["KC"],
+            "away_team": ["BAL"],
+            "spread_line": [-2.5],  # home (KC) is a 2.5-point underdog
+            "home_implied_total": [23.0],
+            "away_implied_total": [25.5],
+        }
+    )
+
+    result = build.add_schedule_context(twc, schedule)
+
+    rows = {row["team"]: row for row in result.iter_rows(named=True)}
+    assert rows["KC"]["spread"] == pytest.approx(-2.5)  # home team's own spread, as-is
+    assert rows["KC"]["implied_total"] == pytest.approx(23.0)
+    assert rows["BAL"]["spread"] == pytest.approx(2.5)  # away team's own spread, mirrored
+    assert rows["BAL"]["implied_total"] == pytest.approx(25.5)
+
+
+def test_add_schedule_context_matches_a_relocated_franchises_pre_move_season() -> None:
+    """schedule keeps the Rams as "STL" in 2015 (period-accurate); real
+    team_week_context (built from pbp) only ever has "LA" rows, even for
+    2015 -- confirmed live against the full 2015-2025 range. Without the
+    alias, this join silently leaves spread/implied_total null for every
+    relocated franchise's pre-move seasons (129 real rows, not a data
+    gap)."""
+    twc = pl.DataFrame(
+        {
+            "team": ["LA", "SEA"],
+            "season": [2015, 2015],
+            "week": [1, 1],
+            "plays": [60, 55],
+            "spread": [None, None],
+            "implied_total": [None, None],
+        },
+        schema_overrides={"spread": pl.Float64, "implied_total": pl.Float64},
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2015],
+            "week": [1],
+            "home_team": ["STL"],
+            "away_team": ["SEA"],
+            "spread_line": [3.0],
+            "home_implied_total": [24.0],
+            "away_implied_total": [21.0],
+        }
+    )
+
+    result = build.add_schedule_context(twc, schedule)
+
+    rows = {row["team"]: row for row in result.iter_rows(named=True)}
+    assert rows["LA"]["spread"] == pytest.approx(3.0)
+    assert rows["LA"]["implied_total"] == pytest.approx(24.0)
+    assert rows["SEA"]["spread"] == pytest.approx(-3.0)
+
+
+# --- add_kickoff_utc (task 1.3) -----------------------------------------------------
+
+
+def _schedule_row(**kwargs: object) -> dict:
+    row: dict[str, object] = {
+        "game_id": "2025_01_KC_BAL",
+        "season": 2025,
+        "week": 1,
+        "season_type": "REG",
+        "home_team": "KC",
+        "away_team": "BAL",
+        "gameday": "2025-09-07",
+        "gametime": "13:00",
+        "kickoff_utc": None,
+        "spread_line": -2.5,
+        "total_line": 48.5,
+        "home_implied_total": 23.0,
+        "away_implied_total": 25.5,
+        "roof": "outdoors",
+        "surface": "grass",
+        "stadium_id": "KAN00",
+        "home_rest": 7,
+        "away_rest": 7,
+    }
+    row.update(kwargs)
+    return row
+
+
+def _schedule(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows, schema_overrides={"kickoff_utc": pl.Utf8})
+
+
+def _stadiums() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "stadium_id": ["KAN00", "PHI00"],
+            "tz": ["America/Chicago", "America/New_York"],
+        }
+    )
+
+
+def test_add_kickoff_utc_converts_local_kickoff_to_utc_in_the_venues_own_timezone() -> None:
+    schedule = _schedule(
+        [_schedule_row(stadium_id="KAN00", gameday="2025-09-07", gametime="13:00")]
+    )
+
+    result = build.add_kickoff_utc(schedule, _stadiums())
+
+    # Kansas City is America/Chicago; September 7 is inside US DST (CDT, UTC-5).
+    assert result.row(0, named=True)["kickoff_utc"] == "2025-09-07T18:00:00Z"
+
+
+def test_add_kickoff_utc_handles_multiple_distinct_timezones_in_one_call() -> None:
+    schedule = _schedule(
+        [
+            _schedule_row(
+                game_id="2025_01_KC_BAL", stadium_id="KAN00", gameday="2025-09-07", gametime="13:00"
+            ),
+            _schedule_row(
+                game_id="2025_01_PHI_DAL",
+                stadium_id="PHI00",
+                gameday="2025-09-07",
+                gametime="13:00",
+            ),
+        ]
+    )
+
+    result = build.add_kickoff_utc(schedule, _stadiums())
+
+    rows = {row["game_id"]: row for row in result.iter_rows(named=True)}
+    # Same local wall-clock time, different real timezones -> different UTC hour.
+    assert rows["2025_01_KC_BAL"]["kickoff_utc"] == "2025-09-07T18:00:00Z"  # Chicago, CDT (UTC-5)
+    assert rows["2025_01_PHI_DAL"]["kickoff_utc"] == "2025-09-07T17:00:00Z"  # NY, EDT (UTC-4)
+
+
+def test_add_kickoff_utc_applies_standard_time_outside_dst() -> None:
+    schedule = _schedule(
+        [_schedule_row(stadium_id="PHI00", gameday="2026-01-04", gametime="13:00")]
+    )
+
+    result = build.add_kickoff_utc(schedule, _stadiums())
+
+    # January -> EST (UTC-5), not EDT (UTC-4) -- proves this isn't a fixed offset.
+    assert result.row(0, named=True)["kickoff_utc"] == "2026-01-04T18:00:00Z"
+
+
+def test_add_kickoff_utc_leaves_null_when_stadium_id_has_no_match() -> None:
+    schedule = _schedule([_schedule_row(stadium_id="ZZZ00")])
+
+    result = build.add_kickoff_utc(schedule, _stadiums())
+
+    assert result.row(0, named=True)["kickoff_utc"] is None
+
+
+def test_add_kickoff_utc_preserves_schedule_columns_and_other_values() -> None:
+    schedule = _schedule([_schedule_row()])
+
+    result = build.add_kickoff_utc(schedule, _stadiums())
+
+    assert result.columns == schedule.columns
+    row = result.row(0, named=True)
+    assert row["spread_line"] == -2.5
+    assert row["home_implied_total"] == 23.0
+    assert row["stadium_id"] == "KAN00"
+
+
 # --- _player_position_by_season ---------------------------------------------------
 
 

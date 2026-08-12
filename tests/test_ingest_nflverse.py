@@ -329,10 +329,44 @@ def test_normalize_schedule_maps_to_canonical_columns() -> None:
     assert row["home_rest"] == 7
     assert row["away_rest"] == 7
     assert row["spread_line"] == -2.5
-    # explicitly deferred to task 1.3 -- not guessed here (see docstring)
+    # kickoff_utc needs config/stadiums.csv's timezones (this same task,
+    # not yet built when this function runs) -- not guessed here.
     assert row["kickoff_utc"] is None
-    assert row["home_implied_total"] is None
-    assert row["away_implied_total"] is None
+    # home_implied_total/away_implied_total ARE computed now -- see below.
+
+
+def test_normalize_schedule_computes_implied_totals_with_verified_sign() -> None:
+    """Sign convention verified against real data (task 1.3): positive
+    spread_line means the home team is favoured. total=48.5, spread=-2.5
+    (home is a 2.5-point underdog) -> home gets the smaller share."""
+    raw = pl.DataFrame(
+        {
+            "game_id": ["2025_01_KC_BAL"],
+            "season": [2025],
+            "week": [1],
+            "game_type": ["REG"],
+            "home_team": ["KC"],
+            "away_team": ["BAL"],
+            "gameday": ["2025-09-05"],
+            "gametime": ["20:20"],
+            "spread_line": [-2.5],
+            "total_line": [48.5],
+            "roof": ["outdoors"],
+            "surface": ["grass"],
+            "stadium_id": ["KAN00"],
+            "home_rest": [7],
+            "away_rest": [7],
+        }
+    )
+
+    result = nflverse.normalize_schedule(raw)
+
+    row = result.row(0, named=True)
+    assert row["home_implied_total"] == pytest.approx(23.0)  # 48.5/2 - 2.5/2
+    assert row["away_implied_total"] == pytest.approx(25.5)  # 48.5/2 + 2.5/2
+    # internal consistency: they sum to the total and diff to the spread
+    assert row["home_implied_total"] + row["away_implied_total"] == pytest.approx(48.5)
+    assert row["home_implied_total"] - row["away_implied_total"] == pytest.approx(-2.5)
 
 
 def test_normalize_schedule_output_column_order_matches_spec() -> None:

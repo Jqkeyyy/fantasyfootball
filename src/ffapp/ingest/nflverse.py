@@ -363,16 +363,24 @@ def normalize_schedule(raw: pl.DataFrame) -> pl.DataFrame:
     (SPEC §6.2). `home_rest`/`away_rest` are already nflverse's own
     precomputed columns, not derived here.
 
-    `kickoff_utc` and `home_implied_total`/`away_implied_total` are left
-    null -- both need real work task 1.3 owns, not guessed here: converting
-    `gametime` (local kickoff time) to UTC needs a per-stadium timezone
-    lookup (`config/stadiums.csv`, task 1.3's own deliverable), and the
-    implied-total formula needs `spread_line`'s sign convention verified
-    first (SPEC §10.2/1.3: "positive spread = home favoured (verify sign at
-    ingest and document)" -- not yet verified). `kickoff_utc` is explicitly
-    the as_of boundary (SPEC §6.2) -- guessing it wrong here would be a
-    silent leakage bug, the single most expensive failure mode this project
-    has (CLAUDE.md rule 2), so it stays null rather than approximated.
+    `home_implied_total`/`away_implied_total` = `total_line/2 ±
+    spread_line/2` (SPEC §6.2's own formula) -- safe now that
+    `spread_line`'s sign convention has been verified against real data
+    (task 1.3): across all 3,028 real completed games 2015-2025,
+    `spread_line` correlates +0.44 with the actual home-away score margin,
+    and the extreme cases are unambiguous (e.g. DAL spread_line +22.0 at
+    home, won by 25; MIA spread_line -18.0 at home, lost 0-43) --
+    **positive `spread_line` means the home team is favoured by that many
+    points**, confirming SPEC's own stated assumption rather than
+    overturning it.
+
+    `kickoff_utc` is still left null -- converting `gametime` (local
+    kickoff time) to UTC needs a per-stadium timezone lookup
+    (`config/stadiums.csv`, this same task's other deliverable, built
+    after this function). It's explicitly the as_of boundary (SPEC §6.2)
+    -- guessing it wrong here would be a silent leakage bug, the single
+    most expensive failure mode this project has (CLAUDE.md rule 2), so it
+    stays null rather than approximated even one task early.
     """
     return raw.select(
         "game_id",
@@ -386,8 +394,8 @@ def normalize_schedule(raw: pl.DataFrame) -> pl.DataFrame:
         pl.lit(None, dtype=pl.Utf8).alias("kickoff_utc"),
         "spread_line",
         "total_line",
-        pl.lit(None, dtype=pl.Float64).alias("home_implied_total"),
-        pl.lit(None, dtype=pl.Float64).alias("away_implied_total"),
+        (pl.col("total_line") / 2 + pl.col("spread_line") / 2).alias("home_implied_total"),
+        (pl.col("total_line") / 2 - pl.col("spread_line") / 2).alias("away_implied_total"),
         "roof",
         "surface",
         "stadium_id",
