@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `<fill in after commit>` — feat: consensus projection ingestion and aggregation (task 0.7)
+**Last commit:** `f4eae96` — feat: LeagueFormat parser and consensus projection aggregation (tasks 0.6, 0.7)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
