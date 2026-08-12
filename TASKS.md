@@ -119,11 +119,11 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Including PROE, neutral pace, OL continuity, and the two `vacated_*` features.
   **Done when:** `teammate_vacated_target_share` is non-zero in a week where a known WR1 was ruled out.
 
-- [ ] **1.8 — Opponent adjustment** ⏱ 6h — SPEC §10.4
+- [x] **1.8 — Opponent adjustment** ⏱ 6h — SPEC §10.4
   Ridge two-way adjustment on rate outcomes per position group, with empirical-Bayes shrinkage and exponential recency weighting. Emit `n_plays` alongside each estimate.
   **Done when:** adjusted values differ materially from raw fantasy-points-allowed rankings, and early-season estimates are visibly shrunk toward the prior season.
 
-- [ ] **1.9 — Feature table build** ⏱ 3h — SPEC §6.2, §10.1
+- [x] **1.9 — Feature table build** ⏱ 3h — SPEC §6.2, §10.1
   Assemble the wide table including zero-target rows for players who did not play.
   **Done when:** `features/player_week_features.parquet` exists with `as_of_utc` on every row, and non-played rows are present.
 

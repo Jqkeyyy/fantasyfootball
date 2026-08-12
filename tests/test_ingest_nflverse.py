@@ -274,11 +274,13 @@ def test_fetch_depth_charts_online_calls_load_depth_charts(
     assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_depth_charts"
 
 
-def test_fetch_rosters_online_calls_load_rosters(
+def test_fetch_rosters_online_calls_load_rosters_weekly(
     monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
 ) -> None:
+    """Not `load_rosters` (season-level -- see fetch_rosters' own
+    docstring for the real row-count gap this task 1.9 fix closed)."""
     fixture_df = pl.DataFrame({"gsis_id": ["1"], "team": ["KC"], "position": ["QB"]})
-    monkeypatch.setattr(nflverse.nfl, "load_rosters", lambda seasons: fixture_df)
+    monkeypatch.setattr(nflverse.nfl, "load_rosters_weekly", lambda seasons: fixture_df)
 
     path = nflverse.fetch_rosters(2025, offline=False, settings=stats_settings)
 
@@ -312,6 +314,7 @@ def test_normalize_schedule_maps_to_canonical_columns() -> None:
             "away_team": ["BAL"],
             "gameday": ["2025-09-05"],
             "gametime": ["20:20"],
+            "weekday": ["Friday"],
             "spread_line": [-2.5],
             "total_line": [48.5],
             "roof": ["outdoors"],
@@ -349,6 +352,7 @@ def test_normalize_schedule_computes_implied_totals_with_verified_sign() -> None
             "away_team": ["BAL"],
             "gameday": ["2025-09-05"],
             "gametime": ["20:20"],
+            "weekday": ["Friday"],
             "spread_line": [-2.5],
             "total_line": [48.5],
             "roof": ["outdoors"],
@@ -380,6 +384,7 @@ def test_normalize_schedule_output_column_order_matches_spec() -> None:
             "away_team": ["BAL"],
             "gameday": ["2025-09-05"],
             "gametime": ["20:20"],
+            "weekday": ["Friday"],
             "spread_line": [-2.5],
             "total_line": [48.5],
             "roof": ["outdoors"],
@@ -401,6 +406,7 @@ def test_normalize_schedule_output_column_order_matches_spec() -> None:
         "away_team",
         "gameday",
         "gametime",
+        "weekday",
         "kickoff_utc",
         "spread_line",
         "total_line",

@@ -319,17 +319,27 @@ def fetch_depth_charts(
 def fetch_rosters(
     seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
-    """Fetch nflreadpy's weekly rosters (position/team history, ids) for one
-    season or a range to data/raw/nflverse/rosters_<label>.parquet.
+    """Fetch nflreadpy's *weekly* rosters (position/team/status history,
+    ids) for one season or a range to
+    data/raw/nflverse/rosters_<label>.parquet.
+
+    Uses `load_rosters_weekly`, not `load_rosters` (task 1.1 originally
+    called the latter, a real bug found and fixed in task 1.9 -- this
+    docstring already said "weekly" but the implementation didn't match
+    it). Confirmed live: `load_rosters` returns one row per player per
+    *season* (~3k rows/season across the real 2015-2025 range, 33,195
+    total) -- nowhere near enough granularity for SPEC §11.1's "every
+    player on an active roster *that week*." `load_rosters_weekly`
+    returns real per-week snapshots (46,579 rows for 2024 alone).
     """
     settings = _resolve_settings(settings)
     label = _season_label(seasons)
     season_list = _as_season_list(seasons)
     return _fetch_nflreadpy_parquet(
         filename=f"rosters_{label}.parquet",
-        call_desc=f"load_rosters(seasons={season_list})",
+        call_desc=f"load_rosters_weekly(seasons={season_list})",
         cache_key="nflverse_rosters",
-        load=lambda: nfl.load_rosters(seasons=season_list),
+        load=lambda: nfl.load_rosters_weekly(seasons=season_list),
         artifact="rosters",
         params=f"seasons={label}",
         offline=offline,
@@ -361,7 +371,11 @@ def fetch_injuries(
 def normalize_schedule(raw: pl.DataFrame) -> pl.DataFrame:
     """nflreadpy's `load_schedules()` output -> `interim/schedule.parquet`
     (SPEC §6.2). `home_rest`/`away_rest` are already nflverse's own
-    precomputed columns, not derived here.
+    precomputed columns, not derived here. `weekday` (e.g. "Thursday",
+    "Monday") isn't in SPEC §6.2's own column table, but nflverse's raw
+    source already carries it at zero cost -- kept for task 1.9's
+    `is_primetime` derivation, which needs day-of-week and has no other
+    source for it.
 
     `home_implied_total`/`away_implied_total` = `total_line/2 ±
     spread_line/2` (SPEC §6.2's own formula) -- safe now that
@@ -391,6 +405,7 @@ def normalize_schedule(raw: pl.DataFrame) -> pl.DataFrame:
         "away_team",
         "gameday",
         "gametime",
+        "weekday",
         pl.lit(None, dtype=pl.Utf8).alias("kickoff_utc"),
         "spread_line",
         "total_line",

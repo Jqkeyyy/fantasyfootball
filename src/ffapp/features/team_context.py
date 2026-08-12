@@ -38,6 +38,22 @@ SOURCE_TABLE = "team_week_context"
 
 RULED_OUT_STATUS = "Out"
 
+# task 1.9: which of this module's registered features are "current week"
+# facts (known before that week's own kickoff, joined onto a target week
+# directly) versus trailing/windowed values (through-and-including their
+# own week, needing task 1.9's own one-week shift onto a target week).
+# Every OTHER feature this module registers is windowed (proe_ewm_5,
+# neutral_pace_ewm_8, ...) and needs the shift; these four don't, despite
+# sharing the same `source_table` -- `features.build` must not lump them
+# in with the windowed ones, or it silently staples last week's Vegas
+# line and injury news onto this week's row.
+CURRENT_WEEK_COLUMNS = (
+    "implied_team_total",
+    "spread",
+    "teammate_vacated_target_share",
+    "teammate_vacated_carry_share",
+)
+
 # task 1.7 ol_continuity: the "starting 5" per team-game is the top
 # offense_snaps player at each of these OL slots, from real snap_counts
 # position codes. Rare combined codes ("G/OT", "C/G", ...) are excluded --
