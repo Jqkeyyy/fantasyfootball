@@ -115,7 +115,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Every feature in the player usage block, with the specified windows.
   **Done when:** spot-checked against known player-seasons (pick a WR1 and confirm target share matches published figures).
 
-- [ ] **1.7 — Team context features** ⏱ 4h — SPEC §10.2
+- [x] **1.7 — Team context features** ⏱ 4h — SPEC §10.2
   Including PROE, neutral pace, OL continuity, and the two `vacated_*` features.
   **Done when:** `teammate_vacated_target_share` is non-zero in a week where a known WR1 was ruled out.
 

@@ -47,12 +47,27 @@ missing one:
 from __future__ import annotations
 
 import polars as pl
+from sklearn.linear_model import LogisticRegression
 
 from ffapp.scoring.stats import build_stat_frame
 
 _SCRIMMAGE_PLAY_TYPES = ("pass", "run")
 RED_ZONE_YARDLINE = 20
 GOAL_ZONE_YARDLINE = 5
+
+# task 1.7 proe: the down/distance/score baseline model's feature set.
+# ydstogo/score_differential are capped -- an uncapped garbage-time
+# 40-point differential or a 3rd-and-38 has no real bearing on ordinary
+# play-calling and would only add noise/leverage to the fit.
+YDSTOGO_CAP = 20.0
+SCORE_DIFFERENTIAL_CAP = 28.0
+_PROE_CONTINUOUS_FEATURES = (
+    "ydstogo",
+    "score_differential",
+    "half_seconds_remaining",
+    "yardline_100",
+)
+_PROE_DOWNS = (1.0, 2.0, 3.0, 4.0)
 
 # player_week_usage is about offensive skill-position usage (targets, air
 # yards, carries) -- nflreadpy's own player_stats carries a row for every
@@ -135,6 +150,160 @@ def build_team_week_context(pbp: pl.DataFrame) -> pl.DataFrame:
             "implied_total",
             "spread",
         )
+    )
+
+
+def _proe_training_frame(pbp: pl.DataFrame) -> pl.DataFrame:
+    """Real play-calling decisions only, for fitting the proe baseline:
+    scrimmage plays with a real `down` (excludes two-point-conversion
+    tries, where `down` is null) and excluding kneels/spikes -- neither is
+    a real pass-vs-run decision, and including them would bias the
+    baseline toward "run" in the exact clock-killing/clock-stopping
+    situations they occur in. `ydstogo`/`score_differential` are capped
+    (see their module-level constants) before fitting.
+
+    Target is nflverse's own `pass` indicator, not `play_type` -- `pass`
+    already reflects passer *intent* (a sack or a scramble both count as
+    "pass" there), which is what "pass rate over expectation" means;
+    `play_type` would misclassify a scramble as a designed run.
+    """
+    plays = _scrimmage_plays(pbp)
+    return plays.filter(
+        pl.col("down").is_not_null() & (pl.col("qb_kneel") == 0) & (pl.col("qb_spike") == 0)
+    ).with_columns(
+        pl.col("ydstogo").clip(upper_bound=YDSTOGO_CAP),
+        pl.col("score_differential").clip(-SCORE_DIFFERENTIAL_CAP, SCORE_DIFFERENTIAL_CAP),
+    )
+
+
+def _proe_design_matrix(df: pl.DataFrame) -> pl.DataFrame:
+    """One-hot `down` (its effect is categorical, not linear -- 4th down
+    behaves nothing like an extrapolation from 1st-3rd) plus the
+    continuous situational features."""
+    return df.select(
+        *[(pl.col("down") == d).cast(pl.Float64).alias(f"_down_{int(d)}") for d in _PROE_DOWNS],
+        *_PROE_CONTINUOUS_FEATURES,
+    )
+
+
+def _fit_proe_models(training: pl.DataFrame) -> dict[int, LogisticRegression]:
+    """One logistic model per season, fit only on *prior* seasons' plays
+    (walk-forward, confirmed) -- the earliest season in the input has no
+    prior data and gets no model, so its `proe` stays honestly null
+    rather than using a same-season or future-season fit. Refitting once
+    per season (not per week) is enough: within-season situational
+    tendencies barely shift, and this avoids ~18 refits/season for no
+    real behavioural gain.
+    """
+    models: dict[int, LogisticRegression] = {}
+    seasons = sorted(training["season"].unique().to_list())
+    for season in seasons:
+        prior = training.filter(pl.col("season") < season)
+        if prior.height == 0:
+            continue
+        design = _proe_design_matrix(prior)
+        model = LogisticRegression(max_iter=1000)
+        model.fit(design.to_numpy(), prior["pass"].to_numpy())
+        models[season] = model
+    return models
+
+
+def add_proe(team_week_context: pl.DataFrame, pbp: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.7: `proe` (SPEC §10.2) -- each play's actual `pass` indicator
+    minus the walk-forward baseline model's predicted pass probability for
+    that play's situation, averaged per (team, season, week). Confirmed
+    with you: walk-forward per season (see `_fit_proe_models`), not
+    nflverse's own pre-built `xpass`/`pass_oe` (a single static fit across
+    the whole historical release, which would leak later seasons' league-
+    wide passing trends into earlier seasons' backtest folds) and not a
+    single static fit of our own either.
+    """
+    training = _proe_training_frame(pbp)
+    models = _fit_proe_models(training)
+
+    if not models:
+        return team_week_context
+
+    parts = []
+    for season, model in models.items():
+        season_plays = training.filter(pl.col("season") == season)
+        design = _proe_design_matrix(season_plays)
+        predicted = model.predict_proba(design.to_numpy())[:, 1]
+        parts.append(season_plays.with_columns(pl.Series("_predicted_pass_prob", predicted)))
+    with_predictions = pl.concat(parts, how="vertical_relaxed")
+
+    proe_by_team_week = (
+        with_predictions.with_columns(
+            (pl.col("pass") - pl.col("_predicted_pass_prob")).alias("_proe_play")
+        )
+        .group_by(["season", "week", pl.col("posteam").alias("team")])
+        .agg(pl.col("_proe_play").mean().alias("proe"))
+    )
+    return team_week_context.drop("proe").join(
+        proe_by_team_week, on=["team", "season", "week"], how="left"
+    )
+
+
+def _parse_minutes_seconds(col: str) -> pl.Expr:
+    parts = pl.col(col).str.split(":")
+    return parts.list.get(0).cast(pl.Int64) * 60 + parts.list.get(1).cast(pl.Int64)
+
+
+NEUTRAL_SCRIPT_SCORE_MARGIN = 7
+NEUTRAL_SCRIPT_QUARTERS = (1.0, 2.0, 3.0)
+
+
+def add_neutral_pace(team_week_context: pl.DataFrame, pbp: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.7: `neutral_pace_sec` (SPEC §10.2) -- seconds per play in
+    neutral game script (score within 7, Q1-Q3), per (team, season, week).
+
+    Uses real per-drive `drive_time_of_possession`/`drive_play_count`
+    (already-computed nflverse drive aggregates -- confirmed live,
+    `drive_play_count` counts only real scrimmage snaps, not the
+    kickoff/PAT rows that share the same `drive` value) rather than
+    differencing `game_seconds_remaining` between consecutive plays --
+    the latter needs careful handling of timeouts/quarter breaks/
+    injury stoppages to avoid inflating the gap; the former sidesteps all
+    of that by using a value nflverse has already computed correctly.
+
+    A drive's neutral-script classification is decided by its *starting*
+    context (first scrimmage play's `score_differential`/
+    `drive_quarter_start`), not evaluated play-by-play -- score changes
+    mid-drive, and pace is a property of the drive's game-script
+    conditions when it began, not a play-by-play filter within it.
+    """
+    plays = _scrimmage_plays(pbp)
+    per_drive = (
+        plays.sort(["game_id", "play_id"])
+        .group_by(["season", "week", "posteam", "drive"], maintain_order=True)
+        .agg(
+            pl.col("score_differential").first().alias("_start_score_differential"),
+            pl.col("drive_quarter_start").first().alias("_start_quarter"),
+            pl.col("drive_time_of_possession").first().alias("_top_str"),
+            pl.col("drive_play_count").first().alias("_play_count"),
+        )
+    )
+    neutral_drives = per_drive.filter(
+        (pl.col("_start_score_differential").abs() <= NEUTRAL_SCRIPT_SCORE_MARGIN)
+        & pl.col("_start_quarter").is_in(NEUTRAL_SCRIPT_QUARTERS)
+    ).with_columns(_parse_minutes_seconds("_top_str").alias("_top_seconds"))
+
+    per_team_week = (
+        neutral_drives.group_by(["season", "week", pl.col("posteam").alias("team")])
+        .agg(
+            pl.col("_top_seconds").sum().alias("_total_seconds"),
+            pl.col("_play_count").sum().alias("_total_plays"),
+        )
+        .with_columns(
+            pl.when(pl.col("_total_plays") > 0)
+            .then(pl.col("_total_seconds") / pl.col("_total_plays"))
+            .otherwise(None)
+            .alias("neutral_pace_sec")
+        )
+        .select("team", "season", "week", "neutral_pace_sec")
+    )
+    return team_week_context.drop("neutral_pace_sec").join(
+        per_team_week, on=["team", "season", "week"], how="left"
     )
 
 
@@ -633,8 +802,14 @@ __all__ = [
     "GOAL_ZONE_YARDLINE",
     "INJURY_REPORT_FALLBACK_HOUR_UTC",
     "INJURY_REPORT_LAG_DAYS",
+    "NEUTRAL_SCRIPT_QUARTERS",
+    "NEUTRAL_SCRIPT_SCORE_MARGIN",
     "RED_ZONE_YARDLINE",
+    "SCORE_DIFFERENTIAL_CAP",
     "SKILL_POSITIONS",
+    "YDSTOGO_CAP",
+    "add_neutral_pace",
+    "add_proe",
     "add_schedule_context",
     "add_xfp",
     "backfill_injury_date_modified",

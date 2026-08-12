@@ -19,8 +19,25 @@ def _pbp_row(**kwargs: object) -> dict:
         "receiver_player_id": None,
         "rusher_player_id": None,
         "qb_scramble": 0,
+        # task 1.7: PROE baseline model inputs.
+        "down": 1.0,
+        "ydstogo": 10.0,
+        "score_differential": 0.0,
+        "half_seconds_remaining": 900.0,
+        "qb_kneel": 0,
+        "qb_spike": 0,
+        "pass": None,  # None -> derived from play_type below, unless overridden
+        # task 1.7: neutral_pace_sec drive-level inputs.
+        "game_id": "2025_01_KC_BAL",
+        "play_id": 1.0,
+        "drive": 1.0,
+        "drive_quarter_start": 1.0,
+        "drive_time_of_possession": "2:00",
+        "drive_play_count": 5.0,
     }
     row.update(kwargs)
+    if row["pass"] is None:
+        row["pass"] = 1.0 if row["play_type"] == "pass" else 0.0
     return row
 
 
@@ -63,6 +80,287 @@ def test_build_team_week_context_leaves_deferred_columns_null() -> None:
     assert row["neutral_pace_sec"] is None
     assert row["implied_total"] is None
     assert row["spread"] is None
+
+
+# --- add_proe (task 1.7) ------------------------------------------------------------
+
+
+def _situational_pbp_rows() -> list[dict]:
+    """A synthetic but varied set of 2024 (prior-season) plays: enough
+    spread across down/ydstogo/score_differential/half_seconds_remaining
+    for a logistic fit to converge without perfect separation. Pass
+    likelihood rises with down and ydstogo but isn't deterministic (each
+    down/distance combo has both pass and run rows)."""
+    rows = []
+    for down in (1.0, 2.0, 3.0, 4.0):
+        for ydstogo in (2.0, 5.0, 8.0, 12.0, 18.0):
+            for score_differential in (-14.0, 0.0, 14.0):
+                pass_leaning = down >= 3 or ydstogo >= 8
+                # Two rows per combo: one following the situational lean, one
+                # against it -- guarantees both classes exist everywhere.
+                rows.append(
+                    _pbp_row(
+                        season=2024,
+                        week=1,
+                        posteam="KC",
+                        play_type="pass" if pass_leaning else "run",
+                        down=down,
+                        ydstogo=ydstogo,
+                        score_differential=score_differential,
+                        half_seconds_remaining=900.0,
+                        yardline_100=50.0,
+                    )
+                )
+                rows.append(
+                    _pbp_row(
+                        season=2024,
+                        week=1,
+                        posteam="KC",
+                        play_type="run" if pass_leaning else "pass",
+                        down=down,
+                        ydstogo=ydstogo,
+                        score_differential=score_differential,
+                        half_seconds_remaining=900.0,
+                        yardline_100=50.0,
+                    )
+                )
+    return rows
+
+
+def _team_context_stub(teams_seasons_weeks: list[tuple[str, int, int]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "team": [t for t, _, _ in teams_seasons_weeks],
+            "season": [s for _, s, _ in teams_seasons_weeks],
+            "week": [w for _, _, w in teams_seasons_weeks],
+            "proe": [None] * len(teams_seasons_weeks),
+            "neutral_pace_sec": [None] * len(teams_seasons_weeks),
+        },
+        schema_overrides={"proe": pl.Float64, "neutral_pace_sec": pl.Float64},
+    )
+
+
+def test_add_proe_ranks_a_team_that_passes_more_than_expected_higher() -> None:
+    """Team A and team B share *identical* situational features in every
+    row (same down/ydstogo/score_differential/half_seconds_remaining/
+    yardline_100), so the fitted model predicts the same pass probability
+    for both -- whatever that probability is, the team with the higher
+    actual pass rate must come out with the higher proe. This holds
+    regardless of the fitted coefficients, so the test doesn't need to
+    hand-compute them."""
+    training = _situational_pbp_rows()
+    same_situation = {
+        "down": 1.0,
+        "ydstogo": 10.0,
+        "score_differential": 0.0,
+        "half_seconds_remaining": 900.0,
+        "yardline_100": 50.0,
+    }
+    season_2025 = [
+        _pbp_row(season=2025, week=1, posteam="AAA", play_type=pt, **same_situation)
+        for pt in ["pass"] * 8 + ["run"] * 2
+    ] + [
+        _pbp_row(season=2025, week=1, posteam="BBB", play_type=pt, **same_situation)
+        for pt in ["pass"] * 2 + ["run"] * 8
+    ]
+    pbp = _pbp(training + season_2025)
+    twc = _team_context_stub([("AAA", 2025, 1), ("BBB", 2025, 1)])
+
+    result = build.add_proe(twc, pbp)
+
+    rows = {row["team"]: row for row in result.iter_rows(named=True)}
+    assert rows["AAA"]["proe"] is not None
+    assert rows["BBB"]["proe"] is not None
+    assert rows["AAA"]["proe"] > rows["BBB"]["proe"]
+
+
+def test_add_proe_is_null_for_a_season_with_no_prior_season_in_the_data() -> None:
+    """Walk-forward by design (confirmed): the baseline model for season S
+    is fit only on seasons < S. The very first season in the input has no
+    prior season to fit on, so its proe stays honestly null rather than
+    using a same-season or future-season fit."""
+    pbp = _pbp(_situational_pbp_rows())  # only season 2024 present
+    twc = _team_context_stub([("KC", 2024, 1)])
+
+    result = build.add_proe(twc, pbp)
+
+    assert result.row(0, named=True)["proe"] is None
+
+
+def test_add_proe_excludes_kneels_and_spikes_from_the_baseline_fit() -> None:
+    """A garbage-time kneel or a clock-stopping spike isn't a real
+    play-calling decision -- including them would bias the down/distance/
+    score baseline. Exercised indirectly: a training set salted with a
+    lopsided run of kneels (all "run", would drag the fit toward
+    predicting run at that exact situation) shouldn't change the ranking
+    established by test_add_proe_ranks_a_team_that_passes_more_than_expected_higher
+    when the same kneels are added to the *prior* season's training data
+    for a situation neither test team plays in."""
+    training = _situational_pbp_rows()
+    kneels = [
+        _pbp_row(
+            season=2024,
+            week=1,
+            posteam="KC",
+            play_type="run",
+            qb_kneel=1,
+            down=1.0,
+            ydstogo=10.0,
+            score_differential=20.0,
+            half_seconds_remaining=30.0,
+            yardline_100=50.0,
+        )
+        for _ in range(30)
+    ]
+    same_situation = {
+        "down": 1.0,
+        "ydstogo": 10.0,
+        "score_differential": 0.0,
+        "half_seconds_remaining": 900.0,
+        "yardline_100": 50.0,
+    }
+    season_2025 = [
+        _pbp_row(season=2025, week=1, posteam="AAA", play_type=pt, **same_situation)
+        for pt in ["pass"] * 8 + ["run"] * 2
+    ] + [
+        _pbp_row(season=2025, week=1, posteam="BBB", play_type=pt, **same_situation)
+        for pt in ["pass"] * 2 + ["run"] * 8
+    ]
+    pbp = _pbp(training + kneels + season_2025)
+    twc = _team_context_stub([("AAA", 2025, 1), ("BBB", 2025, 1)])
+
+    result = build.add_proe(twc, pbp)
+
+    rows = {row["team"]: row for row in result.iter_rows(named=True)}
+    assert rows["AAA"]["proe"] > rows["BBB"]["proe"]
+
+
+# --- add_neutral_pace (task 1.7) -----------------------------------------------------
+
+
+def _drive_row(**kwargs: object) -> dict:
+    return _pbp_row(**kwargs)
+
+
+def test_add_neutral_pace_averages_seconds_per_play_over_qualifying_drives() -> None:
+    """Two drives, both neutral-script (score within 7, Q1-3): drive 1 is
+    2:00 (120s) over 4 plays = 30s/play; drive 2 is 1:00 (60s) over 2
+    plays = 30s/play. Combined: 180s / 6 plays = 30s/play exactly."""
+    rows = [
+        _drive_row(
+            game_id="g1",
+            play_id=float(i),
+            posteam="KC",
+            season=2025,
+            week=1,
+            drive=1.0,
+            drive_quarter_start=1.0,
+            score_differential=0.0,
+            drive_time_of_possession="2:00",
+            drive_play_count=4.0,
+        )
+        for i in range(1, 5)
+    ] + [
+        _drive_row(
+            game_id="g1",
+            play_id=float(i),
+            posteam="KC",
+            season=2025,
+            week=1,
+            drive=2.0,
+            drive_quarter_start=2.0,
+            score_differential=3.0,
+            drive_time_of_possession="1:00",
+            drive_play_count=2.0,
+        )
+        for i in range(5, 7)
+    ]
+    pbp = _pbp(rows)
+    twc = _team_context_stub([("KC", 2025, 1)])
+
+    result = build.add_neutral_pace(twc, pbp)
+
+    assert result.row(0, named=True)["neutral_pace_sec"] == pytest.approx(30.0)
+
+
+def test_add_neutral_pace_excludes_drives_outside_the_neutral_script() -> None:
+    """A blowout drive (score_differential=21, outside |7|) and a
+    Q4 drive (drive_quarter_start=4) are both excluded -- only the one
+    genuinely neutral drive (score within 7, Q1-3) counts."""
+    neutral_drive = [
+        _drive_row(
+            game_id="g1",
+            play_id=float(i),
+            posteam="KC",
+            season=2025,
+            week=1,
+            drive=1.0,
+            drive_quarter_start=1.0,
+            score_differential=0.0,
+            drive_time_of_possession="1:40",
+            drive_play_count=5.0,
+        )
+        for i in range(1, 6)
+    ]
+    blowout_drive = [
+        _drive_row(
+            game_id="g1",
+            play_id=float(i),
+            posteam="KC",
+            season=2025,
+            week=1,
+            drive=2.0,
+            drive_quarter_start=2.0,
+            score_differential=21.0,
+            drive_time_of_possession="0:20",
+            drive_play_count=2.0,
+        )
+        for i in range(6, 8)
+    ]
+    q4_drive = [
+        _drive_row(
+            game_id="g1",
+            play_id=float(i),
+            posteam="KC",
+            season=2025,
+            week=1,
+            drive=3.0,
+            drive_quarter_start=4.0,
+            score_differential=0.0,
+            drive_time_of_possession="0:10",
+            drive_play_count=1.0,
+        )
+        for i in range(8, 9)
+    ]
+    pbp = _pbp(neutral_drive + blowout_drive + q4_drive)
+    twc = _team_context_stub([("KC", 2025, 1)])
+
+    result = build.add_neutral_pace(twc, pbp)
+
+    # 100s / 5 plays = 20s/play -- only the neutral drive counted.
+    assert result.row(0, named=True)["neutral_pace_sec"] == pytest.approx(20.0)
+
+
+def test_add_neutral_pace_is_null_when_no_drive_qualifies() -> None:
+    pbp = _pbp(
+        [
+            _drive_row(
+                game_id="g1",
+                play_id=1.0,
+                posteam="KC",
+                season=2025,
+                week=1,
+                drive=1.0,
+                drive_quarter_start=4.0,  # not neutral
+                score_differential=0.0,
+            )
+        ]
+    )
+    twc = _team_context_stub([("KC", 2025, 1)])
+
+    result = build.add_neutral_pace(twc, pbp)
+
+    assert result.row(0, named=True)["neutral_pace_sec"] is None
 
 
 # --- add_schedule_context (task 1.3) -----------------------------------------------
