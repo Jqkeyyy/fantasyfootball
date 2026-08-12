@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-11
 **Last machine:** Maybe (Windows)
-**Last commit:** `a7ff7f6` — docs: fill in commit hash in HANDOFF.md (this session's 0.4 and 0.5 work is uncommitted — see §2)
+**Last commit:** `4cc1a5f` — feat: scoring engine and golden test validation (tasks 0.4, 0.5)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
