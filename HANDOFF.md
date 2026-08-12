@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `<pending>` — feat: Streamlit draft board page (task 0.13)
+**Last commit:** `752a228` — feat: Streamlit draft board page (task 0.13)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
