@@ -515,12 +515,80 @@ def add_xfp(player_week_usage: pl.DataFrame, ff_opportunity: pl.DataFrame) -> pl
     return player_week_usage.drop("xfp").join(xfp, on=["player_id", "season", "week"], how="left")
 
 
+# Real gap found live (task 1.4): nflreadpy's injuries source has real
+# report_status/practice_status designations for the entire 2025 season
+# but `date_modified` is null for every one of its 6,068 rows -- confirmed
+# against a same-day fresh (not stale) fetch, and confirmed the gap is
+# upstream in nflreadpy itself, not introduced by `normalize_injuries`.
+# Every other season (2015-2024) has `date_modified` fully populated.
+# SPEC §6.2 calls this column "essential" for the as_of contract -- without
+# it, 2025 can't be walk-forward validated honestly. Confirmed with you:
+# fall back to a documented heuristic rather than leaving 2025 unusable or
+# guessing silently.
+#
+# The heuristic is grounded in the real 2015-2024 data, not assumed: of
+# the 24,209 real rows with both a `report_status` and a real
+# `date_modified`, 83% land on a Friday (matching the NFL's real "final
+# injury report" cadence), and the single most common hour across all of
+# them is 12:00 UTC. `INJURY_REPORT_LAG_DAYS = 2` (published 2 days before
+# kickoff) generalises correctly across Thursday/Sunday/Monday games
+# without hardcoding "Friday" specifically, since it's always relative to
+# that team's own game that week, not the calendar.
+INJURY_REPORT_LAG_DAYS = 2
+INJURY_REPORT_FALLBACK_HOUR_UTC = 12
+
+
+def backfill_injury_date_modified(injuries: pl.DataFrame, schedule: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.4: fill `date_modified` for rows where nflreadpy's source has
+    none (2025, confirmed -- see the module-level comment above
+    `INJURY_REPORT_LAG_DAYS`) from that team's own real game date that
+    week, minus `INJURY_REPORT_LAG_DAYS` at `INJURY_REPORT_FALLBACK_HOUR_UTC`.
+
+    Adds `date_modified_is_estimated` so this approximation is never
+    silently indistinguishable from a real, sourced timestamp -- task
+    1.5's as_of logic (or anything else consuming this column) can choose
+    to exclude or down-weight estimated rows rather than trust them
+    blindly.
+
+    Rows whose `team` has no matching game in `schedule` that week (should
+    not happen for real data, but not assumed) keep their original
+    `date_modified` -- null stays null rather than guessed with no game
+    date to anchor to.
+    """
+    home_side = schedule.select("season", "week", pl.col("home_team").alias("team"), "gameday")
+    away_side = schedule.select("season", "week", pl.col("away_team").alias("team"), "gameday")
+    team_gameday = pl.concat([home_side, away_side], how="vertical_relaxed")
+
+    with_gameday = injuries.join(team_gameday, on=["season", "week", "team"], how="left")
+
+    fallback = (
+        pl.col("gameday")
+        .str.strptime(pl.Date, "%Y-%m-%d")
+        .cast(pl.Datetime(time_unit="us"))
+        .dt.offset_by(f"-{INJURY_REPORT_LAG_DAYS}d")
+        .dt.offset_by(f"{INJURY_REPORT_FALLBACK_HOUR_UTC}h")
+        .dt.replace_time_zone("UTC")
+    )
+
+    return (
+        with_gameday.with_columns(
+            pl.col("date_modified").is_null().alias("date_modified_is_estimated"),
+            pl.coalesce([pl.col("date_modified"), fallback]).alias("date_modified"),
+        )
+        .drop("gameday")
+        .select(injuries.columns + ["date_modified_is_estimated"])
+    )
+
+
 __all__ = [
     "GOAL_ZONE_YARDLINE",
+    "INJURY_REPORT_FALLBACK_HOUR_UTC",
+    "INJURY_REPORT_LAG_DAYS",
     "RED_ZONE_YARDLINE",
     "SKILL_POSITIONS",
     "add_schedule_context",
     "add_xfp",
+    "backfill_injury_date_modified",
     "build_defense_position_allowed",
     "build_player_week_stats",
     "build_player_week_usage",

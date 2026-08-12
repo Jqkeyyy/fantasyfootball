@@ -103,7 +103,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Derive `home_implied_total` / `away_implied_total` from spread and total; **verify and document the sign convention of `spread_line`**. Build `config/stadiums.csv`. Open-Meteo forecast plus historical archive, with the dome override.
   **Done when:** implied totals are correct on a hand-checked sample of five games; dome games show wind 0.
 
-- [ ] **1.4 — Injury ingestion** ⏱ 2h — SPEC §6.2
+- [x] **1.4 — Injury ingestion** ⏱ 2h — SPEC §6.2
   Weekly report status with `date_modified` preserved for as_of logic.
   **Done when:** designations are available per player-week with publication timestamps.
 

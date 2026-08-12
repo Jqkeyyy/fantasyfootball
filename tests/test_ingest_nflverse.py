@@ -423,6 +423,7 @@ def test_normalize_injuries_maps_gsis_id_to_player_id() -> None:
             "gsis_id": ["00-0031234"],
             "season": [2025],
             "week": [3],
+            "team": ["KC"],
             "report_status": ["Questionable"],
             "practice_status": ["Limited Participation in Practice"],
             "report_primary_injury": ["Ankle"],
@@ -434,6 +435,7 @@ def test_normalize_injuries_maps_gsis_id_to_player_id() -> None:
 
     row = result.row(0, named=True)
     assert row["player_id"] == "00-0031234"
+    assert row["team"] == "KC"
     assert row["report_status"] == "Questionable"
     assert row["date_modified"] == "2025-09-20T18:00:00Z"
 
@@ -448,6 +450,7 @@ def test_normalize_injuries_casts_season_and_week_to_int32() -> None:
             "gsis_id": ["00-0031234"],
             "season": [2025.0],
             "week": [3.0],
+            "team": ["KC"],
             "report_status": ["Questionable"],
             "practice_status": ["Limited Participation in Practice"],
             "report_primary_injury": ["Ankle"],
@@ -473,17 +476,42 @@ def test_normalize_injuries_keeps_rows_with_no_gsis_id() -> None:
             "gsis_id": [None],
             "season": [2025],
             "week": [3],
+            "team": ["KC"],
             "report_status": ["Out"],
             "practice_status": [None],
             "report_primary_injury": ["Hamstring"],
             "date_modified": ["2025-09-20T18:00:00Z"],
-        }
+        },
+        schema_overrides={"practice_status": pl.Utf8},
     )
 
     result = nflverse.normalize_injuries(raw)
 
     assert result.height == 1
     assert result.row(0, named=True)["player_id"] is None
+
+
+def test_normalize_injuries_blanks_a_literal_newline_practice_status_to_null() -> None:
+    """Real gotcha, found live: 213 real rows across 2015-2025 carry a
+    literal "\n" (sometimes with trailing spaces) instead of an empty
+    practice_status -- a missing value with extra steps, not a real
+    fourth category alongside Full/Limited/Did Not Participate."""
+    raw = pl.DataFrame(
+        {
+            "gsis_id": ["00-0031234"],
+            "season": [2025],
+            "week": [3],
+            "team": ["KC"],
+            "report_status": ["Out"],
+            "practice_status": ["\n    "],
+            "report_primary_injury": ["Ankle"],
+            "date_modified": ["2025-09-20T18:00:00Z"],
+        }
+    )
+
+    result = nflverse.normalize_injuries(raw)
+
+    assert result.row(0, named=True)["practice_status"] is None
 
 
 # --- fetch_ff_opportunity (task 1.2) -----------------------------------------------

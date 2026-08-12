@@ -420,13 +420,25 @@ def normalize_injuries(raw: pl.DataFrame) -> pl.DataFrame:
     break any join against the other five interim tables' `Int32`
     season/week columns (the exact `SchemaError` this project's own tests
     for this module hit while under construction).
+
+    `practice_status` is stripped and blanked-to-null -- confirmed live,
+    213 real rows across 2015-2025 carry a literal `"\n"` (or `"\n    "`)
+    instead of an empty designation, which is a missing value with extra
+    steps, not a distinct real category.
+
+    `team` is kept even though it isn't in SPEC §6.2's own column list for
+    this table -- task 1.4's `interim.build.backfill_injury_date_modified`
+    needs it to resolve each row's own game date against `schedule`, and
+    it costs nothing extra since the raw source already carries it
+    (same justified-addition precedent as task 0.12's provenance columns).
     """
     return raw.select(
         pl.col("gsis_id").alias("player_id"),
         pl.col("season").cast(pl.Int32),
         pl.col("week").cast(pl.Int32),
+        "team",
         "report_status",
-        "practice_status",
+        pl.col("practice_status").str.strip_chars().replace("", None),
         "report_primary_injury",
         "date_modified",
     )

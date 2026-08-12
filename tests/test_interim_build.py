@@ -244,6 +244,119 @@ def test_add_kickoff_utc_preserves_schedule_columns_and_other_values() -> None:
     assert row["stadium_id"] == "KAN00"
 
 
+# --- backfill_injury_date_modified (task 1.4) --------------------------------------
+
+
+def _injury_row(**kwargs: object) -> dict:
+    row: dict[str, object] = {
+        "player_id": "00-0031234",
+        "season": 2025,
+        "week": 1,
+        "team": "KC",
+        "report_status": "Questionable",
+        "practice_status": "Limited Participation in Practice",
+        "report_primary_injury": "Ankle",
+        "date_modified": None,
+    }
+    row.update(kwargs)
+    return row
+
+
+def _injuries(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows, schema_overrides={"date_modified": pl.Datetime(time_zone="UTC")})
+
+
+def _mini_schedule(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows)
+
+
+def test_backfill_injury_date_modified_fills_from_the_teams_own_game_two_days_prior() -> None:
+    injuries = _injuries([_injury_row(team="KC", season=2025, week=1, date_modified=None)])
+    schedule = _mini_schedule(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "BAL",
+                "gameday": "2025-09-07",  # Sunday
+            }
+        ]
+    )
+
+    result = build.backfill_injury_date_modified(injuries, schedule)
+
+    row = result.row(0, named=True)
+    assert row["date_modified"].isoformat() == "2025-09-05T12:00:00+00:00"  # Friday, 2 days prior
+    assert row["date_modified_is_estimated"] is True
+
+
+def test_backfill_injury_date_modified_generalises_to_a_thursday_game() -> None:
+    injuries = _injuries([_injury_row(team="BAL", season=2025, week=1, date_modified=None)])
+    schedule = _mini_schedule(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "BAL",
+                "gameday": "2025-09-11",  # Thursday
+            }
+        ]
+    )
+
+    result = build.backfill_injury_date_modified(injuries, schedule)
+
+    row = result.row(0, named=True)
+    assert row["date_modified"].isoformat() == "2025-09-09T12:00:00+00:00"  # Tuesday, 2 days prior
+    assert row["date_modified_is_estimated"] is True
+
+
+def test_backfill_injury_date_modified_leaves_a_real_timestamp_untouched() -> None:
+    from datetime import UTC, datetime
+
+    real_ts = datetime(2025, 9, 5, 18, 0, tzinfo=UTC)
+    injuries = _injuries([_injury_row(team="KC", season=2025, week=1, date_modified=real_ts)])
+    schedule = _mini_schedule(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "BAL",
+                "gameday": "2025-09-07",
+            }
+        ]
+    )
+
+    result = build.backfill_injury_date_modified(injuries, schedule)
+
+    row = result.row(0, named=True)
+    assert row["date_modified"] == real_ts
+    assert row["date_modified_is_estimated"] is False
+
+
+def test_backfill_injury_date_modified_keeps_null_when_no_matching_game() -> None:
+    injuries = _injuries([_injury_row(team="ZZZ", season=2025, week=1, date_modified=None)])
+    schedule = _mini_schedule(
+        [
+            {
+                "season": 2025,
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "BAL",
+                "gameday": "2025-09-07",
+            }
+        ]
+    )
+
+    result = build.backfill_injury_date_modified(injuries, schedule)
+
+    row = result.row(0, named=True)
+    assert row["date_modified"] is None
+    assert row["date_modified_is_estimated"] is True
+
+
 # --- _player_position_by_season ---------------------------------------------------
 
 
