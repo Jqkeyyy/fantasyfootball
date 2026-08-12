@@ -1214,6 +1214,7 @@ def test_normalize_adp_maps_positions_and_carries_spread_columns() -> None:
     assert gibbs["adp_high"] == 1
     assert gibbs["adp_low"] == 4
     assert gibbs["times_drafted"] == 1176
+    assert gibbs["bye_week"] == 6
 
     dst = df.filter(pl.col("player_name") == "Denver Defense").row(0, named=True)
     assert dst["position"] == "DST"  # DEF -> DST

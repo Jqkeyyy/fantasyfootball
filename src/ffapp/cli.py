@@ -3,7 +3,8 @@ import typer
 from ffapp import __version__
 from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
-from ffapp.config import load_all_leagues, load_primary_league, load_settings
+from ffapp.config import load_all_leagues, load_league, load_primary_league, load_settings
+from ffapp.draft import board as draft_board
 from ffapp.env import load_env
 from ffapp.ids import mapping
 from ffapp.scoring import golden
@@ -15,10 +16,12 @@ ingest_app = typer.Typer(name="ingest", help="Ingest raw data from external sour
 cache_app = typer.Typer(name="cache", help="Manage the offline data cache (SPEC-ADDENDUM-02.md).")
 ids_app = typer.Typer(name="ids", help="Cross-source player id resolution (SPEC.md §7).")
 scoring_app = typer.Typer(name="scoring", help="League scoring engine (SPEC.md §8).")
+draft_app = typer.Typer(name="draft", help="Draft board and draft-day support (SPEC.md §9).")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
 app.add_typer(scoring_app, name="scoring")
+app.add_typer(draft_app, name="draft")
 
 
 def _version_callback(value: bool) -> None:
@@ -228,3 +231,40 @@ def scoring_validate(
     results = [_validate_one(slug, offline=offline) for slug in slugs]
     if not all(results):
         raise typer.Exit(code=1)
+
+
+@draft_app.command("board")
+def draft_board_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to the league's own configured season."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Assemble the draft board CSV (SPEC.md §9.7): every projected player,
+    ranked by VOR, with tiers, ADP, survival probability, and opportunity
+    cost, written to data/outputs/draft_board_<season>.csv.
+    """
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    resolved_season = season if season is not None else league_config.season
+
+    try:
+        result = draft_board.build_draft_board(
+            league_config, settings, season=resolved_season, offline=offline
+        )
+    except (
+        draft_board.NoRankingsSourcesAvailableError,
+        draft_board.NotEnoughPicksError,
+    ) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    output_path = settings.data_root / "outputs" / f"draft_board_{resolved_season}.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.write_csv(output_path)
+    typer.echo(f"Wrote {result.height} players to {output_path}")

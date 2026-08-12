@@ -90,6 +90,7 @@ def test_join_adp_adds_columns_and_keeps_unmatched_rows() -> None:
             "adp_high": [8],
             "adp_low": [18],
             "times_drafted": [500],
+            "bye_week": [7],
         }
     )
 
@@ -99,6 +100,7 @@ def test_join_adp_adds_columns_and_keeps_unmatched_rows() -> None:
     covered = result.filter(pl.col("join_key") == "covered|RB").row(0, named=True)
     assert covered["adp"] == 12.5
     assert covered["adp_sd"] == 2.0
+    assert covered["bye_week"] == 7
     uncovered = result.filter(pl.col("join_key") == "uncovered|RB").row(0, named=True)
     assert uncovered["adp"] is None
 

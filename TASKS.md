@@ -70,7 +70,7 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Ingest ADP with spread, compute `p_avail_next`, `p_avail_after_next`, and `opportunity_cost` given draft slot and league size.
   **Done when:** given a draft slot, the board shows sensible survival probabilities (near 1.0 for late-ADP players at an early pick, near 0 for the reverse) and `opportunity_cost` is populated.
 
-- [ ] **0.12 — Draft board output** ⏱ 2h
+- [x] **0.12 — Draft board output** ⏱ 2h
   SPEC §9.7
   Assemble every column from §9.7 into `data/outputs/draft_board_<season>.csv`. Include `bye_week` and, if §14.5 is not yet built, leave `playoff_sos` null rather than faking it.
   **Done when:** `ffapp draft board` produces a sorted, complete CSV you would actually draft from.

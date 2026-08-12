@@ -1,8 +1,26 @@
+import pytest
+
 from ffapp.draft import pick_order
 
 
 def _rosters(*owner_by_roster_id: tuple[int, str]) -> list[dict]:
     return [{"roster_id": rid, "owner_id": owner} for rid, owner in owner_by_roster_id]
+
+
+# --- resolve_my_roster_id -------------------------------------------------------
+
+
+def test_resolve_my_roster_id_finds_the_matching_roster() -> None:
+    rosters = _rosters((5, "user_a"), (7, "user_b"))
+
+    assert pick_order.resolve_my_roster_id("user_b", rosters) == 7
+
+
+def test_resolve_my_roster_id_raises_if_no_roster_matches() -> None:
+    rosters = _rosters((5, "user_a"))
+
+    with pytest.raises(ValueError, match="user_z"):
+        pick_order.resolve_my_roster_id("user_z", rosters)
 
 
 # --- snake_pick_number --------------------------------------------------------

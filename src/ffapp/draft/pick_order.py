@@ -95,6 +95,21 @@ def pick_owner(
     return base_owner
 
 
+def resolve_my_roster_id(user_id: str, rosters: list[dict[str, Any]]) -> int:
+    """The roster_id owned by `user_id` (SPEC §9.6's "given your draft
+    slot" -- resolved here from Sleeper's own data rather than typed in by
+    hand, since `config/settings.yml`'s `sleeper.username` already resolves
+    to a `user_id` via `ingest/sleeper.fetch_user`).
+
+    Raises ValueError if no roster in `rosters` is owned by this user_id --
+    a config/account mismatch a human needs to see, not a silent None.
+    """
+    for roster in rosters:
+        if str(roster.get("owner_id")) == str(user_id):
+            return int(roster["roster_id"])
+    raise ValueError(f"No roster in this league is owned by user_id={user_id!r}")
+
+
 def my_pick_numbers(
     my_roster_id: int,
     *,
@@ -125,6 +140,7 @@ __all__ = [
     "my_pick_numbers",
     "parse_traded_picks",
     "pick_owner",
+    "resolve_my_roster_id",
     "roster_id_by_slot",
     "snake_pick_number",
 ]

@@ -1104,9 +1104,13 @@ def fetch_adp(
 def normalize_adp(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
     """Extract each player's consensus ADP + spread into the canonical
     per-player ADP schema (`player_name`, `position`, `team`, `adp`,
-    `adp_sd`, `adp_high`, `adp_low`, `times_drafted`). Positions outside
-    `FFC_POSITION_MAP` (none in real payloads today, but a future site
-    change could add one) are dropped rather than guessed at.
+    `adp_sd`, `adp_high`, `adp_low`, `times_drafted`, `bye_week`). Positions
+    outside `FFC_POSITION_MAP` (none in real payloads today, but a future
+    site change could add one) are dropped rather than guessed at.
+
+    `bye_week` rides along for free -- FFC's payload already carries a `bye`
+    field per player (task 0.12 needs it for SPEC §9.7's identity columns;
+    no separate schedule source required for it).
     """
     rows: list[dict[str, Any]] = []
     for player in payload.get("players", []):
@@ -1125,6 +1129,7 @@ def normalize_adp(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
                 "adp_high": player["high"],
                 "adp_low": player["low"],
                 "times_drafted": player.get("times_drafted"),
+                "bye_week": player.get("bye"),
             }
         )
     return pl.DataFrame(rows, infer_schema_length=None)

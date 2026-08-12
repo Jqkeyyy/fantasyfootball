@@ -25,7 +25,7 @@ from typing import Any
 import polars as pl
 from scipy.stats import norm
 
-ADP_COLUMNS = ["adp", "adp_sd", "adp_high", "adp_low", "times_drafted"]
+ADP_COLUMNS = ["adp", "adp_sd", "adp_high", "adp_low", "times_drafted", "bye_week"]
 
 
 def keeper_sleeper_ids(rosters_raw: list[dict[str, Any]]) -> set[str]:
