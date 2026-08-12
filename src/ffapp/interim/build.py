@@ -15,7 +15,10 @@ missing one:
 - `player_week_usage.route_participation` -- external data gap (NGS
   participation ended mid-2023; FTN's replacement only publishes
   post-season). See SPEC §10.5.
-- `player_week_usage.xfp` -- task 1.2 (ffopportunity ingestion).
+- `player_week_usage.xfp` -- populated by `add_xfp` (task 1.2, ffopportunity
+  ingestion), a separate step from `build_player_week_usage` since it needs
+  a second source (`ingest.nflverse.fetch_ff_opportunity`) task 1.1 didn't
+  fetch.
 - `team_week_context.proe`, `.neutral_pace_sec`, `.implied_total`,
   `.spread` -- task 1.7 ("Team context features") for the first two (both
   need real modelling -- an expected-pass-rate baseline, careful
@@ -44,6 +47,17 @@ from ffapp.scoring.stats import build_stat_frame
 _SCRIMMAGE_PLAY_TYPES = ("pass", "run")
 RED_ZONE_YARDLINE = 20
 GOAL_ZONE_YARDLINE = 5
+
+# player_week_usage is about offensive skill-position usage (targets, air
+# yards, carries) -- nflreadpy's own player_stats carries a row for every
+# position that recorded *any* stat that week, 26 distinct position codes
+# including LB/CB/DE/DL/OL/LS (the same "IDP-style columns on every row"
+# quirk task 0.4/0.5 already found -- a defender's stray def_sacks/def_int
+# value still produces a player_stats row). Confirmed live: without this
+# filter, task 1.2's xfp coverage check came out at 30% purely because
+# ~140k of ~200k player_week_usage rows were non-skill-position players
+# ffopportunity correctly has no data for.
+SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
 
 # (position, play_type) -> SPEC §6.2's defense_position_allowed group.
 # WR_perimeter/WR_slot collapsed to "WR" -- see module docstring.
@@ -274,6 +288,13 @@ def build_player_week_usage(
     `rz_targets`/`rz_carries`/`gz_carries`/`rz_touch_share` come from
     play-by-play. `route_participation`/`xfp` stay null -- see module
     docstring.
+
+    Output rows are scoped to `SKILL_POSITIONS` (see its own comment) --
+    but `_team_carries`/`_team_rz_touches` denominators are computed from
+    the *unfiltered* `player_stats`/play-by-play first, since a team's real
+    rushing total can include a non-skill-position trick-play carry (a
+    fullback, a wildcat snap) that a skill-position-only sum would
+    undercount.
     """
     team_carries = player_stats.group_by(["season", "week", "team"]).agg(
         pl.col("carries").sum().alias("_team_carries")
@@ -290,7 +311,8 @@ def build_player_week_usage(
     )
 
     base = (
-        player_stats.select(
+        player_stats.filter(pl.col("position").is_in(SKILL_POSITIONS))
+        .select(
             "player_id",
             "season",
             "week",
@@ -363,9 +385,34 @@ def build_player_week_usage(
     )
 
 
+def add_xfp(player_week_usage: pl.DataFrame, ff_opportunity: pl.DataFrame) -> pl.DataFrame:
+    """Task 1.2: join ffopportunity's real `total_fantasy_points_exp` onto
+    `player_week_usage`'s `xfp` column (null from `build_player_week_usage`
+    until this runs).
+
+    `ff_opportunity`'s own `season`/`week` come back from nflreadpy as
+    `String`/`Float64` -- confirmed live, yet another source-specific dtype
+    quirk (same lesson as `normalize_injuries`'s `Float64` season/week) --
+    cast to `Int32` to match `player_week_usage` before joining, or the
+    join silently returns zero matches instead of raising (an inner/left
+    join on mismatched dtypes doesn't error in polars, it just never
+    matches -- exactly the kind of silently-empty result CLAUDE.md warns
+    against).
+    """
+    xfp = ff_opportunity.select(
+        "player_id",
+        pl.col("season").cast(pl.Int32),
+        pl.col("week").cast(pl.Int32),
+        pl.col("total_fantasy_points_exp").alias("xfp"),
+    )
+    return player_week_usage.drop("xfp").join(xfp, on=["player_id", "season", "week"], how="left")
+
+
 __all__ = [
     "GOAL_ZONE_YARDLINE",
     "RED_ZONE_YARDLINE",
+    "SKILL_POSITIONS",
+    "add_xfp",
     "build_defense_position_allowed",
     "build_player_week_stats",
     "build_player_week_usage",

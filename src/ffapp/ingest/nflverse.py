@@ -424,9 +424,84 @@ def normalize_injuries(raw: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# SPEC §6.1: ffopportunity is CC-BY-SA (share-alike propagates to derived
+# data), distinct from the plain CC-BY the rest of nflverse's data carries
+# -- written to its own data/raw/ffopportunity/ directory (not mixed into
+# data/raw/nflverse/) so the licence obligation stays unambiguous, per
+# SPEC's own instruction to record each source's licence at ingest time.
+FF_OPPORTUNITY_LICENSE = """ffopportunity (ffverse) -- CC BY-SA 4.0
+
+https://creativecommons.org/licenses/by-sa/4.0/
+
+Precomputed expected fantasy points (xfp) from an xgboost model over
+nflverse play-by-play. Share-alike: any derived data or output built from
+this source inherits the same licence terms and must be attributed, and
+shared under equivalent terms if ever redistributed. See SPEC.md §6.1 and
+§16.5 (public-readiness audit) before any public release.
+
+Source: https://github.com/ffverse/ffopportunity
+"""
+
+
+def _ffopportunity_dir(settings: Settings) -> Path:
+    return settings.cache.root / "ffopportunity"
+
+
+def fetch_ff_opportunity(
+    seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
+) -> Path:
+    """Fetch ffopportunity's weekly expected-fantasy-points data (task 1.2's
+    `xfp` source) for one season or a range to
+    data/raw/ffopportunity/weekly_<label>.parquet, alongside a `LICENSE.txt`
+    recording its CC-BY-SA terms (see module-level `FF_OPPORTUNITY_LICENSE`).
+    """
+    settings = _resolve_settings(settings)
+    label = _season_label(seasons)
+    season_list = _as_season_list(seasons)
+    raw_dir = _ffopportunity_dir(settings)
+    path = raw_dir / f"weekly_{label}.parquet"
+    call_desc = f"load_ff_opportunity(seasons={season_list}, stat_type='weekly')"
+
+    if is_offline(offline):
+        if not path.exists():
+            raise cache_miss(
+                "ffopportunity",
+                "weekly",
+                f"seasons={label}",
+                f"ffapp ingest nflverse --ff-opportunity seasons={label} --no-offline",
+            )
+        meta = read_sidecar(path)
+        if meta is not None:
+            verdict = check_staleness(meta, "ffopportunity_weekly", settings.cache.staleness_hours)
+            if verdict == "stale":
+                logger.warning(
+                    "ffopportunity weekly seasons=%s is stale (fetched_at_utc=%s); run to refresh.",
+                    label,
+                    meta["fetched_at_utc"],
+                )
+        return path
+
+    df = nfl.load_ff_opportunity(seasons=season_list, stat_type="weekly")
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(path)
+    write_sidecar(
+        path,
+        source="ffopportunity",
+        call=call_desc,
+        cache_key="ffopportunity_weekly",
+        rows=df.height,
+    )
+    license_path = raw_dir / "LICENSE.txt"
+    if not license_path.exists():
+        license_path.write_text(FF_OPPORTUNITY_LICENSE, encoding="utf-8")
+    return path
+
+
 __all__ = [
     "CROSSWALK_URL",
+    "FF_OPPORTUNITY_LICENSE",
     "fetch_depth_charts",
+    "fetch_ff_opportunity",
     "fetch_injuries",
     "fetch_pbp",
     "fetch_player_ids",

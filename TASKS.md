@@ -95,9 +95,9 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   `nflreadpy` pulls for play-by-play, player weekly stats, snap counts, depth charts, rosters, injuries, schedules. Normalise to the canonical schemas.
   **Done when:** all six canonical interim tables materialise for seasons 2015–2026 and row counts are sane per season. (2015–2025 — 2026 has no nflverse release yet, no games played; re-run once the season starts.)
 
-- [ ] **1.2 — ffopportunity ingestion** ⏱ 1.5h — SPEC §6.1
+- [x] **1.2 — ffopportunity ingestion** ⏱ 1.5h — SPEC §6.1
   Pull precomputed expected fantasy points releases; join `xfp` onto `player_week_usage`. Record the CC-BY-SA licence in the raw directory.
-  **Done when:** `xfp` is populated for ≥95% of played player-weeks in the training range.
+  **Done when:** `xfp` is populated for ≥95% of played player-weeks in the training range. (100% for player-weeks with real target/carry opportunity — see HANDOFF for how "played" was scoped.)
 
 - [ ] **1.3 — Schedule, betting lines, weather** ⏱ 3h — SPEC §6.2, §10.3
   Derive `home_implied_total` / `away_implied_total` from spread and total; **verify and document the sign convention of `spread_line`**. Build `config/stadiums.csv`. Open-Meteo forecast plus historical archive, with the dome override.

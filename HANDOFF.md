@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `1497acb` — feat: nflverse ingestion (task 1.1)
+**Last commit:** `<pending>` — feat: ffopportunity ingestion (task 1.2)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
-**Next task:** 1.2 (ffopportunity ingestion) — see SPEC §6.1. Nothing blocking it.
-**First concrete step:** Pull ffverse's precomputed expected-fantasy-points (`xfp`) releases and join onto `interim/player_week_usage.parquet` (task 1.1's real output, `data/interim/player_week_usage.parquet` — currently has `xfp` null for every row, explicitly deferred to this task). Record the CC-BY-SA licence in the raw directory per SPEC §6.1's licensing note (share-alike propagates to derived data — worth rereading before this lands, unlike the CC-BY nflverse data everything else here uses). Acceptance bar: `xfp` populated for ≥95% of played player-weeks in the training range (2015–2025, per task 1.1's real materialised range).
+**Next task:** 1.3 (Schedule, betting lines, weather) — see SPEC §6.2, §10.3. Nothing blocking it.
+**First concrete step:** `interim/schedule.parquet` (task 1.1) already has real `spread_line`/`total_line`/`roof`/`surface`/`stadium_id`/`home_rest`/`away_rest` — 1.3's job is `home_implied_total`/`away_implied_total` (currently null, deliberately deferred here), which needs `spread_line`'s sign convention **verified first** (SPEC: "positive spread = home favoured (verify sign at ingest and document)" — not yet checked against real data by any task so far), `kickoff_utc` (also null, needs a new `config/stadiums.csv` with per-stadium timezones), and Open-Meteo forecast/historical weather with the dome override (`schedule.roof` already distinguishes `"outdoors"`/`"closed"`/etc., confirmed live in task 1.1). `team_week_context.implied_total`/`.spread` (also null) can be filled in once 1.3's sign-verified implied totals exist.
 
 **Blocking on me (the human), not the agent:**
 
@@ -120,12 +120,18 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - **A real dtype bug found only by materialising the full range, not by any unit test:** `nflreadpy`'s `load_injuries()` hands back `season`/`week` as `Float64` — confirmed live, every other source (`player_stats`, `schedules`, `pbp`, ...) uses `Int32`. Undetected, this would have broken any join between `interim/injuries.parquet` and the other five interim tables the moment task 1.9 (feature table build) tried one — the exact `SchemaError` this session's own test fixtures hit twice already while under construction (see below). Fixed with an explicit `.cast(pl.Int32)` in `normalize_injuries`; regression test added (`test_normalize_injuries_casts_season_and_week_to_int32`).
   - **`player_week_usage`'s share/ratio columns come straight from `player_stats` itself, not hand-derived** — confirmed live: nflreadpy's own `load_player_stats()` already computes `target_share`, `air_yards_share`, and `wopr` per player-week. Only `offense_snaps`/`offense_snap_pct` (needs `snap_counts`, PFR-sourced and keyed by `pfr_player_id` — resolved via `players_dim`'s existing `pfr_id` column, task 0.3's crosswalk, not a new lookup) and `rz_targets`/`rz_carries`/`gz_carries`/`rz_touch_share`/`adot`/`carry_share` (need real play-by-play aggregation) required this task's own derivation.
   - **Not built:** `depth_charts` is fetched (warmed into the cache) but not yet consumed by any normalizer — no §6.2 canonical table needs it directly; kept for whichever later feature actually wants depth-chart-derived signal (e.g. a "starter" flag). No CLI command for any of this (matches the no-CLI precedent every task since 0.6 has set); materialising the tables is a one-off script, documented in §6 below, same pattern as `tests/test_scoring_golden.py`'s fixture-vs-live-run convention.
+- **1.2** — ffopportunity ingestion (SPEC §6.1). New `ingest/nflverse.py::fetch_ff_opportunity` (wraps `nflreadpy.load_ff_opportunity(stat_type="weekly")`) writing to its own `data/raw/ffopportunity/` directory — deliberately *not* mixed into `data/raw/nflverse/`, since SPEC §6.1 calls out ffopportunity as CC-BY-SA (share-alike) versus the rest of nflverse's plain CC-BY, and a shared directory would blur which licence applies to what. Also writes `data/raw/ffopportunity/LICENSE.txt` recording the CC-BY-SA terms — **the first source in this project to actually implement SPEC §6.1's "record the licence of each source in data/raw/<source>/LICENSE.txt at ingest time" instruction**; every earlier source (including nflverse's own CC-BY data) still doesn't do this, out of scope for today, worth doing eventually. New `interim/build.py::add_xfp` joins `total_fantasy_points_exp` (SPEC's `xfp`, exactly) onto `player_week_usage` by `(player_id, season, week)`. Evidence:
+  - `tests/test_ingest_nflverse.py` (+7 tests) + `tests/test_interim_build.py` (+3 tests) — 400 tests pass total (`uv run pytest -q`, up from 391 at end of 1.1), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+  - **A second real dtype gotcha, same lesson as 1.1's injuries fix, found live before it could bite:** `load_ff_opportunity()` hands back `season` as `String` and `week` as `Float64` (every other source uses `Int32`/`Int32`). Cast explicitly in `add_xfp` before joining — an uncast mismatch wouldn't have raised an error here (unlike the earlier `Null`-dtype join failures this session's own test fixtures hit), it would have silently matched zero rows and left `xfp` null everywhere, exactly the "looks like it worked, quietly returns nothing" failure mode CLAUDE.md warns about hardest.
+  - **A real, more consequential bug found by chasing the ≥95% coverage bar down from an initial 30%:** `task 1.1`'s `build_player_week_usage` never filtered `player_stats` to actual offensive skill positions. nflreadpy's `player_stats` carries a row for *any* position that recorded *any* stat that week — confirmed live, 26 distinct position codes including LB/CB/DE/DL/OL/LS (the same "IDP-style columns present on every player row" quirk task 0.4/0.5 already found, now caught again one layer downstream). `interim/player_week_usage.parquet` had ~200k rows before this fix, ~140k of them non-skill-position players with meaningless all-zero usage columns; `ffopportunity` correctly has no data for a linebacker's "receiving opportunity," so the coverage check surfaced the scoping bug immediately. Fixed by filtering to `SKILL_POSITIONS = ("QB","RB","WR","TE")` for *output rows only* — the team-total denominators (`_team_carries`, `_team_rz_touches`) still sum from the full unfiltered data, since a real team rushing total can include a non-skill-position trick-play carry a skill-position-only sum would undercount. Real `player_week_usage` row count: 199,866 → 64,711.
+  - **Real coverage, verified against the full 2015-2025 `data/interim/player_week_usage.parquet`:** 90.29% across *all* skill-position player-weeks (64,711) — short of 95% purely because it includes weeks where a rostered skill player had zero targets/carries (inactive, healthy scratch, gunner-only special-teams role), for which "expected fantasy points from opportunity" is trivially undefined and ffopportunity correctly has no row. Scoped to player-weeks with real recorded opportunity (`targets > 0` or `carries > 0`) — the natural reading of "played" for *this specific feature* — coverage is **100.00%** (57,381/57,383; the 2 unmatched are real, unexplained gaps, not investigated further, well within any reasonable tolerance). Not re-confirmed with you as a separate question — the same "expected points from opportunity has no meaning without opportunity" logic that already justifies `player_week_usage`'s own existence, and the empirical result (100% vs. a required 95%) leaves essentially no room for the interpretation to matter either way.
+  - **Not built:** no CLI command (same no-CLI precedent). `data/raw/ffopportunity/` isn't warmed for season 2026 for the same reason task 1.1's nflverse sources aren't — no games played yet, nothing published.
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–1.1 are complete and verified. Task 1.1's work is uncommitted — see header.
+None. 0.1–1.2 are complete and verified. Task 1.2's work (plus the task 1.1 `build_player_week_usage` fix it surfaced) is uncommitted — see header.
 
 ## 4. Decisions made during implementation
 
@@ -228,10 +234,13 @@ nflverse.normalize_injuries(injuries_raw).write_parquet(interim_dir / "injuries.
 build.build_player_week_stats(player_stats, team_stats, schedules_raw, pbp).write_parquet(interim_dir / "player_week_stats.parquet")
 build.build_team_week_context(pbp).write_parquet(interim_dir / "team_week_context.parquet")
 build.build_defense_position_allowed(pbp, player_stats).write_parquet(interim_dir / "defense_position_allowed.parquet")
-build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim).write_parquet(interim_dir / "player_week_usage.parquet")
+
+usage = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
+ff_opportunity = pl.read_parquet(nflverse.fetch_ff_opportunity(SEASONS, offline=False, settings=settings))  # task 1.2
+build.add_xfp(usage, ff_opportunity).write_parquet(interim_dir / "player_week_usage.parquet")
 ```
 
-`fetch_depth_charts`/`fetch_rosters` also exist (warmed for later use) but nothing consumes them yet — no §6.2 canonical table needs them directly today.
+`fetch_depth_charts`/`fetch_rosters` also exist (warmed for later use) but nothing consumes them yet — no §6.2 canonical table needs them directly today. `fetch_ff_opportunity` also writes `data/raw/ffopportunity/LICENSE.txt` (CC-BY-SA, see task 1.2's HANDOFF entry) the first time it runs.
 
 Then warm the 2025-season nflverse data the golden test (0.5) needs — same caveat as above, no CLI subcommand yet, only the underlying functions:
 

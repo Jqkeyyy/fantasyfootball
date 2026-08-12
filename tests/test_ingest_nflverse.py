@@ -450,3 +450,104 @@ def test_normalize_injuries_keeps_rows_with_no_gsis_id() -> None:
 
     assert result.height == 1
     assert result.row(0, named=True)["player_id"] is None
+
+
+# --- fetch_ff_opportunity (task 1.2) -----------------------------------------------
+
+
+@pytest.fixture
+def ffopp_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        data_root=tmp_path,
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=tmp_path / "raw",
+            offline_default=True,
+            staleness_hours={"ffopportunity_weekly": 24},
+            warn_on_stale=True,
+        ),
+    )
+
+
+def test_fetch_ff_opportunity_online_writes_parquet_sidecar_and_license(
+    monkeypatch: pytest.MonkeyPatch, ffopp_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame(
+        {
+            "player_id": ["00-0033873"],
+            "season": ["2025"],
+            "week": [1.0],
+            "total_fantasy_points_exp": [18.4],
+        }
+    )
+    monkeypatch.setattr(nflverse.nfl, "load_ff_opportunity", lambda seasons, stat_type: fixture_df)
+
+    path = nflverse.fetch_ff_opportunity(2025, offline=False, settings=ffopp_settings)
+
+    assert path.name == "weekly_2025.parquet"
+    assert pl.read_parquet(path).equals(fixture_df)
+    meta = json.loads(sidecar_path(path).read_text())
+    assert meta["source"] == "ffopportunity"
+    assert meta["cache_key"] == "ffopportunity_weekly"
+    license_path = path.parent / "LICENSE.txt"
+    assert license_path.exists()
+    assert "CC BY-SA" in license_path.read_text()
+
+
+def test_fetch_ff_opportunity_writes_to_its_own_directory_not_nflverse(
+    monkeypatch: pytest.MonkeyPatch, ffopp_settings: Settings
+) -> None:
+    """SPEC §6.1: ffopportunity's CC-BY-SA licence is distinct from the rest
+    of nflverse's plain CC-BY data -- must not land in the shared
+    data/raw/nflverse/ directory, which carries no such obligation."""
+    monkeypatch.setattr(
+        nflverse.nfl,
+        "load_ff_opportunity",
+        lambda seasons, stat_type: pl.DataFrame({"a": [1]}),
+    )
+
+    path = nflverse.fetch_ff_opportunity(2025, offline=False, settings=ffopp_settings)
+
+    assert path.parent.name == "ffopportunity"
+
+
+def test_fetch_ff_opportunity_accepts_a_season_range(
+    monkeypatch: pytest.MonkeyPatch, ffopp_settings: Settings
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        nflverse.nfl,
+        "load_ff_opportunity",
+        lambda seasons, stat_type: calls.append((seasons, stat_type)) or pl.DataFrame({"a": [1]}),
+    )
+
+    path = nflverse.fetch_ff_opportunity([2015, 2016, 2017], offline=False, settings=ffopp_settings)
+
+    assert calls == [([2015, 2016, 2017], "weekly")]
+    assert path.name == "weekly_2015-2017.parquet"
+
+
+def test_fetch_ff_opportunity_offline_without_cache_raises_offline_cache_miss(
+    ffopp_settings: Settings,
+) -> None:
+    with pytest.raises(OfflineCacheMiss) as exc_info:
+        nflverse.fetch_ff_opportunity(2025, offline=True, settings=ffopp_settings)
+
+    assert "ffopportunity" in str(exc_info.value)
+
+
+def test_fetch_ff_opportunity_offline_with_fresh_cache_does_not_call_network(
+    monkeypatch: pytest.MonkeyPatch, ffopp_settings: Settings
+) -> None:
+    def _boom(seasons: list[int], stat_type: str) -> pl.DataFrame:
+        raise AssertionError("network should not be called offline")
+
+    monkeypatch.setattr(nflverse.nfl, "load_ff_opportunity", _boom)
+    path = ffopp_settings.cache.root / "ffopportunity" / "weekly_2025.parquet"
+    path.parent.mkdir(parents=True)
+    pl.DataFrame({"a": [1]}).write_parquet(path)
+    write_sidecar(path, source="ffopportunity", call="x", cache_key="ffopportunity_weekly")
+
+    result = nflverse.fetch_ff_opportunity(2025, offline=True, settings=ffopp_settings)
+
+    assert result == path

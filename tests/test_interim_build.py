@@ -212,6 +212,7 @@ def test_build_player_week_usage_pulls_share_columns_straight_from_player_stats(
             "season": [2025],
             "week": [1],
             "team": ["KC"],
+            "position": ["WR"],
             "targets": [8],
             "target_share": [0.3],
             "receiving_air_yards": [80],
@@ -251,6 +252,7 @@ def test_build_player_week_usage_carry_share_guards_against_zero_team_carries() 
             "season": [2025],
             "week": [1],
             "team": ["KC"],
+            "position": ["QB"],
             "targets": [0],
             "target_share": [0.0],
             "receiving_air_yards": [0],
@@ -277,3 +279,106 @@ def test_build_player_week_usage_carry_share_guards_against_zero_team_carries() 
     row = result.row(0, named=True)
     assert row["carry_share"] is None
     assert row["adot"] is None  # 0 targets -- guarded, not 0/0
+
+
+def test_build_player_week_usage_excludes_non_skill_positions() -> None:
+    """Real bug found via task 1.2's xfp coverage check: nflreadpy's
+    player_stats carries a row for every position that recorded any stat
+    that week (26 distinct codes including LB/CB/DE), not just offensive
+    skill positions -- confirmed live, this alone was responsible for xfp
+    coverage coming out at 30% instead of the required >=95%. A
+    linebacker's stray def_sacks value must not produce a usage row."""
+    player_stats = pl.DataFrame(
+        {
+            "player_id": ["wr1", "lb1"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "team": ["KC", "KC"],
+            "position": ["WR", "LB"],
+            "targets": [5, 0],
+            "target_share": [0.2, 0.0],
+            "receiving_air_yards": [40, 0],
+            "air_yards_share": [0.15, 0.0],
+            "wopr": [0.3, 0.0],
+            "carries": [0, 0],
+        }
+    )
+    snap_counts = pl.DataFrame(
+        {"pfr_player_id": [], "season": [], "week": [], "offense_snaps": [], "offense_pct": []},
+        schema={
+            "pfr_player_id": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "offense_snaps": pl.Float64,
+            "offense_pct": pl.Float64,
+        },
+    )
+    players_dim = pl.DataFrame({"pfr_id": ["x"], "player_id": ["y"]})
+    pbp = _pbp([_pbp_row(play_type="pass", receiver_player_id="wr1")])
+
+    result = build.build_player_week_usage(player_stats, snap_counts, pbp, players_dim)
+
+    assert result["player_id"].to_list() == ["wr1"]
+
+
+# --- add_xfp (task 1.2) -------------------------------------------------------------
+
+
+def _usage_row(**kwargs: object) -> dict:
+    row: dict[str, object] = {
+        "player_id": "p1",
+        "season": 2025,
+        "week": 1,
+        "offense_snaps": 50,
+        "offense_snap_pct": 0.8,
+        "targets": 5,
+        "target_share": 0.2,
+        "air_yards": 40,
+        "air_yards_share": 0.15,
+        "wopr": 0.35,
+        "adot": 8.0,
+        "carries": 0,
+        "carry_share": None,
+        "rz_targets": 1,
+        "rz_carries": 0,
+        "rz_touch_share": 0.1,
+        "gz_carries": 0,
+        "route_participation": None,
+        "xfp": None,
+    }
+    row.update(kwargs)
+    return row
+
+
+def test_add_xfp_joins_by_player_season_week() -> None:
+    usage = pl.DataFrame([_usage_row(player_id="p1", season=2025, week=1)])
+    ff_opportunity = pl.DataFrame(
+        {
+            "player_id": ["p1"],
+            "season": ["2025"],  # real nflreadpy dtype: String
+            "week": [1.0],  # real nflreadpy dtype: Float64
+            "total_fantasy_points_exp": [14.2],
+        }
+    )
+
+    result = build.add_xfp(usage, ff_opportunity)
+
+    assert result.row(0, named=True)["xfp"] == pytest.approx(14.2)
+
+
+def test_add_xfp_leaves_unmatched_player_weeks_null() -> None:
+    usage = pl.DataFrame(
+        [
+            _usage_row(player_id="p1", season=2025, week=1),
+            _usage_row(player_id="p2", season=2025, week=1),
+        ]
+    )
+    ff_opportunity = pl.DataFrame(
+        {"player_id": ["p1"], "season": ["2025"], "week": [1.0], "total_fantasy_points_exp": [14.2]}
+    )
+
+    result = build.add_xfp(usage, ff_opportunity)
+
+    rows = {row["player_id"]: row["xfp"] for row in result.iter_rows(named=True)}
+    assert rows["p1"] == pytest.approx(14.2)
+    assert rows["p2"] is None
