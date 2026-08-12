@@ -107,7 +107,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Weekly report status with `date_modified` preserved for as_of logic.
   **Done when:** designations are available per player-week with publication timestamps.
 
-- [ ] **1.5 — Feature registry and as_of contract** 🔴 ⏱ 3h — SPEC §10.1
+- [x] **1.5 — Feature registry and as_of contract** 🔴 ⏱ 3h — SPEC §10.1
   `FeatureSpec` dataclass, registry, and the build-time assertions on `lag_weeks` and `available_at_inference`.
   **Done when:** the assertions are active and a deliberately mis-specified feature fails the build in a test.
 

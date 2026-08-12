@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `5096052` — feat: injury ingestion date_modified backfill (task 1.4)
+**Last commit:** `PENDING` — feat: feature registry and as_of contract (task 1.5)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
-**Next task:** 1.5 (Feature registry and as_of contract) 🔴 — see SPEC §10.1. Nothing blocking it, but it's the first Phase 1 task marked blocking (nothing downstream is trustworthy until it passes).
-**First concrete step:** `FeatureSpec` dataclass + registry in `features/registry.py` (doesn't exist yet), plus `features/build.py`'s build-time assertions on `lag_weeks >= 1` and `available_at_inference`. `interim/injuries.parquet`'s new `date_modified_is_estimated` column (task 1.4) is exactly the kind of thing this registry needs to be able to represent honestly — a feature sourced from an estimated-not-real timestamp for 2025 specifically, not uniformly available_at_inference the way a fully-real column would be. Worth deciding explicitly how (or whether) `date_modified_is_estimated` factors into the as_of assertion rather than being silently ignored.
+**Next task:** 1.6 (Usage features) — see SPEC §10.2. Nothing blocking it.
+**First concrete step:** implement the player usage feature block (`snap_pct`, `target_share`, `air_yards_share`, `wopr`, `adot`, `carry_share`, `rz_touch_share`, `gz_carry_share`, `xfp_per_game`, `xfp_minus_actual`, `weeks_in_current_role`, QB volume/efficiency, `points_std` — SPEC §10.2's own table) with the specified `ewm_k`/`std_k`/`season_to_date`/`prior_season` windows over `interim/player_week_usage.parquet` (tasks 1.1/1.2). Each one gets registered into `features.registry.FEATURE_REGISTRY` via `register()` (task 1.5) with a real `lag_weeks`/`available_at_inference` — this is the first task that actually populates the registry, which was deliberately left empty infrastructure by 1.5 (confirmed with you before building it that way). Acceptance bar is a spot-check against a known WR1's published target share, not just a passing unit test.
 
 **Blocking on me (the human), not the agent:**
 
@@ -139,12 +139,18 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
   - Evidence: `tests/test_ingest_nflverse.py` (+1 test for the whitespace fix, existing 3 injury tests updated for the new `team` column) + `tests/test_interim_build.py` (+4 tests for `backfill_injury_date_modified`: Sunday-game case, Thursday-game generalisation, real-timestamp-left-untouched, no-matching-game-stays-null) — 425 tests pass total (`uv run pytest -q`, up from 420 at the end of task 1.3), `ruff check`/`ruff format --check`/`mypy src/` all clean.
   - **Real end-to-end verification, not just fixtures:** regenerated the actual `data/interim/injuries.parquet` (60,788 rows) end to end. `date_modified` nulls: 6,068 → 0. `date_modified_is_estimated` is true for exactly 6,068 rows, all season 2025, 0 elsewhere — confirms the flag isn't over- or under-firing. Hand-checked one real row: Arizona's actual week-1-2025 game was Sunday 2025-09-07 (confirmed against real `schedule.parquet`); the backfilled `date_modified` for ARI's week-1-2025 injury rows is 2025-09-05T12:00:00Z, exactly Friday, 2 days prior, as designed. `practice_status` literal-newline count: 213 → 0.
   - **Not built:** no CLI command (same no-CLI precedent as every task since 0.6). "Note" as a real (rare, 6 rows) `report_status` value and season 2025's own bimodal Friday-hour distribution (a cluster near 12:00 UTC and a second near 18:00-20:00 UTC, possibly two different nflreadpy scrape passes) were both investigated enough to confirm they don't change the recommended approach, not fully explained — not required by 1.4's own acceptance bar.
+- **1.5** — Feature registry and as_of contract (SPEC §10.1) — **the first Phase 1 task marked 🔴 blocking.** Scoped deliberately narrow, confirmed with you before building: SPEC §10.2's full feature catalogue (~30 features across usage/team-context/opponent/situation blocks) is *not* pre-declared here, since most have no computed values yet (the windowed usage/team-context/opponent transforms are explicitly tasks 1.6-1.8's own deliverables, several building on interim columns still partly null). This task builds the registry as infrastructure only, for 1.6-1.9 to populate incrementally as each feature block is actually computed. New `src/ffapp/features/` package:
+  - `registry.py` — `FeatureSpec` (SPEC §10.1's dataclass, field-for-field), a shared `FEATURE_REGISTRY: dict[str, FeatureSpec]`, and `register(spec, *, registry=None)` (defaults to the shared registry; accepts an explicit dict for testing without polluting it). Raises `DuplicateFeatureError` on a name collision rather than silently overwriting — CLAUDE.md rule 4's "never silently..." principle applied to the feature contract rather than a join.
+  - `build.py` — the two build-time assertions SPEC §10.1 names explicitly: `assert_training_lag` (every feature in a training matrix needs `lag_weeks >= 1`) and `assert_inference_availability` (every feature an inference model uses needs `available_at_inference=True`). Both raise a new `LeakageError` on the *first* violation found, checking every spec in the input, not just the first — a leakage gate, not a lint report. The actual wide-table assembly (task 1.9's own deliverable) will land in this same file later.
+  - Evidence: `tests/test_features_registry.py` (4 tests) + `tests/test_features_build.py` (7 tests, TDD) — 436 tests pass total (`uv run pytest -q`, up from 425 at the end of task 1.4), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+  - **Task's own literal acceptance bar, verified directly:** `test_assert_training_lag_raises_for_a_zero_lag_feature` and `test_assert_inference_availability_raises_for_a_training_only_feature` are exactly the "deliberately mis-specified feature fails the build" cases TASKS.md 1.5 asks for — a `lag_weeks=0` feature (would see the target week's own data) and an `available_at_inference=False` feature used at inference (e.g. what route participation would do if it ever reached a live model — SPEC §10.5).
+  - **Not built:** no real `FeatureSpec` entries beyond test fixtures — see the scoping decision above. No CLI command (same no-CLI precedent).
 
 ---
 
 ## 3. Work in progress
 
-None. 0.1–1.4 are complete and verified.
+None. 0.1–1.5 are complete and verified.
 
 ## 4. Decisions made during implementation
 
