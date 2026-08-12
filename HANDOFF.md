@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-11
 **Last machine:** Maybe (Windows)
-**Last commit:** _uncommitted this session — fill in after commit_ — feat: games-played prior, value over replacement, tiers (tasks 0.8, 0.9, 0.10)
+**Last commit:** `f35496d` — feat: games-played prior, value over replacement, tiers (tasks 0.8, 0.9, 0.10)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
