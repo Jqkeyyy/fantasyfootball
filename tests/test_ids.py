@@ -366,6 +366,22 @@ def test_league_relevant_positions_includes_superflex_eligible() -> None:
     assert positions == {"QB", "WR", "RB", "TE"}
 
 
+def test_league_relevant_positions_includes_rec_flex_eligible() -> None:
+    league = LeagueConfig(
+        slug="test-league",
+        display_name="Test League",
+        is_primary=True,
+        league_id="1",
+        season=2026,
+        league_cache={"roster_positions": ["QB", "REC_FLEX", "BN"]},
+        overrides={"rec_flex_eligible": ["WR", "TE"]},
+    )
+
+    positions = mapping.league_relevant_positions(league)
+
+    assert positions == {"QB", "WR", "TE"}
+
+
 def test_league_relevant_filters_by_position_and_active() -> None:
     df = pl.DataFrame(
         {

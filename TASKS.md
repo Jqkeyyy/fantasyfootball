@@ -40,12 +40,12 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Pull matchups for every completed week of the league's most recent season, extract `players_points`, independently recompute from nflverse stats, compare.
   **Done when:** ≥99% of player-weeks agree within 0.01 points, every disagreement is logged and explained, and `ffapp scoring validate` exits zero. **Do not proceed past this task with it failing.**
 
-- [ ] **0.6 — LeagueFormat parser** ⏱ 1.5h
+- [x] **0.6 — LeagueFormat parser** ⏱ 1.5h
   SPEC §8.5
   Parse `roster_positions` into the `LeagueFormat` dataclass, handling FLEX, SUPER_FLEX, REC_FLEX, BN, IR.
   **Done when:** `tests/test_league_format.py` covers standard 12-team, superflex, and a two-flex format with correct `starters`/`flex_slots`/`flex_eligible` output.
 
-- [ ] **0.7 — Consensus projection ingestion and aggregation** ⏱ 4h
+- [x] **0.7 — Consensus projection ingestion and aggregation** ⏱ 4h
   SPEC §9.1, §9.2
   Implement `ingest/rankings.py` for each chosen source (see Open Decision #2). Apply league scoring to per-stat projections *per source* before aggregating. Rank-only sources are mapped onto the value scale via the reference curve. Aggregate with a 20% trimmed mean; retain `dispersion` and `n_sources`.
   **Done when:** a per-player table exists with `proj_points`, `dispersion`, `n_sources`, `coverage`, sourced from at least four providers, with league scoring applied before aggregation (assert this in a test using a non-PPR scoring fixture).
@@ -200,7 +200,7 @@ Total ≈ 40–55 hours.
 
 Resolve these from `SPEC.md` §17. Several block Phase 0.
 
-- [ ] League format confirmed from Sleeper (Open Decision #1) — blocks 0.6
-- [ ] Ranking sources chosen, and which publish per-stat projections (#2) — blocks 0.7
+- [x] League format confirmed from Sleeper (Open Decision #1) — blocks 0.6
+- [x] Ranking sources chosen, and which publish per-stat projections (#2) — blocks 0.7
 - [ ] Draft slot and date known (#5) — blocks 0.11
 - [ ] Waiver type and budget read from Sleeper (#6) — blocks 2.6

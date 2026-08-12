@@ -325,6 +325,8 @@ def league_relevant_positions(league: LeagueConfig) -> set[str]:
         positions |= set(league.overrides.get("flex_eligible", []))
     if "SUPER_FLEX" in roster_positions:
         positions |= set(league.overrides.get("superflex_eligible", []))
+    if "REC_FLEX" in roster_positions:
+        positions |= set(league.overrides.get("rec_flex_eligible", []))
     return positions
 
 
