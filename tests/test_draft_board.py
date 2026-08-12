@@ -34,6 +34,7 @@ def test_team_by_join_key_pulls_team_back_in_from_players_dim() -> None:
             "normalized_name": ["jahmyr gibbs", "no team guy"],
             "position": ["RB", "WR"],
             "team": ["DET", None],
+            "sleeper_id": ["1", "2"],
         }
     )
 
@@ -45,19 +46,23 @@ def test_team_by_join_key_pulls_team_back_in_from_players_dim() -> None:
     assert row["team"] == "DET"
 
 
-def test_team_by_join_key_keeps_first_team_on_a_duplicate_join_key() -> None:
+def test_team_by_join_key_prefers_the_row_with_a_real_sleeper_id() -> None:
+    """Real case: an active player and a same-base-name retired relative
+    both normalize to the same join key -- the crosswalk-only historical
+    entry (no sleeper_id) must not win."""
     players_dim = pl.DataFrame(
         {
-            "normalized_name": ["dup guy", "dup guy"],
-            "position": ["RB", "RB"],
-            "team": ["KC", "SF"],
+            "normalized_name": ["marvin harrison", "marvin harrison"],
+            "position": ["WR", "WR"],
+            "team": ["IND", "ARI"],
+            "sleeper_id": [None, "11628"],
         }
     )
 
     result = board._team_by_join_key(players_dim)
 
     assert result.height == 1
-    assert result.row(0, named=True)["team"] == "KC"
+    assert result.row(0, named=True)["team"] == "ARI"
 
 
 # --- finalize_draft_board ----------------------------------------------------

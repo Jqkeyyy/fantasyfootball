@@ -76,8 +76,10 @@ def test_player_ages_from_players_dim_computes_fractional_age_from_birth_date() 
     players_dim = pl.DataFrame(
         {
             "full_name": ["Test Player"],
+            "normalized_name": ["test player"],
             "position": ["RB"],
             "birth_date": ["2000-09-01"],
+            "sleeper_id": ["123"],
         }
     )
 
@@ -91,14 +93,38 @@ def test_player_ages_from_players_dim_is_null_for_missing_birth_date() -> None:
     players_dim = pl.DataFrame(
         {
             "full_name": ["No Birthdate"],
+            "normalized_name": ["no birthdate"],
             "position": ["WR"],
             "birth_date": [None],
+            "sleeper_id": ["456"],
         }
     )
 
     ages = games_played.player_ages_from_players_dim(players_dim, as_of=date(2026, 9, 1))
 
     assert ages["age"][0] is None
+
+
+def test_player_ages_from_players_dim_dedupes_a_join_key_collision() -> None:
+    """Real case: an active player and a same-base-name retired relative
+    both normalize to the same (name, position) key -- confirmed live with
+    "Marvin Harrison Jr." (active) and "Marvin Harrison" (his retired
+    father). The row with a real sleeper_id wins."""
+    players_dim = pl.DataFrame(
+        {
+            "full_name": ["Marvin Harrison Jr.", "Marvin Harrison"],
+            "normalized_name": ["marvin harrison", "marvin harrison"],
+            "position": ["WR", "WR"],
+            "birth_date": ["2002-08-11", "1972-08-25"],
+            "sleeper_id": ["11628", None],
+        }
+    )
+
+    ages = games_played.player_ages_from_players_dim(players_dim, as_of=date(2026, 9, 1))
+
+    assert ages.height == 1
+    # the active player's age, not his father's
+    assert ages["age"][0] == pytest.approx(24.06, abs=0.01)
 
 
 # --- add_games_played_adjustment --------------------------------------------

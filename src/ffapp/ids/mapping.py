@@ -299,6 +299,38 @@ def build_players_dim(
     return assigned
 
 
+def dedupe_to_one_row_per_name_position(players_dim: pl.DataFrame) -> pl.DataFrame:
+    """Collapse `players_dim` to at most one row per `(normalized_name,
+    position)`, adding a `join_key` column -- needed by anything that joins
+    `players_dim` onto a name+position key (`games_played.
+    player_ages_from_players_dim`, `draft.board`'s team lookup).
+
+    `normalize_name`'s suffix-stripping (Jr./Sr./II/III/...) is deliberate
+    -- it correctly unifies "Josh Allen" vs "Josh Allen Jr." spellings of
+    the *same* real player across sources -- but it also collapses
+    genuinely different people who share a base name across generations
+    onto the same key. Confirmed live: "Marvin Harrison Jr." (active, ARI)
+    and his retired Hall-of-Fame father "Marvin Harrison" both normalize to
+    `"marvin harrison|WR"`. Before this function existed, that collision
+    fanned `add_games_played_adjustment`'s left join out into 3 separate
+    draft-board rows for one real active player, each with a different
+    (wrong) `age`-derived VOR -- found via task 0.14's replay verification,
+    not by any narrow unit-test fixture.
+
+    Prefers whichever row has a real `sleeper_id` (Sleeper currently tracks
+    them) when a key collides -- a crosswalk-only historical entry has
+    none. Ties beyond that are broken arbitrarily (first row encountered);
+    good enough for an identity/age lookup, not a case this project bets
+    real value on.
+    """
+    with_key = players_dim.with_columns(
+        (pl.col("normalized_name") + "|" + pl.col("position")).alias("join_key")
+    )
+    return with_key.sort(pl.col("sleeper_id").is_null()).unique(
+        subset=["join_key"], keep="first", maintain_order=True
+    )
+
+
 def unmatched_players(players_dim: pl.DataFrame) -> pl.DataFrame:
     """Rows not resolved to a real cross-source id, ranked by Sleeper search_rank."""
     return players_dim.filter(pl.col("player_id").str.starts_with("synthetic_")).sort(
@@ -378,6 +410,7 @@ __all__ = [
     "apply_overrides",
     "assign_canonical_id",
     "build_players_dim",
+    "dedupe_to_one_row_per_name_position",
     "fuzzy_match_remainder",
     "layer_sleeper_ids",
     "league_relevant",

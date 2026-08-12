@@ -196,6 +196,28 @@ def test_aggregate_projections_excludes_null_points_rows() -> None:
     assert row["n_sources"] == 1  # the null-points row doesn't count as coverage
 
 
+def test_aggregate_projections_merges_sources_that_spell_a_name_differently() -> None:
+    """Real bug found via task 0.14's replay testing: one source spelling a
+    player "James Cook" and another "James Cook III" both normalize to the
+    same join_key, but the old groupby (join_key + literal player_name)
+    split his real 3-source coverage into two separate rows. Grouping by
+    join_key alone merges them into one player with full coverage."""
+    plain = aggregate.add_join_key(
+        pl.DataFrame([_source_row(player_name="James Cook", position="RB", points=200.0)])
+    )
+    suffixed = aggregate.add_join_key(
+        pl.DataFrame([_source_row(player_name="James Cook III", position="RB", points=220.0)])
+    )
+
+    result = aggregate.aggregate_projections([plain, suffixed], n_sources=2)
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["n_sources"] == 2
+    assert row["coverage"] == pytest.approx(1.0)
+    assert row["proj_points"] == pytest.approx(210.0)  # mean(200, 220) -- both sources counted
+
+
 # --- full pipeline: SPEC §9.2 acceptance shape ----------------------------------
 
 

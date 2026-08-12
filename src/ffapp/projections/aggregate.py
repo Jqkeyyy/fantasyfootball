@@ -162,6 +162,17 @@ def aggregate_projections(
     column (via `add_join_key`). Rows with `points = null` (a source that
     doesn't cover this player, or a ranks-only row past the reference
     curve's tail) don't count toward coverage.
+
+    Grouped by `join_key` alone, not also by the literal `player_name`
+    string -- confirmed live via task 0.14's replay testing: one source
+    spelling a player "James Cook" and another spelling him "James Cook
+    III" both normalize to the same join_key, but grouping by the raw name
+    string too split one real player into two separate board rows (each
+    getting only part of his real source coverage). `position` is already
+    fully determined by `join_key` (it's literally part of how the key is
+    built), so `.first()` on both is safe -- `position` never actually
+    varies within a group; `player_name` picks whichever source's spelling
+    happened to come first, an arbitrary but deterministic tie-break.
     """
     combined = pl.concat(
         [df.select(["join_key", "player_name", "position", "points"]) for df in scored_sources],
@@ -169,8 +180,12 @@ def aggregate_projections(
     ).filter(pl.col("points").is_not_null())
 
     return (
-        combined.group_by(["join_key", "player_name", "position"])
-        .agg(pl.col("points").alias("_points_list"))
+        combined.group_by("join_key")
+        .agg(
+            pl.col("player_name").first(),
+            pl.col("position").first(),
+            pl.col("points").alias("_points_list"),
+        )
         .with_columns(
             pl.col("_points_list").list.len().alias("n_sources"),
             pl.col("_points_list")

@@ -80,7 +80,7 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Sortable, filterable table with visible tier breaks.
   **Done when:** the page loads in under two seconds and supports filtering by position and tier.
 
-- [ ] **0.14 — Live draft assistant** ⏱ 3h
+- [x] **0.14 — Live draft assistant** ⏱ 3h
   SPEC §9.8
   Poll `/draft/{draft_id}/picks`, maintain the available pool, display best-available-by-VOR, tier depth remaining per position, positional run detection, and your starting-lineup gaps.
   **Done when:** tested end to end against a completed mock draft, replaying its picks; the available pool stays correct throughout.

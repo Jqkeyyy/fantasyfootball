@@ -156,19 +156,17 @@ def _team_by_join_key(players_dim: pl.DataFrame) -> pl.DataFrame:
     `player_name`, `position`, `points` (see `projections/aggregate.py`'s
     own selection) -- `team` needs pulling back in separately, from
     `players_dim` via the same normalized `(name, position)` join key
-    `games_played.player_ages_from_players_dim` already uses. A player
-    matched more than once in the crosswalk (rare, fuzzy-match tier 3) keeps
-    whichever non-null team comes first -- good enough for an identity
-    column, not something VOR/ranking depends on.
+    `games_played.player_ages_from_players_dim` already uses.
+
+    Deduped via `ids.mapping.dedupe_to_one_row_per_name_position` first --
+    a raw `players_dim` can have more than one row per (name, position)
+    (confirmed live: an active player and a same-base-name retired relative
+    both normalizing to the same key), which would otherwise fan a single
+    real player's row out via this left join too, the same bug that hit
+    `games_played.player_ages_from_players_dim`.
     """
-    return (
-        players_dim.filter(pl.col("team").is_not_null())
-        .select(
-            (pl.col("normalized_name") + "|" + pl.col("position")).alias("join_key"),
-            "team",
-        )
-        .unique(subset=["join_key"], keep="first")
-    )
+    deduped = mapping.dedupe_to_one_row_per_name_position(players_dim)
+    return deduped.filter(pl.col("team").is_not_null()).select("join_key", "team")
 
 
 def _add_ranks(df: pl.DataFrame) -> pl.DataFrame:

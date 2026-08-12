@@ -25,7 +25,7 @@ from datetime import date
 
 import polars as pl
 
-from ffapp.ids.mapping import normalize_name
+from ffapp.ids import mapping
 
 GAMES_IN_SEASON = 17
 MIN_AVAILABILITY = 0.5
@@ -80,14 +80,18 @@ def player_ages_from_players_dim(players_dim: pl.DataFrame, *, as_of: date) -> p
     """Fractional age in years as of `as_of`, keyed by the same normalized
     (name, position) `join_key` `projections/aggregate.py.add_join_key` uses,
     from a `players_dim`-shaped table (`full_name`, `position`, `birth_date`).
+
+    Deduped to one row per join_key first (`ids.mapping.
+    dedupe_to_one_row_per_name_position`) -- a raw `players_dim` can have
+    more than one row per (name, position) (e.g. an active player and a
+    same-base-name retired relative both normalizing to the same key), and
+    joining that directly onto `projections` would fan a single real player
+    out into multiple board rows with different (wrong) ages.
     """
     as_of_days = as_of.toordinal()
-    return players_dim.select(
-        (
-            pl.col("full_name").map_elements(normalize_name, return_dtype=pl.Utf8)
-            + "|"
-            + pl.col("position")
-        ).alias("join_key"),
+    deduped = mapping.dedupe_to_one_row_per_name_position(players_dim)
+    return deduped.select(
+        "join_key",
         (
             (
                 as_of_days

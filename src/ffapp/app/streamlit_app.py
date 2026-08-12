@@ -1,20 +1,31 @@
-"""Draft board Streamlit page (SPEC.md §15 page 1, §9.7; task 0.13).
+"""Draft board Streamlit page (SPEC.md §15 page 1, §9.7, §9.8; tasks 0.13, 0.14).
 
 Reads the pre-built draft board CSV (`ffapp draft board`, task 0.12) --
 per SPEC §15's own design constraint ("fast to load, everything
 precomputed, nothing trained on page load"), nothing is recomputed here.
-Filtering and tier-break styling logic lives in `draft_board_page.py`,
-unit-tested there; this script is thin `st.*` glue, verified by actually
-running it (CLAUDE.md's UI rule: "start the dev server and use the feature
-in a browser"), not by a pytest test -- a live Streamlit script has no
-return value to assert on, it *is* the side effect.
+Filtering, tier-break styling, and live-draft pool logic live in
+`draft_board_page.py`/`draft.live`, unit-tested there; this script is thin
+`st.*` glue, verified by actually running it (CLAUDE.md's UI rule: "start
+the dev server and use the feature in a browser"), not by a pytest test --
+a live Streamlit script has no return value to assert on, it *is* the side
+effect.
+
+The live draft tab (SPEC §9.8) is a sub-tab of this same page per SPEC
+§15's own layout, not a separate page. It fetches live from Sleeper
+(`offline=False`) on demand -- a button, not automatic 5-10s polling
+(Streamlit has no built-in auto-refresh primitive; adding one is a
+reasonable follow-up, not required by TASKS.md 0.14's own acceptance bar,
+which is about the available pool staying correct, not the UI's refresh
+cadence).
 
 Run with: `uv run streamlit run src/ffapp/app/streamlit_app.py`
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import streamlit as st
@@ -26,7 +37,11 @@ from ffapp.app.draft_board_page import (
     style_tier_breaks,
 )
 from ffapp.config import load_primary_league, load_settings
+from ffapp.draft import live
 from ffapp.draft.board import draft_board_csv_path
+from ffapp.draft.pick_order import resolve_my_roster_id
+from ffapp.ingest import sleeper
+from ffapp.league_format import parse_league_format
 
 st.set_page_config(page_title="Draft Board", layout="wide")
 
@@ -61,19 +76,108 @@ except DraftBoardNotBuiltError as exc:
     st.error(str(exc))
     st.stop()
 
-with st.sidebar:
-    st.header("Filters")
-    position_options = board["position"].unique(maintain_order=False).sort().to_list()
-    selected_positions = st.multiselect("Position", options=position_options, default=[])
-    tier_options = board["tier"].unique(maintain_order=False).sort().to_list()
-    selected_tiers = st.multiselect("Tier", options=tier_options, default=[])
+board_tab, live_tab = st.tabs(["Draft Board", "Live Draft"])
 
-filtered = filter_board(board, positions=selected_positions, tiers=selected_tiers)
+with board_tab:
+    with st.sidebar:
+        st.header("Filters")
+        position_options = board["position"].unique(maintain_order=False).sort().to_list()
+        selected_positions = st.multiselect("Position", options=position_options, default=[])
+        tier_options = board["tier"].unique(maintain_order=False).sort().to_list()
+        selected_tiers = st.multiselect("Tier", options=tier_options, default=[])
 
-st.caption(f"{filtered.height} of {board.height} players shown -- sorted by VOR descending.")
-st.dataframe(style_tier_breaks(filtered), use_container_width=True, height=700)
+    filtered = filter_board(board, positions=selected_positions, tiers=selected_tiers)
 
-if board.height > 0:
-    as_of = board["as_of_utc"][0]
-    commit = board["git_commit"][0]
-    st.caption(f"Board generated {as_of}" + (f" at commit `{commit}`" if commit else ""))
+    st.caption(f"{filtered.height} of {board.height} players shown -- sorted by VOR descending.")
+    st.dataframe(style_tier_breaks(filtered), use_container_width=True, height=700)
+
+    if board.height > 0:
+        as_of = board["as_of_utc"][0]
+        commit = board["git_commit"][0]
+        st.caption(f"Board generated {as_of}" + (f" at commit `{commit}`" if commit else ""))
+
+with live_tab:
+    st.caption(
+        "Fetches live from Sleeper on demand -- click Refresh once the real draft is underway."
+    )
+
+    if "draft_picks" not in st.session_state:
+        st.session_state.draft_picks = []
+
+    if st.button("Refresh picks from Sleeper"):
+        try:
+            assert league.league_id is not None
+            drafts: list[dict[str, Any]] = json.loads(
+                sleeper.fetch_drafts(league.league_id, offline=False, settings=settings).read_text()
+            )
+            current_draft = next((d for d in drafts if d.get("season") == str(league.season)), None)
+            if current_draft is None:
+                st.warning(f"No {league.season} draft found for {league.display_name} on Sleeper.")
+            else:
+                picks: list[dict[str, Any]] = json.loads(
+                    sleeper.fetch_draft_picks(
+                        current_draft["draft_id"], offline=False, settings=settings
+                    ).read_text()
+                )
+                st.session_state.draft_picks = picks
+        except Exception as exc:  # a transient fetch failure shouldn't crash the page
+            st.error(f"Could not fetch live picks: {exc}")
+
+    picks = st.session_state.draft_picks
+    st.caption(f"{len(picks)} pick(s) made so far.")
+
+    pool = live.available_pool(board, picks)
+    st.caption(f"{pool.height} of {board.height} players still available.")
+
+    st.subheader("Best available")
+    st.dataframe(
+        live.best_available(pool, n=15).select(
+            ["overall_rank", "player", "position", "tier", "vor", "opportunity_cost"]
+        ),
+        use_container_width=True,
+    )
+
+    st.subheader("Tier depth remaining")
+    st.caption("Current (best) tier per position and how many are left in it.")
+    st.dataframe(live.current_tier_summary(pool), use_container_width=True)
+
+    st.subheader("Positional runs")
+    active_runs = {pos: info for pos, info in live.positional_run(picks).items() if info["is_run"]}
+    if active_runs:
+        for pos, info in active_runs.items():
+            st.warning(
+                f"{pos} is going at {info['recent_rate']:.0%} of the last "
+                f"{live.RUN_WINDOW} picks vs a {info['baseline_rate']:.0%} baseline -- "
+                "looks like a run."
+            )
+    else:
+        st.caption("No positional run detected.")
+
+    st.subheader("Your starting lineup gaps")
+    if settings.sleeper_username is None:
+        st.caption("No Sleeper username configured (settings.yml sleeper.username).")
+    else:
+        try:
+            assert league.league_id is not None
+            user = json.loads(
+                sleeper.fetch_user(
+                    settings.sleeper_username, offline=False, settings=settings
+                ).read_text()
+            )
+            rosters: list[dict[str, Any]] = json.loads(
+                sleeper.fetch_rosters(
+                    league.league_id, offline=False, settings=settings
+                ).read_text()
+            )
+            my_roster_id = resolve_my_roster_id(user["user_id"], rosters)
+            my_picks = [p for p in picks if p.get("roster_id") == my_roster_id]
+            gaps = live.starting_lineup_gaps(my_picks, parse_league_format(league))
+            if gaps:
+                st.dataframe(
+                    pl.DataFrame({"slot": list(gaps.keys()), "still_needed": list(gaps.values())}),
+                    use_container_width=True,
+                )
+            else:
+                st.caption("Starting lineup is full.")
+        except Exception as exc:
+            st.error(f"Could not resolve your roster: {exc}")

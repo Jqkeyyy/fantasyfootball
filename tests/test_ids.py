@@ -414,3 +414,62 @@ def test_league_relevant_excludes_players_with_no_current_nfl_team() -> None:
     relevant = mapping.league_relevant(df, {"WR"})
 
     assert relevant["sleeper_id"].to_list() == ["1"]
+
+
+# --- dedupe_to_one_row_per_name_position ----------------------------------------
+
+
+def test_dedupe_to_one_row_per_name_position_is_a_no_op_when_keys_are_unique() -> None:
+    players_dim = pl.DataFrame(
+        {
+            "normalized_name": ["josh allen", "jahmyr gibbs"],
+            "position": ["QB", "RB"],
+            "sleeper_id": ["1", "2"],
+        }
+    )
+
+    result = mapping.dedupe_to_one_row_per_name_position(players_dim)
+
+    assert result.height == 2
+    assert set(result["join_key"].to_list()) == {"josh allen|QB", "jahmyr gibbs|RB"}
+
+
+def test_dedupe_to_one_row_per_name_position_prefers_a_real_sleeper_id() -> None:
+    """Real case: an active player and a same-base-name retired relative
+    both normalize to the same (name, position) key -- confirmed live with
+    "Marvin Harrison Jr." (active, real sleeper_id) and his retired father
+    "Marvin Harrison" (crosswalk-only, no sleeper_id)."""
+    players_dim = pl.DataFrame(
+        {
+            "normalized_name": ["marvin harrison", "marvin harrison", "marvin harrison"],
+            "position": ["WR", "WR", "WR"],
+            "sleeper_id": [None, "11628", None],
+            "team": ["FA*", "ARI", "IND"],
+        }
+    )
+
+    result = mapping.dedupe_to_one_row_per_name_position(players_dim)
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["sleeper_id"] == "11628"
+    assert row["team"] == "ARI"
+
+
+def test_dedupe_to_one_row_per_name_position_breaks_ties_deterministically() -> None:
+    """When no row in a collision has a sleeper_id, keep the first one seen
+    rather than raising or picking randomly -- a low-stakes fallback, not a
+    case this project bets real value on."""
+    players_dim = pl.DataFrame(
+        {
+            "normalized_name": ["ambiguous guy", "ambiguous guy"],
+            "position": ["RB", "RB"],
+            "sleeper_id": [None, None],
+            "team": ["KC", "SF"],
+        }
+    )
+
+    result = mapping.dedupe_to_one_row_per_name_position(players_dim)
+
+    assert result.height == 1
+    assert result.row(0, named=True)["team"] == "KC"
