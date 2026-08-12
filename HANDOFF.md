@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `PENDING` — feat: baselines B0-B3 (task 1.10)
+**Last commit:** `6a82e30` — feat: baselines B0-B3 (task 1.10)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
