@@ -427,3 +427,96 @@ def test_startable_counts_from_predictions_ignores_which_predictor_is_present() 
     counts = metrics.startable_counts_from_predictions(two_predictors, league_format)
 
     assert counts == {"RB": 2}
+
+
+# --- lineup_regret (task 1.13, wired up once sim.lineup existed) ------------------------
+
+
+def _regret_row(player_id: str, week: int, *, target: float, prediction: float) -> dict:
+    return {
+        "player_id": player_id,
+        "season": 2021,
+        "week": week,
+        "position": "RB",
+        "team": "KC",
+        "predictor": "model",
+        "target": target,
+        "prediction": prediction,
+    }
+
+
+def test_sample_synthetic_roster_gives_double_the_max_position_demand() -> None:
+    fmt = _league_format(
+        starters={"RB": 1},
+        flex_slots={"FLEX": 1, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB"]},
+    )
+    pool = pl.DataFrame(
+        [
+            {"player_id": f"rb{i}", "position": "RB", "target": float(i), "prediction": float(i)}
+            for i in range(10)
+        ]
+    )
+    rng = np.random.default_rng(0)
+
+    roster = metrics._sample_synthetic_roster(pool, fmt, rng)
+
+    # demand["RB"] = 1 starter + 1 FLEX = 2; double that = 4.
+    assert roster.height == 4
+
+
+def test_lineup_regret_is_zero_when_the_predictor_preserves_the_real_ranking() -> None:
+    fmt = _league_format(
+        starters={"RB": 1}, flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0}, flex_eligible={}
+    )
+    predictions = pl.DataFrame(
+        [
+            _regret_row("good", 1, target=20.0, prediction=20.0),
+            _regret_row("bad", 1, target=10.0, prediction=5.0),
+        ]
+    )
+    rng = np.random.default_rng(0)
+
+    results = metrics.lineup_regret(predictions, fmt, rng=rng)
+
+    assert len(results) == 1
+    assert results[0].value == pytest.approx(0.0)
+    assert results[0].n_obs == 1
+
+
+def test_lineup_regret_is_positive_when_the_predictor_picks_the_wrong_player() -> None:
+    fmt = _league_format(
+        starters={"RB": 1}, flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0}, flex_eligible={}
+    )
+    predictions = pl.DataFrame(
+        [
+            _regret_row("good", 1, target=20.0, prediction=5.0),  # best real player, ranked low
+            _regret_row("bad", 1, target=10.0, prediction=20.0),  # worse real player, ranked high
+        ]
+    )
+    rng = np.random.default_rng(0)
+
+    results = metrics.lineup_regret(predictions, fmt, rng=rng)
+
+    # best_possible = 20 (start "good"); model picks "bad" (higher prediction) -> real 10.
+    assert results[0].value == pytest.approx(10.0)
+
+
+def test_lineup_regret_returns_one_result_per_predictor() -> None:
+    fmt = _league_format(
+        starters={"RB": 1}, flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0}, flex_eligible={}
+    )
+    good = [
+        _regret_row("good", 1, target=20.0, prediction=20.0),
+        _regret_row("bad", 1, target=10.0, prediction=5.0),
+    ]
+    bad = [dict(r, predictor="bad_model") for r in good]
+    bad[0]["prediction"], bad[1]["prediction"] = 5.0, 20.0  # inverted ranking
+    predictions = pl.DataFrame(good + bad)
+    rng = np.random.default_rng(0)
+
+    results = metrics.lineup_regret(predictions, fmt, rng=rng)
+
+    by_predictor = {r.predictor: r.value for r in results}
+    assert by_predictor["model"] == pytest.approx(0.0)
+    assert by_predictor["bad_model"] == pytest.approx(10.0)

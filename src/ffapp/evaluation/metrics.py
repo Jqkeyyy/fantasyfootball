@@ -43,11 +43,19 @@ numeric primitives, not yet wired to any real data -- no quantile model
 exists until task 1.16 (SPEC §11.5). Calibration plots are task 1.17's
 job (SPEC §12.6).
 
-**Lineup regret is not implemented here.** SPEC §12.4's
-`optimal_lineup_points - model_recommended_lineup_points` needs
-`sim/lineup.py`'s real ILP optimiser (SPEC §13.1), which is task 2.1 --
-ordered *after* this task in TASKS.md. Confirmed with you rather than
-guessed: defer the metric, revisit once 2.1 lands.
+**Lineup regret** (`lineup_regret`) needed `sim/lineup.py`'s real ILP
+optimiser (SPEC §13.1, task 2.1) before it could be wired in -- that
+task has since landed, and with it a real, consequential gap: the
+backtest spans 2015-2025, no real historical fantasy-roster data exists
+for that range (this project's own primary league didn't exist yet, and
+even a league that did wouldn't be reachable without Sleeper), so
+"my roster" has no ground truth to draw from. Confirmed with you rather
+than guessed: each backtest week gets one random *synthetic* roster
+(`_sample_synthetic_roster`), sized to give every startable position
+real bench depth (double its own maximum theoretical demand -- exactly
+enough players to fill every slot would mean no real decision ever
+exists to get wrong), drawn once per week and shared across every
+predictor being compared so the comparison stays apples-to-apples.
 """
 
 from __future__ import annotations
@@ -59,6 +67,7 @@ import numpy as np
 import polars as pl
 
 from ffapp.league_format import LeagueFormat
+from ffapp.sim.lineup import PlayerProjection, optimal_lineup, optimal_lineup_points
 from ffapp.tools import vor
 
 DEFAULT_N_BOOTSTRAP = 1000
@@ -582,6 +591,153 @@ def start_sit_accuracy(
     return results
 
 
+def _position_demand(fmt: LeagueFormat) -> dict[str, int]:
+    """The maximum number of players position `p` could ever start at
+    once: its own dedicated slots plus every active flex slot it's
+    eligible for."""
+    demand: dict[str, int] = dict(fmt.starters)
+    for flex_type, count in fmt.flex_slots.items():
+        if count == 0:
+            continue
+        for position in fmt.flex_eligible.get(flex_type, []):
+            demand[position] = demand.get(position, 0) + count
+    return demand
+
+
+def _sample_synthetic_roster(
+    week_pool: pl.DataFrame, fmt: LeagueFormat, rng: np.random.Generator
+) -> pl.DataFrame:
+    """One random synthetic roster for one real backtest week: for each
+    startable position, samples double its own maximum theoretical
+    demand (`_position_demand`) from that week's real player pool --
+    real bench depth, so lineup regret has an actual decision to get
+    wrong (see module docstring for why no real historical roster
+    exists to draw from instead). Returns `player_id`/`position`/
+    `target` only -- any predictor-specific `prediction` column is
+    joined back in by the caller, per predictor.
+    """
+    demand = _position_demand(fmt)
+    sampled_frames: list[pl.DataFrame] = []
+    for position, n_slots in demand.items():
+        position_pool = week_pool.filter(pl.col("position") == position)
+        n_sample = min(position_pool.height, 2 * n_slots)
+        if n_sample == 0:
+            continue
+        idx = rng.choice(position_pool.height, size=n_sample, replace=False)
+        sampled_frames.append(position_pool[idx.tolist()])
+    if not sampled_frames:
+        return week_pool.clear().select("player_id", "position", "target")
+    return pl.concat(sampled_frames, how="vertical_relaxed").select(
+        "player_id", "position", "target"
+    )
+
+
+def lineup_regret(
+    predictions: pl.DataFrame,
+    league_format: LeagueFormat,
+    *,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    ci: float = DEFAULT_CI,
+    rng: np.random.Generator | None = None,
+) -> list[MetricResult]:
+    """SPEC §12.4 Decision quality: "points left on the bench per week.
+    `optimal_lineup_points - model_recommended_lineup_points`, averaged.
+    This is the single number that best summarises 'how much did this
+    system cost or save me.'"
+
+    One synthetic roster is sampled per real (season, week) -- from
+    `predictions`' own predictor-independent `player_id`/`position`/
+    `target` columns (any single predictor's rows; `target` is real and
+    shared across predictors for the same player-week, matching
+    `startable_counts_from_predictions`'s own "any_predictor" pattern)
+    -- and shared across every predictor compared, so a predictor that
+    happens to draw an easier week's roster is never the reason it
+    looks better.
+
+    For each predictor, on that shared roster: `optimal_lineup_points`
+    (task 2.1) run on the real `target` values is the best possible
+    total; `optimal_lineup` run on that predictor's own `prediction`
+    values picks the lineup the model would have recommended, scored by
+    those same players' real `target` outcomes. Regret is their
+    difference, averaged per week with the same week-level bootstrap
+    every other decision-quality metric uses.
+    """
+    generator = rng if rng is not None else np.random.default_rng()
+    any_predictor = predictions["predictor"][0]
+    universe = predictions.filter(pl.col("predictor") == any_predictor)
+
+    weekly_rosters: dict[tuple[int, int], pl.DataFrame] = {}
+    for (season, week), group in universe.group_by(["season", "week"]):
+        weekly_rosters[(int(season), int(week))] = _sample_synthetic_roster(
+            group, league_format, generator
+        )
+
+    results: list[MetricResult] = []
+    for predictor in sorted(predictions["predictor"].unique().to_list()):
+        pred_df = predictions.filter(
+            (pl.col("predictor") == predictor) & pl.col("prediction").is_not_null()
+        )
+        weekly_regret: list[float] = []
+        for (season, week), roster in weekly_rosters.items():
+            if roster.is_empty():
+                continue
+            week_preds = pred_df.filter((pl.col("season") == season) & (pl.col("week") == week))
+            roster_preds = roster.join(
+                week_preds.select("player_id", "prediction"), on="player_id", how="inner"
+            )
+            if roster_preds.is_empty():
+                continue
+
+            actual_projections = [
+                PlayerProjection(
+                    player_id=row["player_id"],
+                    position=row["position"],
+                    mean=row["target"],
+                    median=row["target"],
+                    ceiling=row["target"],
+                )
+                for row in roster_preds.iter_rows(named=True)
+            ]
+            model_projections = [
+                PlayerProjection(
+                    player_id=row["player_id"],
+                    position=row["position"],
+                    mean=row["prediction"],
+                    median=row["prediction"],
+                    ceiling=row["prediction"],
+                )
+                for row in roster_preds.iter_rows(named=True)
+            ]
+
+            best_possible = optimal_lineup_points(actual_projections, league_format)
+            model_lineup = optimal_lineup(model_projections, league_format)
+            actual_by_player = {
+                r["player_id"]: r["target"] for r in roster_preds.iter_rows(named=True)
+            }
+            model_points = sum(actual_by_player[pid] for pid in model_lineup.slots.values())
+            weekly_regret.append(best_possible - model_points)
+
+        if not weekly_regret:
+            continue
+        value = float(np.mean(weekly_regret))
+        ci_low, ci_high = bootstrap_ci_over_weekly_values(
+            weekly_regret, n_bootstrap=n_bootstrap, ci=ci, rng=generator
+        )
+        results.append(
+            MetricResult(
+                metric="lineup_regret",
+                predictor=predictor,
+                position=None,
+                scope="all",
+                value=value,
+                n_obs=len(weekly_regret),
+                ci_low=ci_low,
+                ci_high=ci_high,
+            )
+        )
+    return results
+
+
 __all__ = [
     "DEFAULT_CI",
     "DEFAULT_N_BOOTSTRAP",
@@ -592,6 +748,7 @@ __all__ = [
     "brier_score",
     "calibration_curve",
     "interval_coverage",
+    "lineup_regret",
     "pinball_loss",
     "ranking_metrics",
     "start_sit_accuracy",

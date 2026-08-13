@@ -414,7 +414,25 @@ pbp = pl.read_parquet(nflverse.fetch_pbp(SEASONS, offline=False, settings=settin
 crosswalk_path = nflverse.fetch_player_ids(offline=True, settings=settings)
 sleeper_players_path = sleeper.fetch_players(offline=True, settings=settings)
 players_dim = mapping.build_players_dim(crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH)
+```
 
+**On a network where Sleeper is blocked** (see §7): `sleeper.fetch_players(offline=True, ...)` raises `OfflineCacheMiss` if `data/raw/sleeper/players.json` was never warmed on this machine (it never was here — Sleeper's been blocked from session one). `build_players_dim` hard-requires it (`layer_sleeper_ids` unconditionally loads it) even though the *actual* Sleeper enrichment it performs (filling `sleeper_id` gaps, adding Sleeper-only rows) only matters for live Sleeper-side ID resolution (draft board, roster matching) -- irrelevant for fitting models on 2015-2025 historical stats, which only ever needs a *stable* canonical `player_id` (real `gsis_id`, or a synthetic hash) to key joins across `player_stats`/`pbp`/`snap_counts`. Confirmed live: the crosswalk CSV's own static `sleeper_id`/`pfr_id` columns (populated independently of any live Sleeper API call) already give 73% `pfr_id` coverage for skill positions -- plenty for `_snap_counts_by_player_id`'s own join. Skip `layer_sleeper_ids` entirely and call the remaining three real steps directly:
+
+```python
+base = mapping.load_crosswalk_base(crosswalk_path).with_columns(
+    pl.lit(None, dtype=pl.Int64).alias("search_rank"),
+    pl.lit(None, dtype=pl.Boolean).alias("active"),
+)  # fuzzy_match_remainder expects these two columns to exist -- normally added by layer_sleeper_ids
+matched = mapping.fuzzy_match_remainder(base, floor=92)
+assigned = mapping.assign_canonical_id(matched)
+players_dim = mapping.apply_overrides(assigned, mapping.ID_OVERRIDES_PATH)
+```
+
+Real result on this machine: 12,467 rows (vs. 12,470 in the raw crosswalk -- a handful of real fuzzy-merges still happen even with zero Sleeper rows to merge), 0 null `player_id`, 3,949/5,389 real skill-position rows with a real `pfr_id`. This is a workaround for *this specific narrow purpose*; it was not added as a new `ids.mapping` function since it has exactly one real caller (this script) -- CLAUDE.md's no-premature-abstraction rule.
+
+Continuing either way (real Sleeper-layered `players_dim` or the workaround above):
+
+```python
 stadiums = pl.read_csv("config/stadiums.csv")  # committed, task 1.3 -- no fetch needed
 
 schedule = nflverse.normalize_schedule(schedules_raw)

@@ -15,7 +15,15 @@ import pytest
 from typer.testing import CliRunner
 
 import ffapp.cli as cli
-from ffapp.config import CacheSettings, LeagueConfig, ModelSettings, SeasonsSettings, Settings
+from ffapp.config import (
+    CacheSettings,
+    LeagueConfig,
+    LightGBMSettings,
+    ModelSettings,
+    SeasonsSettings,
+    Settings,
+)
+from ffapp.models import points
 
 runner = CliRunner()
 
@@ -27,6 +35,35 @@ _LEAGUE = LeagueConfig(
     season=2026,
     league_cache={"roster_positions": ["RB", "BN"], "total_rosters": 1},
     overrides={},
+)
+
+# Fast, tiny-data-friendly params -- `settings.model.lightgbm`'s own real
+# defaults (n_estimators=800, min_child_samples=40) would still run on this
+# fixture's handful of rows, just needlessly slowly for a unit test.
+_FAST_PARAMS = LightGBMSettings(
+    n_estimators=15,
+    learning_rate=0.3,
+    num_leaves=7,
+    min_child_samples=1,
+    subsample=1.0,
+    colsample_bytree=1.0,
+    reg_lambda=0.0,
+)
+
+# `PointsPredictor`/`AvailabilityPredictor` (task 1.15/1.14) now run for
+# real in `evaluate`'s own real code path -- every feature column either
+# model reads (`points.feature_columns("RB")`, `availability.FEATURE_COLUMNS`)
+# needs *some* value present, even a placeholder one; this fixture only
+# exercises CLI wiring, not real model quality (that's each model's own
+# test module's job).
+_DEFAULT_FEATURES: dict[str, object] = dict.fromkeys(points.feature_columns("RB"), 0.0)
+_DEFAULT_FEATURES.update(
+    {
+        "report_status": "None",
+        "practice_participation": "Full",
+        "depth_chart_rank": 1.0,
+        "age": 25.0,
+    }
 )
 
 
@@ -44,6 +81,7 @@ def _features() -> pl.DataFrame:
                         "team": team,
                         "availability_flag": True,
                         "target": 10.0 + week,
+                        **_DEFAULT_FEATURES,
                     }
                 )
     return pl.DataFrame(rows)
@@ -75,7 +113,7 @@ def fixture_settings(tmp_path: Path) -> Settings:
             warn_on_stale=True,
         ),
         seasons=SeasonsSettings(train_start=2020, current=2021),
-        model=ModelSettings(min_train_rows=1, retrain_cadence_weeks=1),
+        model=ModelSettings(min_train_rows=1, retrain_cadence_weeks=1, lightgbm=_FAST_PARAMS),
     )
 
 

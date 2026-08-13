@@ -6,7 +6,7 @@ import typer
 from ffapp import __version__
 from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
-from ffapp.config import load_all_leagues, load_league, load_primary_league, load_settings
+from ffapp.config import Settings, load_all_leagues, load_league, load_primary_league, load_settings
 from ffapp.draft import board as draft_board
 from ffapp.env import load_env
 from ffapp.evaluation import backtest
@@ -14,7 +14,7 @@ from ffapp.evaluation import metrics as evaluation_metrics
 from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
 from ffapp.league_format import LeagueFormat, parse_league_format
-from ffapp.models import baselines
+from ffapp.models import availability, baselines, points
 from ffapp.scoring import golden
 
 load_env()
@@ -291,6 +291,18 @@ def _flex_eligible_positions(fmt: LeagueFormat) -> set[str]:
     return positions
 
 
+def _final_training_window(
+    features: pl.DataFrame, settings: Settings, seasons: list[int]
+) -> pl.DataFrame:
+    """Every row strictly before the earliest validation season, for a
+    single "current, deployable model" fit -- feature importances describe
+    *this* fit, not any one walk-forward week's own fold."""
+    train_cutoff = min(seasons)
+    return features.filter(
+        (pl.col("season") >= settings.seasons.train_start) & (pl.col("season") < train_cutoff)
+    )
+
+
 @app.command("evaluate")
 def evaluate_command(
     seasons: list[int] = typer.Option(  # noqa: B008 -- typer's own multi-value-option pattern
@@ -300,17 +312,23 @@ def evaluate_command(
     """Walk-forward backtest (SPEC §12.2; task 1.12): fit-and-predict week by
     week over `--seasons`, using only strictly-prior data (no random split,
     anywhere), and write raw predictions to
-    data/outputs/eval/<timestamp>/predictions.parquet, plus a markdown
-    evaluation report (SPEC §12.6; task 1.17) alongside it in the same
-    directory.
+    data/outputs/eval/<timestamp>/predictions.parquet (points-style
+    predictors) and `availability_predictions.parquet` (task 1.14's own
+    binary target, a separate walk-forward run since it predicts a
+    different `target_column`), plus a markdown evaluation report
+    (SPEC §12.6; task 1.17) alongside them in the same directory.
 
-    Exercises the harness with baselines B0-B2 (SPEC §12.3) -- no real
-    trainable model exists yet (tasks 1.14-1.16); B3 needs a separately
-    materialised multi-season consensus-projections table and is out of
-    scope for this command. The report's feature-importance and
-    calibration sections are correspondingly empty here -- those need
-    real fitted boosters (tasks 1.14-1.16), which only exist in the ad
-    hoc scripts documented in HANDOFF.md §6, not this command.
+    Exercises the harness with baselines B0-B2 (SPEC §12.3) plus the real
+    fitted `PointsPredictor`/`AvailabilityPredictor` (tasks 1.15/1.14).
+    B3 needs a separately materialised multi-season consensus-projections
+    table (`ingest.rankings`' FantasyPros weekly-archive git-history
+    mining) and stays out of scope for this command, a deliberate
+    boundary from task 1.12's own original design, not revisited here.
+    Quantile-model distribution metrics (task 1.16, SPEC §11.5) also stay
+    out -- `predict_quantiles` returns a full per-row quantile grid, not
+    the single-`Series`-per-row shape `evaluation.backtest.Predictor`
+    expects, so it doesn't fit this harness without a real redesign
+    outside this task's own scope.
     """
     settings = load_settings()
 
@@ -331,17 +349,18 @@ def evaluate_command(
     features = baselines.add_b0_positional_mean(features)
     features = baselines.add_b1_season_to_date_mean(features)
     features = baselines.add_b2_ewm_4(features)
+    features = baselines.add_availability_base_rate(features)
 
-    predictors = [
+    points_predictors: list[backtest.Predictor] = [
         backtest.BaselinePredictor("b0_positional_mean", "b0_positional_mean"),
         backtest.BaselinePredictor("b1_season_to_date_mean", "b1_season_to_date_mean"),
         backtest.BaselinePredictor("b2_ewm_4", "b2_ewm_4"),
+        points.PointsPredictor(settings.model.lightgbm),
     ]
-
     predictions = backtest.run_walk_forward_backtest(
         features,
         schedule,
-        predictors,
+        points_predictors,
         validation_seasons=seasons,
         train_start=settings.seasons.train_start,
         min_train_rows=settings.model.min_train_rows,
@@ -353,26 +372,105 @@ def evaluate_command(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "predictions.parquet"
     predictions.write_parquet(output_path)
-
     typer.echo(f"Wrote {predictions.height} predictions to {output_path}")
 
-    if predictions.is_empty():
-        computed_metrics: list[evaluation_metrics.MetricResult] = []
-    else:
+    availability_predictors: list[backtest.Predictor] = [
+        backtest.BaselinePredictor("availability_base_rate", "availability_base_rate"),
+        availability.AvailabilityPredictor(settings.model.lightgbm),
+    ]
+    availability_predictions = backtest.run_walk_forward_backtest(
+        features,
+        schedule,
+        availability_predictors,
+        validation_seasons=seasons,
+        train_start=settings.seasons.train_start,
+        min_train_rows=settings.model.min_train_rows,
+        target_column="availability_flag",
+    )
+    availability_output_path = output_dir / "availability_predictions.parquet"
+    availability_predictions.write_parquet(availability_output_path)
+    typer.echo(
+        f"Wrote {availability_predictions.height} availability predictions "
+        f"to {availability_output_path}"
+    )
+
+    computed_metrics: list[evaluation_metrics.MetricResult] = []
+    feature_importances: dict[str, list[tuple[str, float]]] = {}
+    calibration_curves: dict[str, list[tuple[float, float, int]]] = {}
+
+    if not predictions.is_empty():
         league = load_primary_league()
         fmt = parse_league_format(league)
         startable_counts = evaluation_metrics.startable_counts_from_predictions(predictions, fmt)
-        computed_metrics = [
-            *evaluation_metrics.accuracy_metrics(predictions, startable_counts=startable_counts),
-            *evaluation_metrics.ranking_metrics(predictions, startable_counts=startable_counts),
-            *evaluation_metrics.start_sit_accuracy(predictions, _flex_eligible_positions(fmt)),
-        ]
+        computed_metrics.extend(
+            evaluation_metrics.accuracy_metrics(predictions, startable_counts=startable_counts)
+        )
+        computed_metrics.extend(
+            evaluation_metrics.ranking_metrics(predictions, startable_counts=startable_counts)
+        )
+        computed_metrics.extend(
+            evaluation_metrics.start_sit_accuracy(predictions, _flex_eligible_positions(fmt))
+        )
+        computed_metrics.extend(evaluation_metrics.lineup_regret(predictions, fmt))
+
+        final_train = _final_training_window(features, settings, seasons)
+        if not final_train.is_empty():
+            fitted_points = points.fit_points_model(
+                final_train, lightgbm_params=settings.model.lightgbm
+            )
+            for position, booster in fitted_points.boosters.items():
+                feature_importances[f"points_{position}"] = (
+                    evaluation_report.extract_feature_importance(booster)
+                )
+
+    if not availability_predictions.is_empty():
+        for predictor in ("availability_lightgbm", "availability_base_rate"):
+            pred_df = availability_predictions.filter(
+                (pl.col("predictor") == predictor) & pl.col("prediction").is_not_null()
+            )
+            if pred_df.is_empty():
+                continue
+            brier = evaluation_metrics.brier_score(
+                pred_df["prediction"].to_numpy(), pred_df["target"].to_numpy()
+            )
+            ci_low, ci_high = evaluation_metrics.bootstrap_ci_over_rows(
+                pred_df,
+                lambda df: evaluation_metrics.brier_score(
+                    df["prediction"].to_numpy(), df["target"].to_numpy()
+                ),
+            )
+            computed_metrics.append(
+                evaluation_metrics.MetricResult(
+                    metric="brier_score",
+                    predictor=predictor,
+                    position=None,
+                    scope="all",
+                    value=brier,
+                    n_obs=pred_df.height,
+                    ci_low=ci_low,
+                    ci_high=ci_high,
+                )
+            )
+            calibration_curves[predictor] = evaluation_metrics.calibration_curve(
+                pred_df["prediction"].to_numpy(), pred_df["target"].to_numpy()
+            )
+
+        final_train = _final_training_window(features, settings, seasons)
+        if not final_train.is_empty():
+            fitted_availability = availability.fit_availability_model(
+                final_train, lightgbm_params=settings.model.lightgbm
+            )
+            feature_importances["availability"] = evaluation_report.extract_feature_importance(
+                fitted_availability.booster
+            )
 
     report_markdown = evaluation_report.render_report_markdown(
         seasons=seasons,
         generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         git_commit=evaluation_report.current_git_commit(),
         metrics=computed_metrics,
+        feature_importances=feature_importances or None,
+        calibration_curves=calibration_curves or None,
     )
     report_path = evaluation_report.write_report(output_dir, report_markdown)
     typer.echo(f"Wrote evaluation report to {report_path}")
