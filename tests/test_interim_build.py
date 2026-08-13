@@ -39,10 +39,18 @@ def _pbp_row(**kwargs: object) -> dict:
         "yards_gained": 0.0,
         "touchdown": 0,
         "posteam_type": "home",
+        # task 2.7: DST pressure/turnover rate inputs.
+        "qb_dropback": None,  # None -> derived from play_type below, unless overridden
+        "sack": 0,
+        "qb_hit": 0,
+        "interception": 0,
+        "fumble_lost": 0,
     }
     row.update(kwargs)
     if row["pass"] is None:
         row["pass"] = 1.0 if row["play_type"] == "pass" else 0.0
+    if row["qb_dropback"] is None:
+        row["qb_dropback"] = 1 if row["play_type"] == "pass" else 0
     return row
 
 
@@ -91,6 +99,50 @@ def test_build_team_week_context_leaves_deferred_columns_null() -> None:
     assert row["neutral_pace_sec"] is None
     assert row["implied_total"] is None
     assert row["spread"] is None
+
+
+# --- build_team_week_defense (task 2.7) ----------------------------------------------
+
+
+def test_build_team_week_defense_computes_own_and_opponent_rates() -> None:
+    """KC has the ball (posteam) against BAL (defteam): 4 real dropbacks
+    (one sacked, one hit-but-not-sacked, one intercepted, one clean) plus
+    one run with a lost fumble. By hand: KC's own offense-side rates are
+    all over 4 dropbacks / 5 total plays; BAL's own defense-side rates
+    are the mirror image."""
+    pbp = _pbp(
+        [
+            _pbp_row(play_type="pass", sack=1, qb_hit=0, interception=0, fumble_lost=0),
+            _pbp_row(play_type="pass", sack=0, qb_hit=1, interception=0, fumble_lost=0),
+            _pbp_row(play_type="pass", sack=0, qb_hit=0, interception=1, fumble_lost=0),
+            _pbp_row(play_type="pass", sack=0, qb_hit=0, interception=0, fumble_lost=0),
+            _pbp_row(play_type="run", qb_dropback=0, sack=0, qb_hit=0, fumble_lost=1),
+        ]
+    )
+
+    result = build.build_team_week_defense(pbp)
+
+    kc = result.filter(pl.col("team") == "KC").row(0, named=True)
+    assert kc["dropbacks"] == 4
+    assert kc["plays"] == 5
+    assert kc["sack_rate_allowed"] == pytest.approx(1 / 4)
+    assert kc["pressure_rate_allowed"] == pytest.approx(2 / 4)  # sack + qb_hit
+    assert kc["interception_rate_thrown"] == pytest.approx(1 / 4)
+    assert kc["turnover_rate"] == pytest.approx(2 / 5)  # 1 int + 1 fumble lost, over all plays
+
+    bal = result.filter(pl.col("team") == "BAL").row(0, named=True)
+    assert bal["dropbacks_faced"] == 4
+    assert bal["plays_faced"] == 5
+    assert bal["pressure_rate_forced"] == pytest.approx(2 / 4)
+    assert bal["takeaway_rate"] == pytest.approx(2 / 5)  # 1 int forced + 1 fumble recovered
+
+
+def test_build_team_week_defense_has_no_row_for_a_bye_week() -> None:
+    pbp = _pbp([_pbp_row(season=2025, week=1)])
+
+    result = build.build_team_week_defense(pbp)
+
+    assert result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).is_empty()
 
 
 # --- add_proe (task 1.7) ------------------------------------------------------------

@@ -159,6 +159,87 @@ def build_team_week_context(pbp: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def build_team_week_defense(pbp: pl.DataFrame) -> pl.DataFrame:
+    """One row per (team, season, week): this team's own offensive pass
+    protection/ball security (`*_allowed`/`*_thrown`, grouped by
+    `posteam`) alongside its defensive production (`*_forced`, grouped
+    by `defteam`) -- task 2.7's DST model reads its own opponent-facing
+    features from here (an opposing DST's "opponent sack rate allowed"
+    is just this team's own `sack_rate_allowed`; see `features.dst`).
+
+    `qb_dropback` (real nflverse flag, includes sacks and scrambles) is
+    the rate denominator for sack/pressure/interception rates -- the
+    conventional "per dropback" framing. `_scrimmage_plays` (pass+run)
+    is the denominator for turnover/takeaway rates, since a fumble can
+    occur on either play type. A `sack` or `qb_hit` flag is this
+    project's own pressure proxy -- nflverse carries no separate
+    charted-pressure column (PFF's own charting is proprietary and
+    unavailable here); `turnover_rate`/`interception_rate_thrown` are
+    documented approximations of SPEC §11.6's "turnover-worthy play
+    rate" for the same reason -- real turnovers, not PFF's own
+    near-turnover charting stat.
+    """
+    plays = _scrimmage_plays(pbp)
+    dropbacks = pbp.filter(pl.col("qb_dropback") == 1)
+    pressured = (pl.col("sack") == 1) | (pl.col("qb_hit") == 1)
+
+    offense_dropbacks = (
+        dropbacks.group_by(["season", "week", "posteam"])
+        .agg(
+            pl.len().alias("dropbacks"),
+            pl.col("sack").fill_null(0).sum().alias("sacks_allowed"),
+            pressured.fill_null(False).sum().alias("pressures_allowed"),
+            pl.col("interception").fill_null(0).sum().alias("interceptions_thrown"),
+        )
+        .rename({"posteam": "team"})
+    )
+    offense_plays = (
+        plays.group_by(["season", "week", "posteam"])
+        .agg(
+            pl.len().alias("plays"),
+            pl.col("fumble_lost").fill_null(0).sum().alias("fumbles_lost"),
+        )
+        .rename({"posteam": "team"})
+    )
+    defense_dropbacks = (
+        dropbacks.group_by(["season", "week", "defteam"])
+        .agg(
+            pl.len().alias("dropbacks_faced"),
+            pressured.fill_null(False).sum().alias("pressures_forced"),
+        )
+        .rename({"defteam": "team"})
+    )
+    defense_plays = (
+        plays.group_by(["season", "week", "defteam"])
+        .agg(
+            pl.len().alias("plays_faced"),
+            pl.col("interception").fill_null(0).sum().alias("interceptions_forced"),
+            pl.col("fumble_lost").fill_null(0).sum().alias("fumbles_recovered"),
+        )
+        .rename({"defteam": "team"})
+    )
+
+    key = ["season", "week", "team"]
+    result = (
+        offense_dropbacks.join(offense_plays, on=key, how="full", coalesce=True)
+        .join(defense_dropbacks, on=key, how="full", coalesce=True)
+        .join(defense_plays, on=key, how="full", coalesce=True)
+    )
+
+    return result.with_columns(
+        (pl.col("sacks_allowed") / pl.col("dropbacks")).alias("sack_rate_allowed"),
+        (pl.col("pressures_allowed") / pl.col("dropbacks")).alias("pressure_rate_allowed"),
+        (pl.col("interceptions_thrown") / pl.col("dropbacks")).alias("interception_rate_thrown"),
+        ((pl.col("interceptions_thrown") + pl.col("fumbles_lost")) / pl.col("plays")).alias(
+            "turnover_rate"
+        ),
+        (pl.col("pressures_forced") / pl.col("dropbacks_faced")).alias("pressure_rate_forced"),
+        (
+            (pl.col("interceptions_forced") + pl.col("fumbles_recovered")) / pl.col("plays_faced")
+        ).alias("takeaway_rate"),
+    )
+
+
 def _proe_training_frame(pbp: pl.DataFrame) -> pl.DataFrame:
     """Real play-calling decisions only, for fitting the proe baseline:
     scrimmage plays with a real `down` (excludes two-point-conversion
@@ -323,7 +404,12 @@ def add_neutral_pace(team_week_context: pl.DataFrame, pbp: pl.DataFrame) -> pl.D
 # `implied_total` -- every one a pre-move season for one of these three
 # franchises, not an honest data gap -- because `team_week_context`
 # contains zero "STL"/"SD"/"OAK" rows at all, only the modern codes.
-_RELOCATED_TEAM_ALIASES = {"STL": "LA", "SD": "LAC", "OAK": "LV"}
+# Public (not `_`-prefixed): task 2.7's `features.dst` is a second real
+# caller needing this same remap -- `team_week_defense` (pbp-derived,
+# like `team_week_context`) only ever carries the modern franchise code,
+# so any schedule-derived team column needs the same fix this mapping
+# already gives `add_schedule_context`'s own join.
+RELOCATED_TEAM_ALIASES = {"STL": "LA", "SD": "LAC", "OAK": "LV"}
 
 
 def add_schedule_context(team_week_context: pl.DataFrame, schedule: pl.DataFrame) -> pl.DataFrame:
@@ -338,21 +424,21 @@ def add_schedule_context(team_week_context: pl.DataFrame, schedule: pl.DataFrame
     (`-spread_line`, since a team's own spread is *its* margin of
     expected victory, not necessarily the home team's) and
     `away_implied_total`. `home_team`/`away_team` are remapped through
-    `_RELOCATED_TEAM_ALIASES` first so a relocated franchise's pre-move
+    `RELOCATED_TEAM_ALIASES` first so a relocated franchise's pre-move
     seasons join correctly against `team_week_context`'s modern-code-only
     rows (see that mapping's own comment).
     """
     home_side = schedule.select(
         "season",
         "week",
-        pl.col("home_team").replace(_RELOCATED_TEAM_ALIASES).alias("team"),
+        pl.col("home_team").replace(RELOCATED_TEAM_ALIASES).alias("team"),
         pl.col("spread_line").alias("spread"),
         pl.col("home_implied_total").alias("implied_total"),
     )
     away_side = schedule.select(
         "season",
         "week",
-        pl.col("away_team").replace(_RELOCATED_TEAM_ALIASES).alias("team"),
+        pl.col("away_team").replace(RELOCATED_TEAM_ALIASES).alias("team"),
         (-pl.col("spread_line")).alias("spread"),
         pl.col("away_implied_total").alias("implied_total"),
     )
@@ -1078,6 +1164,7 @@ __all__ = [
     "OPPONENT_ADJUSTMENT_SHRINKAGE_K",
     "QB_PASSING_GROUP",
     "RED_ZONE_YARDLINE",
+    "RELOCATED_TEAM_ALIASES",
     "RIDGE_ALPHA",
     "SCORE_DIFFERENTIAL_CAP",
     "SKILL_POSITIONS",
@@ -1092,4 +1179,5 @@ __all__ = [
     "build_player_week_stats",
     "build_player_week_usage",
     "build_team_week_context",
+    "build_team_week_defense",
 ]

@@ -100,12 +100,21 @@ def _starting_ol_by_game(snap_counts: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _ol_continuity_raw(snap_counts: pl.DataFrame) -> pl.DataFrame:
+def ol_continuity_raw(snap_counts: pl.DataFrame) -> pl.DataFrame:
     """One row per (team, season, week): `ol_continuity_raw`, the fraction
     (0.0-1.0) of that game's "starting 5" OL who were also in the
     immediately preceding *in-season* game's starting 5. Null for a
     team's first tracked week of a season -- no prior week to compare to,
-    same convention as `features.usage.weeks_in_current_role`."""
+    same convention as `features.usage.weeks_in_current_role`.
+
+    Public (not `_`-prefixed): task 2.7's DST model (`features.dst`) is a
+    second real caller needing this same team-level signal for the
+    *opponent* side, without pulling in this module's own
+    `build_team_context_features` (which also needs `usage_features`/
+    `injuries` for `teammate_vacated_*`, irrelevant to DST) -- promoted
+    rather than duplicated, matching `sim.lineup.slot_instances`' and
+    `sim.season.to_projection`/`to_marginal`'s own promotion this same
+    session."""
     starters = _starting_ol_by_game(snap_counts)
     sets_by_game = _sort(
         starters.group_by(["season", "week", "team"]).agg(
@@ -171,7 +180,7 @@ def build_team_context_features(
     does (SPEC §10.5).
     """
     result = team_week_context.join(
-        _ol_continuity_raw(snap_counts), on=["team", "season", "week"], how="left"
+        ol_continuity_raw(snap_counts), on=["team", "season", "week"], how="left"
     )
 
     for feature in _WINDOWED_FEATURES:
@@ -296,4 +305,5 @@ __all__ = [
     "add_vacated_shares",
     "build_team_context_features",
     "ewm",
+    "ol_continuity_raw",
 ]

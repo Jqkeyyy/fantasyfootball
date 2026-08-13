@@ -73,7 +73,7 @@ def test_ol_continuity_raw_is_full_when_all_five_starters_repeat() -> None:
     ]
     snap_counts = pl.DataFrame(week1 + week2)
 
-    result = team_context._ol_continuity_raw(snap_counts)
+    result = team_context.ol_continuity_raw(snap_counts)
 
     rows = {row["week"]: row for row in result.iter_rows(named=True)}
     assert rows[1]["ol_continuity_raw"] is None  # no prior week to compare to
@@ -92,7 +92,7 @@ def test_ol_continuity_raw_reflects_a_partial_lineup_change() -> None:
     ]
     snap_counts = pl.DataFrame(week1 + week2)
 
-    result = team_context._ol_continuity_raw(snap_counts)
+    result = team_context.ol_continuity_raw(snap_counts)
 
     row = result.filter(pl.col("week") == 2).row(0, named=True)
     assert row["ol_continuity_raw"] == pytest.approx(4 / 5)
@@ -114,7 +114,7 @@ def test_ol_continuity_raw_resets_at_a_season_boundary() -> None:
     ]
     snap_counts = pl.DataFrame(prior_season + new_season)
 
-    result = team_context._ol_continuity_raw(snap_counts)
+    result = team_context.ol_continuity_raw(snap_counts)
 
     row = result.filter((pl.col("season") == 2025) & (pl.col("week") == 1)).row(0, named=True)
     assert row["ol_continuity_raw"] is None

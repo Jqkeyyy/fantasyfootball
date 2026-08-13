@@ -179,7 +179,7 @@ Total ≈ 40–55 hours.
 - [x] **2.4 — Season simulator** ⏱ 6h — SPEC §13.4. Done when lineups are set on *projections* and results drawn from *samples* (assert this in a test — it is the most commonly botched detail), and playoff odds sum sensibly across the league.
 - [x] **2.5 — Start/sit assistant** ⏱ 4h — SPEC §14.3. Done when a constructed heavy-underdog scenario recommends the higher-variance option and a heavy-favourite scenario recommends the floor.
 - [ ] **2.6 — Waiver wire** ⏱ 5h — SPEC §14.4. Done when value is computed relative to your roster (verify: a high-projection player at a position where you are already deep ranks low), and FAAB guidance is calibrated against your league's transaction history.
-- [ ] **2.7 — DST model** ⏱ 4h — SPEC §11.6. Done when it beats B2 for DST and produces a weekly streamer list.
+- [x] **2.7 — DST model** ⏱ 4h — SPEC §11.6. Done when it beats B2 for DST and produces a weekly streamer list.
 - [ ] **2.8 — SOS and schedule grid** ⏱ 5h — SPEC §14.5. Done when full-season, rest-of-season, and playoff-weeks SOS are all available, low-confidence grades are greyed out, and matchup grade is never the largest element on a card.
 - [ ] **2.9 — Trade analyzer** ⏱ 5h — SPEC §14.6. Done when it uses common random numbers across the before/after runs and reports both sides' deltas.
 - [ ] **2.10 — News pipeline** ⏱ 6h — SPEC §14.8. Done when a ruled-out RB1 automatically propagates to the backup's projection and the waiver board, and low-confidence items route to manual review.
