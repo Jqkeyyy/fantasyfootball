@@ -40,13 +40,13 @@ from ffapp.features.registry import FeatureSpec, register
 
 SOURCE_TABLE = "defense_position_allowed"
 
-_POSITION_TO_GROUPS = {
+POSITION_TO_GROUPS = {
     "WR": ["WR"],
     "TE": ["TE"],
     "RB": ["RB_receiving", "RB_rushing"],
     "QB": ["QB_passing", "QB_rushing"],
 }
-ALL_POSITION_GROUPS = sorted({g for groups in _POSITION_TO_GROUPS.values() for g in groups})
+ALL_POSITION_GROUPS = sorted({g for groups in POSITION_TO_GROUPS.values() for g in groups})
 
 _RATE_OUTCOME_ADJ_COLUMNS = {
     "adj_epa_allowed": "def_adj_epa_allowed",
@@ -60,7 +60,7 @@ _N_PLAYS_PREFIX = "def_n_plays"
 def _position_group_pairs() -> pl.DataFrame:
     rows = [
         {"position": position, "position_group": group}
-        for position, groups in _POSITION_TO_GROUPS.items()
+        for position, groups in POSITION_TO_GROUPS.items()
         for group in groups
     ]
     return pl.DataFrame(rows)
@@ -132,7 +132,7 @@ def register_opponent_features(*, registry: dict[str, FeatureSpec] | None = None
     (unlike `usage.build_usage_features`/`team_context
     .build_team_context_features`, which register while they compute)
     because these columns aren't windowed per-call the same way -- the
-    full set is static and known up front from `_POSITION_TO_GROUPS`.
+    full set is static and known up front from `POSITION_TO_GROUPS`.
     """
     descriptions = {
         "adj_epa_allowed": "ridge-adjusted EPA allowed to the player's position group",
@@ -141,7 +141,7 @@ def register_opponent_features(*, registry: dict[str, FeatureSpec] | None = None
         "adj_td_rate_allowed": "adjusted TD rate allowed",
         "n_plays": "sample size behind the opponent-adjusted estimate",
     }
-    for position, groups in _POSITION_TO_GROUPS.items():
+    for position, groups in POSITION_TO_GROUPS.items():
         for group in groups:
             for raw_column, description in descriptions.items():
                 register(
@@ -172,6 +172,7 @@ def build_opponent_features(
 
 __all__ = [
     "ALL_POSITION_GROUPS",
+    "POSITION_TO_GROUPS",
     "SOURCE_TABLE",
     "add_opponent_features",
     "build_opponent_features",

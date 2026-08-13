@@ -91,6 +91,7 @@ _PREDICTIONS_SCHEMA = {
     "week": pl.Int64,
     "position": pl.Utf8,
     "team": pl.Utf8,
+    "played": pl.Boolean,
     "target": pl.Float64,
     "predictor": pl.Utf8,
     "prediction": pl.Float64,
@@ -114,7 +115,11 @@ def run_walk_forward_backtest(
     alongside the `prediction`, ready for task 1.13's metrics module.
     Carries `team` (the player's real NFL team that week) so decision-
     quality metrics can pair flex-eligible teammates without a second
-    join back to `features`.
+    join back to `features`, and `played` (`features`' own
+    `availability_flag`) so a conditional model (task 1.15's
+    `models.points`, trained and thus fairly evaluated only on rows
+    where the player actually played) can be scored on the right subset
+    without a second join either.
 
     `target_column` defaults to `"target"` (fantasy points, SPEC §11.1)
     but the harness itself has no opinion on what's being predicted --
@@ -142,6 +147,7 @@ def run_walk_forward_backtest(
                 "week",
                 "position",
                 "team",
+                pl.col("availability_flag").alias("played"),
                 pl.col(target_column).cast(pl.Float64).alias("target"),
             )
             for predictor in predictors:

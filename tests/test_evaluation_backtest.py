@@ -32,6 +32,7 @@ def _features() -> pl.DataFrame:
                         "week": week,
                         "position": position,
                         "team": team,
+                        "availability_flag": True,
                         "target": target,
                         "b1_col": b1,
                     }
@@ -161,6 +162,7 @@ def test_output_has_one_row_per_player_week_predictor_with_target_and_prediction
         "week",
         "position",
         "team",
+        "played",
         "target",
         "predictor",
         "prediction",
@@ -188,6 +190,7 @@ def test_returns_empty_dataframe_with_the_right_schema_when_nothing_qualifies() 
         "week",
         "position",
         "team",
+        "played",
         "target",
         "predictor",
         "prediction",
