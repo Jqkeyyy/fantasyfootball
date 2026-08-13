@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `42c19e9` — docs: session wrap-up in HANDOFF.md
+**Last commit:** `PENDING` — docs: fix stale rebuild-from-empty script for depth_charts
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -400,7 +400,13 @@ injuries = pl.read_parquet(interim_dir / "injuries.parquet")
 team_context_features = team_context.build_team_context_features(twc, snap_counts, injuries, usage_features)
 ```
 
-`fetch_depth_charts` also exists (warmed for later use) but nothing consumes it yet — no §6.2 canonical table needs it directly today. `fetch_ff_opportunity` also writes `data/raw/ffopportunity/LICENSE.txt` (CC-BY-SA, see task 1.2's HANDOFF entry) the first time it runs.
+`fetch_ff_opportunity` also writes `data/raw/ffopportunity/LICENSE.txt` (CC-BY-SA, see task 1.2's HANDOFF entry) the first time it runs.
+
+**`fetch_depth_charts` is now consumed** (task 1.14's `features/depth_chart.py`) — no longer "warmed for later use, nothing consumes it yet" (that line was true through task 1.13, stale as of 1.14; fixed here rather than left for whoever hits the resulting `TypeError` on a fresh machine first):
+
+```python
+depth_charts = pl.read_parquet(nflverse.fetch_depth_charts(SEASONS, offline=False, settings=settings))
+```
 
 **Weather (task 1.3) is now materialised at real full scale (task 1.9)** — no longer "deliberately not part of the script above." Uses `load_rosters_weekly`, not `load_rosters` (task 1.9 fix — see that task's HANDOFF entry and §5's own gotcha; `load_rosters` is season-level and nowhere near enough granularity):
 
@@ -416,7 +422,7 @@ interim_weather.write_parquet(interim_dir / "weather.parquet")
 rosters = pl.read_parquet(nflverse.fetch_rosters(SEASONS, offline=False, settings=settings))
 ```
 
-Then, once `player_week_usage`/`team_week_context`/`defense_position_allowed`/`injuries`/`weather`/`rosters` are all real, the wide table itself (task 1.9) — the actual `ffapp draft board`-equivalent deliverable of Phase 1's feature pipeline, still no CLI command though:
+Then, once `player_week_usage`/`team_week_context`/`defense_position_allowed`/`injuries`/`weather`/`rosters`/`depth_charts` are all real, the wide table itself (task 1.9) — the actual `ffapp draft board`-equivalent deliverable of Phase 1's feature pipeline, still no CLI command though:
 
 ```python
 from ffapp.features import build as features_build
@@ -424,11 +430,14 @@ from ffapp.features import build as features_build
 registry = {}
 player_week_features = features_build.build_player_week_features(
     rosters, schedule, player_week_stats, usage, snap_counts,
-    twc, dpa, injuries, interim_weather, league.league_cache["scoring_settings"],
+    twc, dpa, injuries, interim_weather, depth_charts,
+    league.league_cache["scoring_settings"],
     registry=registry,
 )
 player_week_features.write_parquet(settings.data_root / "features" / "player_week_features.parquet")
 ```
+
+`depth_charts` (task 1.14) is a required positional argument as of this session — the call above is the current real signature; if this ever drifts again, `features_build.build_player_week_features.__doc__`/its own def is the source of truth, not this file.
 
 Then baselines B0-B3 (task 1.10) — B0-B2 are pure functions over `player_week_features`, no fetch needed:
 
