@@ -55,7 +55,7 @@ class Lineup:
     total_points: float
 
 
-def _slot_instances(fmt: LeagueFormat) -> list[tuple[str, list[str]]]:
+def slot_instances(fmt: LeagueFormat) -> list[tuple[str, list[str]]]:
     """One entry per real starting slot -- a dedicated position slot is
     eligible for exactly that position; a flex slot (only emitted when
     its own count is > 0, i.e. actually active in this league) is
@@ -91,7 +91,7 @@ def optimal_lineup(
     """SPEC §13.1: binary variable per (player, slot), constraints that
     each slot is filled exactly once, each player is used at most once,
     and slot eligibility is respected."""
-    slots = _slot_instances(fmt)
+    slots = slot_instances(fmt)
 
     combos = [
         (player, slot_id)
@@ -148,4 +148,11 @@ def optimal_lineup_points(actual_points: list[PlayerProjection], fmt: LeagueForm
     return optimal_lineup(actual_points, fmt).total_points
 
 
-__all__ = ["Lineup", "Objective", "PlayerProjection", "optimal_lineup", "optimal_lineup_points"]
+__all__ = [
+    "Lineup",
+    "Objective",
+    "PlayerProjection",
+    "optimal_lineup",
+    "optimal_lineup_points",
+    "slot_instances",
+]

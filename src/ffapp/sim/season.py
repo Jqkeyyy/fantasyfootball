@@ -57,6 +57,13 @@ class SimPlayer:
     p_miss: float
 
 
+# `to_projection`/`to_marginal` are public (not `_`-prefixed) because
+# task 2.5's start/sit assistant is a second real caller needing the
+# exact same SimPlayer -> PlayerProjection/PlayerMarginal shape this
+# module already derives -- promoted rather than duplicated, matching
+# `sim.lineup.slot_instances`' own promotion for the same reason.
+
+
 @dataclass(frozen=True)
 class Roster:
     team_id: str
@@ -79,7 +86,7 @@ class SeasonSimResult:
     p_title: dict[str, float]
 
 
-def _to_projection(player: SimPlayer) -> PlayerProjection:
+def to_projection(player: SimPlayer) -> PlayerProjection:
     median = float(marginal_ppf(np.array([0.5]), player.alphas, player.quantile_values)[0])
     ceiling = float(player.quantile_values[-1])
     return PlayerProjection(
@@ -91,7 +98,7 @@ def _to_projection(player: SimPlayer) -> PlayerProjection:
     )
 
 
-def _to_marginal(player: SimPlayer) -> PlayerMarginal:
+def to_marginal(player: SimPlayer) -> PlayerMarginal:
     return PlayerMarginal(
         player_id=player.player_id,
         position=player.position,
@@ -163,7 +170,7 @@ def simulate_team_week_totals(
     """
     all_players = [player for team in teams for player in team.players]
     player_index = {player.player_id: i for i, player in enumerate(all_players)}
-    marginals = [_to_marginal(player) for player in all_players]
+    marginals = [to_marginal(player) for player in all_players]
 
     n_weeks = len(remaining_weeks)
     p_miss = np.tile(np.array([player.p_miss for player in all_players]), (n_weeks, 1))
@@ -172,7 +179,7 @@ def simulate_team_week_totals(
     )
 
     lineups = {
-        team.team_id: optimal_lineup([_to_projection(p) for p in team.players], fmt)
+        team.team_id: optimal_lineup([to_projection(p) for p in team.players], fmt)
         for team in teams
     }
 
@@ -300,4 +307,6 @@ __all__ = [
     "simulate_availability",
     "simulate_season",
     "simulate_team_week_totals",
+    "to_marginal",
+    "to_projection",
 ]
