@@ -50,11 +50,25 @@ class DraftSettings:
 
 
 @dataclass(frozen=True)
+class SeasonsSettings:
+    train_start: int
+    current: int
+
+
+@dataclass(frozen=True)
+class ModelSettings:
+    min_train_rows: int
+    retrain_cadence_weeks: int
+
+
+@dataclass(frozen=True)
 class Settings:
     data_root: Path
     sleeper_username: str | None
     cache: CacheSettings
     draft: DraftSettings = DraftSettings(tier_method="gap", adp_sd_fallback=8.0)
+    seasons: SeasonsSettings = SeasonsSettings(train_start=2015, current=2026)
+    model: ModelSettings = ModelSettings(min_train_rows=2000, retrain_cadence_weeks=1)
 
 
 @dataclass(frozen=True)
@@ -98,8 +112,25 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         adp_sd_fallback=float(draft_raw.get("adp_sd_fallback", 8.0)),
     )
 
+    seasons_raw = raw.get("seasons", {})
+    seasons = SeasonsSettings(
+        train_start=int(seasons_raw.get("train_start", 2015)),
+        current=int(seasons_raw.get("current", 2026)),
+    )
+
+    model_raw = raw.get("model", {})
+    model = ModelSettings(
+        min_train_rows=int(model_raw.get("min_train_rows", 2000)),
+        retrain_cadence_weeks=int(model_raw.get("retrain_cadence_weeks", 1)),
+    )
+
     return Settings(
-        data_root=data_root, sleeper_username=sleeper_username, cache=cache, draft=draft
+        data_root=data_root,
+        sleeper_username=sleeper_username,
+        cache=cache,
+        draft=draft,
+        seasons=seasons,
+        model=model,
     )
 
 

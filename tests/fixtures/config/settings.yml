@@ -5,6 +5,10 @@ seasons:
   train_start: 2015
   current: 2026
 
+model:
+  min_train_rows: 500
+  retrain_cadence_weeks: 4
+
 sleeper:
   username: "fixture_user"
 

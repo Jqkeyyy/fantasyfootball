@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+
+import polars as pl
 import typer
 
 from ffapp import __version__
@@ -6,7 +9,9 @@ from ffapp.cache.offline import is_offline
 from ffapp.config import load_all_leagues, load_league, load_primary_league, load_settings
 from ffapp.draft import board as draft_board
 from ffapp.env import load_env
+from ffapp.evaluation import backtest
 from ffapp.ids import mapping
+from ffapp.models import baselines
 from ffapp.scoring import golden
 
 load_env()
@@ -268,3 +273,63 @@ def draft_board_command(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_csv(output_path)
     typer.echo(f"Wrote {result.height} players to {output_path}")
+
+
+@app.command("evaluate")
+def evaluate_command(
+    seasons: list[int] = typer.Option(  # noqa: B008 -- typer's own multi-value-option pattern
+        ..., "--seasons", help="Validation seasons, e.g. --seasons 2021 2022 2023 2024 2025."
+    ),
+) -> None:
+    """Walk-forward backtest (SPEC §12.2; task 1.12): fit-and-predict week by
+    week over `--seasons`, using only strictly-prior data (no random split,
+    anywhere), and write raw predictions to
+    data/outputs/eval/<timestamp>/predictions.parquet.
+
+    Exercises the harness with baselines B0-B2 (SPEC §12.3) -- no real
+    trainable model exists yet (tasks 1.14-1.16); B3 needs a separately
+    materialised multi-season consensus-projections table and is out of
+    scope for this command.
+    """
+    settings = load_settings()
+
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    schedule_path = settings.data_root / "interim" / "schedule.parquet"
+    for path in (features_path, schedule_path):
+        if not path.exists():
+            typer.echo(
+                f"Missing {path}. Materialise the interim/feature tables first "
+                "(see HANDOFF.md for the real end-to-end build steps).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+    features = pl.read_parquet(features_path)
+    schedule = pl.read_parquet(schedule_path)
+
+    features = baselines.add_b0_positional_mean(features)
+    features = baselines.add_b1_season_to_date_mean(features)
+    features = baselines.add_b2_ewm_4(features)
+
+    predictors = [
+        backtest.BaselinePredictor("b0_positional_mean", "b0_positional_mean"),
+        backtest.BaselinePredictor("b1_season_to_date_mean", "b1_season_to_date_mean"),
+        backtest.BaselinePredictor("b2_ewm_4", "b2_ewm_4"),
+    ]
+
+    predictions = backtest.run_walk_forward_backtest(
+        features,
+        schedule,
+        predictors,
+        validation_seasons=seasons,
+        train_start=settings.seasons.train_start,
+        min_train_rows=settings.model.min_train_rows,
+    )
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    output_dir = settings.data_root / "outputs" / "eval" / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "predictions.parquet"
+    predictions.write_parquet(output_path)
+
+    typer.echo(f"Wrote {predictions.height} predictions to {output_path}")

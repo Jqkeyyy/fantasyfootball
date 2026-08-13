@@ -61,6 +61,32 @@ def test_load_settings_defaults_draft_section_when_absent(tmp_path: Path) -> Non
     assert settings.draft.adp_sd_fallback == pytest.approx(8.0)
 
 
+def test_load_settings_reads_seasons_train_start_and_current() -> None:
+    settings = load_settings(FIXTURES / "settings.yml")
+
+    assert settings.seasons.train_start == 2015
+    assert settings.seasons.current == 2026
+
+
+def test_load_settings_reads_model_min_train_rows_and_retrain_cadence() -> None:
+    settings = load_settings(FIXTURES / "settings.yml")
+
+    assert settings.model.min_train_rows == 500
+    assert settings.model.retrain_cadence_weeks == 4
+
+
+def test_load_settings_defaults_seasons_and_model_sections_when_absent(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text("paths:\n  data_root: './data'\n")
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.seasons.train_start == 2015
+    assert settings.seasons.current == 2026
+    assert settings.model.min_train_rows == 2000
+    assert settings.model.retrain_cadence_weeks == 1
+
+
 def test_load_league_reads_slug_and_scoring_settings() -> None:
     league = load_league("main-ppr", leagues_dir=FIXTURES / "leagues")
 

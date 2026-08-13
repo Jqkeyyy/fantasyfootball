@@ -135,7 +135,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   `snapshot()` plus `tests/test_leakage.py`.
   **Done when:** the test passes over a sample of backtest weeks and fails when a deliberate leak is introduced.
 
-- [ ] **1.12 — Walk-forward backtest harness** 🔴 ⏱ 4h — SPEC §12.2
+- [x] **1.12 — Walk-forward backtest harness** 🔴 ⏱ 4h — SPEC §12.2
   **Done when:** `ffapp evaluate --seasons 2021 2022 2023 2024 2025` runs end to end and no code path anywhere performs a random split.
 
 - [ ] **1.13 — Metrics module** ⏱ 4h — SPEC §12.4
