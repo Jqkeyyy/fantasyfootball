@@ -131,7 +131,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   B0–B3. B3 requires ingesting weekly consensus projections.
   **Done when:** all four produce weekly predictions over the validation range. These are the yardstick; a buggy baseline flatters the model.
 
-- [ ] **1.11 — Snapshot and leakage test** 🔴 ⏱ 3h — SPEC §12.1
+- [x] **1.11 — Snapshot and leakage test** 🔴 ⏱ 3h — SPEC §12.1
   `snapshot()` plus `tests/test_leakage.py`.
   **Done when:** the test passes over a sample of backtest weeks and fails when a deliberate leak is introduced.
 
