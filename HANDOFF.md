@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `PENDING` — docs: session wrap-up in HANDOFF.md
+**Last commit:** `42c19e9` — docs: session wrap-up in HANDOFF.md
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
