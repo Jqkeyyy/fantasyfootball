@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-12
 **Last machine:** Maybe (Windows)
-**Last commit:** `PENDING` — feat: availability model (task 1.14)
+**Last commit:** `c9847f9` — feat: availability model (task 1.14)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
