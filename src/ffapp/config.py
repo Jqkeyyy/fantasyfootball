@@ -89,6 +89,32 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class CorrelationSettings:
+    """SPEC §13.2's own named pairwise rules -- "start with the
+    configured constants; estimate them empirically from historical data
+    in Phase 3." Phase 2 (this project's current phase) uses these
+    constants as-is."""
+
+    qb_pass_catcher: float
+    same_team_rb_rb: float
+    player_vs_opposing_dst: float
+
+
+DEFAULT_CORRELATION_SETTINGS = CorrelationSettings(
+    qb_pass_catcher=0.35,
+    same_team_rb_rb=-0.25,
+    player_vs_opposing_dst=-0.30,
+)
+
+
+@dataclass(frozen=True)
+class SimulationSettings:
+    season_sims: int
+    week_sims: int
+    correlation: CorrelationSettings = DEFAULT_CORRELATION_SETTINGS
+
+
+@dataclass(frozen=True)
 class Settings:
     data_root: Path
     sleeper_username: str | None
@@ -96,6 +122,7 @@ class Settings:
     draft: DraftSettings = DraftSettings(tier_method="gap", adp_sd_fallback=8.0)
     seasons: SeasonsSettings = SeasonsSettings(train_start=2015, current=2026)
     model: ModelSettings = ModelSettings(min_train_rows=2000, retrain_cadence_weeks=1)
+    simulation: SimulationSettings = SimulationSettings(season_sims=3000, week_sims=20000)
 
 
 @dataclass(frozen=True)
@@ -166,6 +193,22 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         quantiles=quantiles,
     )
 
+    simulation_raw = raw.get("simulation", {})
+    correlation_raw = simulation_raw.get("correlation", {})
+    dc = DEFAULT_CORRELATION_SETTINGS
+    correlation = CorrelationSettings(
+        qb_pass_catcher=float(correlation_raw.get("qb_pass_catcher", dc.qb_pass_catcher)),
+        same_team_rb_rb=float(correlation_raw.get("same_team_rb_rb", dc.same_team_rb_rb)),
+        player_vs_opposing_dst=float(
+            correlation_raw.get("player_vs_opposing_dst", dc.player_vs_opposing_dst)
+        ),
+    )
+    simulation = SimulationSettings(
+        season_sims=int(simulation_raw.get("season_sims", 3000)),
+        week_sims=int(simulation_raw.get("week_sims", 20000)),
+        correlation=correlation,
+    )
+
     return Settings(
         data_root=data_root,
         sleeper_username=sleeper_username,
@@ -173,6 +216,7 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         draft=draft,
         seasons=seasons,
         model=model,
+        simulation=simulation,
     )
 
 

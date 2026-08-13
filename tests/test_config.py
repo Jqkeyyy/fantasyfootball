@@ -127,6 +127,41 @@ def test_load_settings_reads_lightgbm_hyperparams(tmp_path: Path) -> None:
     assert settings.model.lightgbm.reg_lambda == pytest.approx(2.0)
 
 
+def test_load_settings_defaults_simulation_section_when_absent(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text("paths:\n  data_root: './data'\n")
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.simulation.season_sims == 3000
+    assert settings.simulation.week_sims == 20000
+    assert settings.simulation.correlation.qb_pass_catcher == pytest.approx(0.35)
+    assert settings.simulation.correlation.same_team_rb_rb == pytest.approx(-0.25)
+    assert settings.simulation.correlation.player_vs_opposing_dst == pytest.approx(-0.30)
+
+
+def test_load_settings_reads_simulation_and_correlation_settings(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\n"
+        "simulation:\n"
+        "  season_sims: 100\n"
+        "  week_sims: 500\n"
+        "  correlation:\n"
+        "    qb_pass_catcher: 0.5\n"
+        "    same_team_rb_rb: -0.1\n"
+        "    player_vs_opposing_dst: -0.2\n"
+    )
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.simulation.season_sims == 100
+    assert settings.simulation.week_sims == 500
+    assert settings.simulation.correlation.qb_pass_catcher == pytest.approx(0.5)
+    assert settings.simulation.correlation.same_team_rb_rb == pytest.approx(-0.1)
+    assert settings.simulation.correlation.player_vs_opposing_dst == pytest.approx(-0.2)
+
+
 def test_load_league_reads_slug_and_scoring_settings() -> None:
     league = load_league("main-ppr", leagues_dir=FIXTURES / "leagues")
 
