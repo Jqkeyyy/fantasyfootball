@@ -176,7 +176,7 @@ Total ≈ 40–55 hours.
 - [x] **2.1 — Lineup optimiser** ⏱ 3h — SPEC §13.1. Done when the ILP produces known-correct lineups on FLEX and superflex fixtures.
 - [x] **2.2 — Correlated weekly simulation** ⏱ 5h — SPEC §13.2. Done when simulated team-total variance is materially lower than the independent-sampling equivalent and the correlation matrix is positive definite after correction.
 - [x] **2.3 — Injury hazard model** ⏱ 4h — SPEC §13.3. Done when `p_miss` is produced per player-week and beats a positional base rate.
-- [ ] **2.4 — Season simulator** ⏱ 6h — SPEC §13.4. Done when lineups are set on *projections* and results drawn from *samples* (assert this in a test — it is the most commonly botched detail), and playoff odds sum sensibly across the league.
+- [x] **2.4 — Season simulator** ⏱ 6h — SPEC §13.4. Done when lineups are set on *projections* and results drawn from *samples* (assert this in a test — it is the most commonly botched detail), and playoff odds sum sensibly across the league.
 - [ ] **2.5 — Start/sit assistant** ⏱ 4h — SPEC §14.3. Done when a constructed heavy-underdog scenario recommends the higher-variance option and a heavy-favourite scenario recommends the floor.
 - [ ] **2.6 — Waiver wire** ⏱ 5h — SPEC §14.4. Done when value is computed relative to your roster (verify: a high-projection player at a position where you are already deep ranks low), and FAAB guidance is calibrated against your league's transaction history.
 - [ ] **2.7 — DST model** ⏱ 4h — SPEC §11.6. Done when it beats B2 for DST and produces a weekly streamer list.
