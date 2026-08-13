@@ -14,7 +14,7 @@ from ffapp.evaluation import metrics as evaluation_metrics
 from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
 from ffapp.league_format import LeagueFormat, parse_league_format
-from ffapp.models import availability, baselines, points
+from ffapp.models import availability, baselines, points, predict
 from ffapp.scoring import golden
 
 load_env()
@@ -474,3 +474,63 @@ def evaluate_command(
     )
     report_path = evaluation_report.write_report(output_dir, report_markdown)
     typer.echo(f"Wrote evaluation report to {report_path}")
+
+
+@app.command("project")
+def project_command(
+    week: int = typer.Option(..., "--week", help="Target week to generate projections for."),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to settings.seasons.current."
+    ),
+) -> None:
+    """Real weekly projections (SPEC §6.2, §11.8; task 1.18): fit
+    availability + points + quantiles on every row strictly before
+    `(season, week)`, predict onto that week's own real row universe, and
+    upsert into `data/outputs/projections.parquet` -- every row carrying
+    `model_version`, `as_of_utc`, `feature_hash`, and `git_commit`.
+
+    Requires that week's own row universe to already exist in
+    `features/player_week_features.parquet` -- for the *current*, not-yet-
+    played 2026 season this means whatever nflverse has published so far
+    (see HANDOFF.md; 2026 has no release at all as of this session).
+    """
+    settings = load_settings()
+    resolved_season = season if season is not None else settings.seasons.current
+
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    if not features_path.exists():
+        typer.echo(
+            f"Missing {features_path}. Materialise the feature table first "
+            "(see HANDOFF.md for the real end-to-end build steps).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    features = pl.read_parquet(features_path)
+
+    now = datetime.now(UTC)
+    result = predict.project_week(
+        features,
+        resolved_season,
+        week,
+        train_start=settings.seasons.train_start,
+        min_train_rows=settings.model.min_train_rows,
+        lightgbm_params=settings.model.lightgbm,
+        quantile_alphas=settings.model.quantiles,
+        code_version=evaluation_report.current_git_commit(),
+        now=now,
+    )
+    if result.is_empty():
+        typer.echo(
+            f"No projections generated for season {resolved_season} week {week} -- either not "
+            "enough training data, or that week's row universe doesn't exist yet in "
+            "player_week_features.parquet. See HANDOFF.md.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    output_path = settings.data_root / "outputs" / "projections.parquet"
+    combined = predict.write_projections(result, output_path)
+    typer.echo(
+        f"Wrote {result.height} projections for season {resolved_season} week {week} "
+        f"to {output_path} ({combined.height} total rows)."
+    )

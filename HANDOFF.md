@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-13
 **Last machine:** `Maybe` (Windows). Sleeper reachable here — confirmed live, `api.sleeper.app` returns 200.
-**Last commit:** `c134529`. Working tree has uncommitted changes (TASKS.md, this file, `docs/JOURNAL.md`, `CLAUDE.md`, `config/settings.yml`, `src/ffapp/config.py`, new `src/ffapp/tools/waivers.py`, new `tests/test_tools_waivers.py`, `tests/test_config.py`) from this session — not committed, per standing rule (only commit when explicitly asked).
+**Last commit:** `ea5cd70` (pushed) — task 2.6 (Waiver wire) plus this session's doc restructuring and 1.13/1.17 reconciliation. Working tree now has further uncommitted changes on top: task 1.18 (`src/ffapp/models/predict.py`, CLI wiring, both test files) and task 1.19 (`src/ffapp/app/weekly_rankings_page.py`, `src/ffapp/app/pages/2_Weekly_Rankings.py`, `features/opponent.py`'s `team_opponent` rename, its test file), plus this file/`TASKS.md`/`docs/JOURNAL.md` — not committed, per standing rule (only commit when explicitly asked).
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. Maintenance rules are at the bottom.
 
@@ -16,9 +16,13 @@ Tasks 1.13 (Metrics module) and 1.17 (Evaluation report) are complete. Verified 
 
 Phase 2 tasks 2.1–2.5, 2.7, and 2.9 were already complete — the simulation layer, start/sit assistant, DST model, and trade analyzer — built out of TASKS.md order on a prior work machine where Sleeper was network-blocked, confirmed with you first (see 2.1's entry in `docs/JOURNAL.md`).
 
-Task 2.6 (Waiver wire) is now also complete — built this session, the first task on this machine (Sleeper reachable here) to actually need Sleeper's free-agent pool and transaction history. New `src/ffapp/tools/waivers.py` + `config.WaiverSettings`. Verified against the completed 2025 season (2026's real rosters are pre-draft leftovers, not usable — draft is Aug 22) and against real historical FAAB bidding data pulled from `bdff-chopped`'s actual transactions. Full evidence in `docs/JOURNAL.md`.
+Task 2.6 (Waiver wire) is complete — built this session, the first task on this machine (Sleeper reachable here) to actually need Sleeper's free-agent pool and transaction history. New `src/ffapp/tools/waivers.py` + `config.WaiverSettings`. Verified against the completed 2025 season (2026's real rosters are pre-draft leftovers, not usable — draft is Aug 22) and against real historical FAAB bidding data pulled from `bdff-chopped`'s actual transactions. Committed as `ea5cd70`, pushed.
 
-**Next task: undecided.** Phase 1's 1.18 → 1.19 are next in strict TASKS.md order. 2.8 (SOS/schedule grid) needs the full skill-position feature pipeline plus a real Streamlit heatmap page, neither built — deliberately not attempted. 2.10 (News pipeline) is untouched.
+Task 1.18 (Projection output pipeline) is complete — new `src/ffapp/models/predict.py` + `ffapp project --week N` CLI command, composing the availability/points/quantile models (tasks 1.14/1.15/1.16) into SPEC §6.2's `outputs/projections.parquet` schema. Verified for real against already-played weeks (2025 weeks 10/11 — 2026 has no nflverse release yet): 445/477 real projections, 0 nulls, full provenance, real upsert-by-`(season, week)` behavior confirmed with a second real run.
+
+Task 1.19 (Streamlit weekly rankings page) is also complete — new `src/ffapp/app/weekly_rankings_page.py` + `src/ffapp/app/pages/2_Weekly_Rankings.py`, SPEC §15's second page. Verified live in a real Chrome session via `claude-in-chrome` (see §7 for the connection hiccup and how it resolved) against the real weeks 1.18 generated: position tabs, the floor/ceiling visible range, and both filters (position + real Sleeper-resolved availability) all confirmed working against real data, 0 console errors. Not yet committed. Full evidence for both tasks is in `docs/JOURNAL.md`.
+
+**Next task: undecided.** 1.18/1.19 close out everything else in Phase 1 — the one remaining open item there is 1.15 (Conditional points model v1), a known, already-explained gap from an earlier session (the real model doesn't beat B2, documented as a genuine v1 result, not something to silently fix by tuning against validation seasons — revisit only once v2/a real hyperparameter search is in scope). Remaining open Phase 2 work: 2.8 (SOS/schedule grid — needs the full skill-position feature pipeline plus a real Streamlit heatmap page, neither built, deliberately not attempted), 2.10 (News pipeline, untouched), 2.11 (Model health page, untouched).
 
 **Blocking on me (the human), not the agent:**
 
@@ -33,9 +37,9 @@ Task 2.6 (Waiver wire) is now also complete — built this session, the first ta
 
 ## 3. In progress
 
-Nothing is mid-implementation. The only open item is choosing the next task (§1).
+Nothing is mid-implementation. Tasks 1.18 and 1.19's new files are complete, tested, and verified against real data (1.19 verified live in a real browser), just not yet committed — a plain `git add`/commit of the files listed in the header is all that's needed next session if you haven't already asked for it by then.
 
-This session's own work, in order: (1) reconciled `TASKS.md` against an orphaned commit (message `"g"`) from a prior session that had landed real, tested work for 1.13/1.17 without updating either tracking doc — verified for real, checked both boxes (see `docs/JOURNAL.md`'s new gotcha on this); (2) restructured this file — moved §2 (completed-task evidence), §4 (decisions), §5 (gotchas) to `docs/JOURNAL.md` verbatim, this file keeps only state and the rebuild/environment reference below; (3) built and verified task 2.6 (Waiver wire) end to end, the first real use of this machine's Sleeper access.
+This session's own work, in order: (1) reconciled `TASKS.md` against an orphaned commit (message `"g"`) from a prior session that had landed real, tested work for 1.13/1.17 without updating either tracking doc; (2) restructured this file — moved §2/§4/§5 to `docs/JOURNAL.md` verbatim, this file keeps only state and the rebuild/environment reference below; (3) built, verified, committed, and pushed task 2.6 (Waiver wire); (4) built and verified task 1.18 (Projection output pipeline) end to end against real data; (5) built and verified task 1.19 (Streamlit weekly rankings page) end to end in a real browser session. 1.18/1.19 not yet committed.
 
 ---
 
@@ -76,6 +80,14 @@ uv run ffapp evaluate --seasons 2021 --seasons 2022 --seasons 2023 --seasons 202
 
 DST model (task 2.7): a narrower real materialisation, no Sleeper needed — only `pbp`/`team_stats`/`player_stats`/`schedules`/`snap_counts` (raw) and `schedule`/`team_week_context`/`weather` (interim). See JOURNAL task 2.7's entry for the exact script.
 
+Weekly projections (task 1.18) — writes `data/outputs/projections.parquet`, upserted by `(season, week)`:
+
+```bash
+uv run ffapp project --season 2025 --week 10
+```
+
+Needs that `(season, week)`'s own row universe to already exist in `player_week_features.parquet` — for a genuinely live/current week this means whatever nflverse has published so far (2026 has none yet).
+
 **Not reproducible by re-running the above:** `data/raw/rankings/` (time-sensitive projections/ADP — committed to git as CLAUDE.md's stated exception; do not delete), `data/raw/sleeper/traded_picks_*.json`/`rosters_*.json` (keeper locks, time-sensitive), odds snapshots if the paid API is enabled.
 
 **2026 nflverse data doesn't exist yet.** Every `fetch_*` call for season 2026 404s until real games are played.
@@ -101,6 +113,8 @@ DST model (task 2.7): a narrower real materialisation, no Sleeper needed — onl
 | Home | ? | ? | ? | ? |
 
 If a new machine shows up, add a row rather than overwriting existing ones — don't assume `Maybe` again without checking the actual hostname.
+
+**`claude-in-chrome` browser verification on this machine (`Maybe`) needs the actual Chrome browser, not Vivaldi (the machine's apparent default) or any other Chromium-based browser, and the Claude extension must be installed *and signed in* there specifically.** `list_connected_browsers`/`tabs_context_mcp` both return empty until that's true — closing Vivaldi and opening Chrome alone isn't sufficient if the extension isn't logged into the same claude.ai account this session uses. Once signed in, connection works immediately (confirmed live, task 1.19's own real browser verification).
 
 ---
 

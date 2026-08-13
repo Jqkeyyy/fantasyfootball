@@ -161,12 +161,14 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   **Done when:** a report is generated and archived under a timestamped directory.
   Verified for real: `ffapp evaluate --seasons 2021 --seasons 2022 --seasons 2023 --seasons 2024 --seasons 2025` (repeated-flag syntax — see TASKS.md/HANDOFF gotcha on `--seasons`) wrote `data/outputs/eval/20260813T183533Z/report.md` with populated MAE/RMSE/Spearman/start-sit/Brier/lineup-regret tables, real LightGBM feature importances, and real calibration curves.
 
-- [ ] **1.18 — Projection output pipeline** ⏱ 2h — SPEC §6.2, §11.8
+- [x] **1.18 — Projection output pipeline** ⏱ 2h — SPEC §6.2, §11.8
   `ffapp project --week N` writing `outputs/projections.parquet` with full provenance.
   **Done when:** every row carries `model_version`, `as_of_utc`, `feature_hash`, and git commit.
+  Verified for real against an already-played week: `ffapp project --season 2025 --week 10` wrote 445 real projections (0 nulls anywhere, all 4 provenance columns populated, real git commit). Upsert-by-`(season, week)` confirmed against real data too — a second week appended (445+477=922 total), re-running the first week overwrote in place (still 922, not 1367).
 
-- [ ] **1.19 — Streamlit weekly rankings page** ⏱ 3h — SPEC §14.1, §15
+- [x] **1.19 — Streamlit weekly rankings page** ⏱ 3h — SPEC §14.1, §15
   **Done when:** the floor/median/ceiling range is visible by default, not hidden in a column.
+  Verified for real in a live browser session (Chrome, via claude-in-chrome): real 2025 week 10/11 projections rendered across position tabs, floor-to-ceiling shown as one combined visible range column (not hidden/separate), position + availability filters both confirmed narrowing correctly against real Sleeper-resolved roster data (e.g. Kittle/Bowers/Pitts correctly excluded from the TE free-agent view), switching weeks reloaded real different data, 0 console errors.
 
 ---
 

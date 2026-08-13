@@ -66,10 +66,15 @@ def _position_group_pairs() -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
-def _team_opponent(schedule: pl.DataFrame) -> pl.DataFrame:
+def team_opponent(schedule: pl.DataFrame) -> pl.DataFrame:
     """One row per (team, season, week): that team's real opponent for a
     scheduled game. A bye week has no row -- callers join on this and
-    byes naturally drop out."""
+    byes naturally drop out.
+
+    Public since task 1.19 (`app.weekly_rankings_page`) needed the exact
+    same team/opponent lookup for SPEC §14.1's own `opponent` column --
+    the same "promote on a second real caller" precedent this project
+    already follows elsewhere (e.g. tasks 2.5/2.7's own promotions)."""
     home_side = schedule.select(
         "season", "week", pl.col("home_team").alias("team"), pl.col("away_team").alias("opponent")
     )
@@ -88,7 +93,7 @@ def add_opponent_features(
     grid: pl.DataFrame, schedule: pl.DataFrame, defense_position_allowed: pl.DataFrame
 ) -> pl.DataFrame:
     """`grid` needs `player_id`, `season`, `week`, `team`, `position`."""
-    with_opponent = grid.join(_team_opponent(schedule), on=["team", "season", "week"], how="left")
+    with_opponent = grid.join(team_opponent(schedule), on=["team", "season", "week"], how="left")
     relevant = with_opponent.join(_position_group_pairs(), on="position", how="inner")
 
     value_columns = [*_RATE_OUTCOME_ADJ_COLUMNS, "n_plays"]
@@ -177,4 +182,5 @@ __all__ = [
     "add_opponent_features",
     "build_opponent_features",
     "register_opponent_features",
+    "team_opponent",
 ]
