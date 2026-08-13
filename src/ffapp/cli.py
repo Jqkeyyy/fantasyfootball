@@ -10,7 +10,10 @@ from ffapp.config import load_all_leagues, load_league, load_primary_league, loa
 from ffapp.draft import board as draft_board
 from ffapp.env import load_env
 from ffapp.evaluation import backtest
+from ffapp.evaluation import metrics as evaluation_metrics
+from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
+from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.models import baselines
 from ffapp.scoring import golden
 
@@ -275,6 +278,19 @@ def draft_board_command(
     typer.echo(f"Wrote {result.height} players to {output_path}")
 
 
+def _flex_eligible_positions(fmt: LeagueFormat) -> set[str]:
+    """Positions eligible for any *active* flex slot (count > 0) -- the
+    real roster shape `evaluation.metrics.start_sit_accuracy` needs to
+    scope its pairwise flex choices to, not every position the league
+    schema could theoretically flex (CLAUDE.md rule 5: driven by
+    `LeagueFormat`, never hardcoded)."""
+    positions: set[str] = set()
+    for slot_name, count in fmt.flex_slots.items():
+        if count > 0:
+            positions.update(fmt.flex_eligible.get(slot_name, []))
+    return positions
+
+
 @app.command("evaluate")
 def evaluate_command(
     seasons: list[int] = typer.Option(  # noqa: B008 -- typer's own multi-value-option pattern
@@ -284,12 +300,17 @@ def evaluate_command(
     """Walk-forward backtest (SPEC §12.2; task 1.12): fit-and-predict week by
     week over `--seasons`, using only strictly-prior data (no random split,
     anywhere), and write raw predictions to
-    data/outputs/eval/<timestamp>/predictions.parquet.
+    data/outputs/eval/<timestamp>/predictions.parquet, plus a markdown
+    evaluation report (SPEC §12.6; task 1.17) alongside it in the same
+    directory.
 
     Exercises the harness with baselines B0-B2 (SPEC §12.3) -- no real
     trainable model exists yet (tasks 1.14-1.16); B3 needs a separately
     materialised multi-season consensus-projections table and is out of
-    scope for this command.
+    scope for this command. The report's feature-importance and
+    calibration sections are correspondingly empty here -- those need
+    real fitted boosters (tasks 1.14-1.16), which only exist in the ad
+    hoc scripts documented in HANDOFF.md §6, not this command.
     """
     settings = load_settings()
 
@@ -326,10 +347,32 @@ def evaluate_command(
         min_train_rows=settings.model.min_train_rows,
     )
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(UTC)
+    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
     output_dir = settings.data_root / "outputs" / "eval" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "predictions.parquet"
     predictions.write_parquet(output_path)
 
     typer.echo(f"Wrote {predictions.height} predictions to {output_path}")
+
+    if predictions.is_empty():
+        computed_metrics: list[evaluation_metrics.MetricResult] = []
+    else:
+        league = load_primary_league()
+        fmt = parse_league_format(league)
+        startable_counts = evaluation_metrics.startable_counts_from_predictions(predictions, fmt)
+        computed_metrics = [
+            *evaluation_metrics.accuracy_metrics(predictions, startable_counts=startable_counts),
+            *evaluation_metrics.ranking_metrics(predictions, startable_counts=startable_counts),
+            *evaluation_metrics.start_sit_accuracy(predictions, _flex_eligible_positions(fmt)),
+        ]
+
+    report_markdown = evaluation_report.render_report_markdown(
+        seasons=seasons,
+        generated_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        git_commit=evaluation_report.current_git_commit(),
+        metrics=computed_metrics,
+    )
+    report_path = evaluation_report.write_report(output_dir, report_markdown)
+    typer.echo(f"Wrote evaluation report to {report_path}")
