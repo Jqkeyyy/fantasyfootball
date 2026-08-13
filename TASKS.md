@@ -138,10 +138,10 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
 - [x] **1.12 — Walk-forward backtest harness** 🔴 ⏱ 4h — SPEC §12.2
   **Done when:** `ffapp evaluate --seasons 2021 2022 2023 2024 2025` runs end to end and no code path anywhere performs a random split.
 
-- [ ] **1.13 — Metrics module** ⏱ 4h — SPEC §12.4
+- [x] **1.13 — Metrics module** ⏱ 4h — SPEC §12.4
   Accuracy, ranking, distribution, and both decision-quality metrics (start/sit accuracy and lineup regret). Bootstrap CIs resampled by week.
   **Done when:** every metric is computed per position with observation counts and confidence intervals reported.
-  **Status:** everything built and verified against real data except **lineup regret** — needs `sim/lineup.py` (SPEC §13.1 / task 2.1), which is ordered *after* this task and doesn't exist yet. Confirmed with you: deferred, not guessed past. Revisit and check this box once 2.1 lands `optimal_lineup_points` and `lineup_regret()` is wired into `evaluation/metrics.py`.
+  Lineup regret was deferred pending task 2.1 (`sim/lineup.py`); 2.1 landed and `lineup_regret()` is now wired into `evaluation/metrics.py`, verified against a real 2021-2025 walk-forward run (`data/outputs/eval/20260813T183533Z/report.md`).
 
 - [x] **1.14 — Availability model** ⏱ 4h — SPEC §11.2
   LightGBM classifier plus isotonic calibration.
@@ -156,9 +156,10 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   Five quantiles per position, crossing fix, coverage recalibration, mixture with `p_active`.
   **Done when:** 80% interval empirical coverage is within 5 percentage points of nominal, per position.
 
-- [ ] **1.17 — Evaluation report** ⏱ 3h — SPEC §12.6
+- [x] **1.17 — Evaluation report** ⏱ 3h — SPEC §12.6
   Markdown report with all metrics, baseline comparisons, feature importances, calibration plots. Reports are kept, never overwritten.
   **Done when:** a report is generated and archived under a timestamped directory.
+  Verified for real: `ffapp evaluate --seasons 2021 --seasons 2022 --seasons 2023 --seasons 2024 --seasons 2025` (repeated-flag syntax — see TASKS.md/HANDOFF gotcha on `--seasons`) wrote `data/outputs/eval/20260813T183533Z/report.md` with populated MAE/RMSE/Spearman/start-sit/Brier/lineup-regret tables, real LightGBM feature importances, and real calibration curves.
 
 - [ ] **1.18 — Projection output pipeline** ⏱ 2h — SPEC §6.2, §11.8
   `ffapp project --week N` writing `outputs/projections.parquet` with full provenance.
@@ -178,7 +179,8 @@ Total ≈ 40–55 hours.
 - [x] **2.3 — Injury hazard model** ⏱ 4h — SPEC §13.3. Done when `p_miss` is produced per player-week and beats a positional base rate.
 - [x] **2.4 — Season simulator** ⏱ 6h — SPEC §13.4. Done when lineups are set on *projections* and results drawn from *samples* (assert this in a test — it is the most commonly botched detail), and playoff odds sum sensibly across the league.
 - [x] **2.5 — Start/sit assistant** ⏱ 4h — SPEC §14.3. Done when a constructed heavy-underdog scenario recommends the higher-variance option and a heavy-favourite scenario recommends the floor.
-- [ ] **2.6 — Waiver wire** ⏱ 5h — SPEC §14.4. Done when value is computed relative to your roster (verify: a high-projection player at a position where you are already deep ranks low), and FAAB guidance is calibrated against your league's transaction history.
+- [x] **2.6 — Waiver wire** ⏱ 5h — SPEC §14.4. Done when value is computed relative to your roster (verify: a high-projection player at a position where you are already deep ranks low), and FAAB guidance is calibrated against your league's transaction history.
+  Verified against real data: `tests/test_tools_waivers.py::TestBuildWaiverBoard::test_ranks_by_roster_relative_value_not_raw_projection` proves the acceptance bar literally with a hand-built fixture; a real end-to-end run against the completed 2025 season (`rogan-radinator-league`, real rosters/players_dim/player_week_features) produced a sane 1366-candidate board with proportional FAAB bids. Real FAAB calibration data pulled from `bdff-chopped`'s actual 2025 transaction history (160 real bids, median $10/$1000 budget) — see `docs/JOURNAL.md`'s task 2.6 entry.
 - [x] **2.7 — DST model** ⏱ 4h — SPEC §11.6. Done when it beats B2 for DST and produces a weekly streamer list.
 - [ ] **2.8 — SOS and schedule grid** ⏱ 5h — SPEC §14.5. Done when full-season, rest-of-season, and playoff-weeks SOS are all available, low-confidence grades are greyed out, and matchup grade is never the largest element on a card.
 - [x] **2.9 — Trade analyzer** ⏱ 5h — SPEC §14.6. Done when it uses common random numbers across the before/after runs and reports both sides' deltas.

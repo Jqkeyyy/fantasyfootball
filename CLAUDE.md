@@ -6,6 +6,10 @@ A personal fantasy football decision-support system for one Sleeper league, buil
 
 Read `SPEC.md` §0 before doing anything else.
 
+## Session start
+
+Read `HANDOFF.md` at the start of every session — it's short by design and holds current state, the next task, and anything left mid-implementation. Read `docs/JOURNAL.md` only when investigating a specific past task's evidence, an implementation decision, or a gotcha — it's long, append-only, and not meant to be read cover to cover.
+
 ## Standing rules
 
 These are not style preferences. Violating any of them silently invalidates work downstream.

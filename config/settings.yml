@@ -34,6 +34,10 @@ draft:
   adp_sd_fallback: 8.0
   tier_method: "gap"
 
+waivers:
+  playoff_weight: 1.5
+  aggressiveness: 1.0
+
 ingest:
   sleeper_players_cache_hours: 24
   odds_provider: "the_odds_api"

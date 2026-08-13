@@ -115,6 +115,23 @@ class SimulationSettings:
 
 
 @dataclass(frozen=True)
+class WaiverSettings:
+    """SPEC §14.4 leaves two constants to the implementer: how much extra
+    weight a fantasy-playoff week gets in `ros_value`, and the FAAB-bid
+    "aggressiveness" multiplier SPEC's own suggested_bid formula names but
+    never defines numerically ("calibrate ... against your league's actual
+    bidding history"). Defaults are documented judgment calls, not fit —
+    see task 2.6's own entry in `docs/JOURNAL.md` for the real historical
+    FAAB data that informed them."""
+
+    playoff_weight: float
+    aggressiveness: float
+
+
+DEFAULT_WAIVER_SETTINGS = WaiverSettings(playoff_weight=1.5, aggressiveness=1.0)
+
+
+@dataclass(frozen=True)
 class Settings:
     data_root: Path
     sleeper_username: str | None
@@ -123,6 +140,7 @@ class Settings:
     seasons: SeasonsSettings = SeasonsSettings(train_start=2015, current=2026)
     model: ModelSettings = ModelSettings(min_train_rows=2000, retrain_cadence_weeks=1)
     simulation: SimulationSettings = SimulationSettings(season_sims=3000, week_sims=20000)
+    waivers: WaiverSettings = DEFAULT_WAIVER_SETTINGS
 
 
 @dataclass(frozen=True)
@@ -209,6 +227,13 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         correlation=correlation,
     )
 
+    waivers_raw = raw.get("waivers", {})
+    dw = DEFAULT_WAIVER_SETTINGS
+    waivers = WaiverSettings(
+        playoff_weight=float(waivers_raw.get("playoff_weight", dw.playoff_weight)),
+        aggressiveness=float(waivers_raw.get("aggressiveness", dw.aggressiveness)),
+    )
+
     return Settings(
         data_root=data_root,
         sleeper_username=sleeper_username,
@@ -217,6 +242,7 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         seasons=seasons,
         model=model,
         simulation=simulation,
+        waivers=waivers,
     )
 
 

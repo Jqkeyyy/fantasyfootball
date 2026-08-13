@@ -162,6 +162,28 @@ def test_load_settings_reads_simulation_and_correlation_settings(tmp_path: Path)
     assert settings.simulation.correlation.player_vs_opposing_dst == pytest.approx(-0.2)
 
 
+def test_load_settings_defaults_waivers_section_when_absent(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text("paths:\n  data_root: './data'\n")
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.waivers.playoff_weight == pytest.approx(1.5)
+    assert settings.waivers.aggressiveness == pytest.approx(1.0)
+
+
+def test_load_settings_reads_waivers_settings(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\nwaivers:\n  playoff_weight: 2.0\n  aggressiveness: 0.75\n"
+    )
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.waivers.playoff_weight == pytest.approx(2.0)
+    assert settings.waivers.aggressiveness == pytest.approx(0.75)
+
+
 def test_load_league_reads_slug_and_scoring_settings() -> None:
     league = load_league("main-ppr", leagues_dir=FIXTURES / "leagues")
 
