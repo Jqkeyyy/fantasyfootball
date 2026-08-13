@@ -174,7 +174,7 @@ def monotone_constraints(position: str) -> list[int]:
     return [1 if column in increasing else 0 for column in feature_columns(position)]
 
 
-def _to_feature_frame(rows: pl.DataFrame, columns: list[str]) -> pd.DataFrame:
+def to_feature_frame(rows: pl.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Polars -> pandas only at this fit/predict boundary (CLAUDE.md's
     own convention), same as `models.availability`."""
     pdf = rows.select(columns).to_pandas()
@@ -217,7 +217,7 @@ def fit_points_model(
             verbosity=-1,
         )
         booster.fit(
-            _to_feature_frame(position_rows, columns),
+            to_feature_frame(position_rows, columns),
             position_rows[TARGET_COLUMN].to_numpy(),
             categorical_feature=[c for c in CATEGORICAL_COLUMNS if c in columns],
         )
@@ -242,7 +242,7 @@ def predict_points(model: FittedPointsModels, rows: pl.DataFrame) -> pl.Series:
             continue
         columns = feature_columns(position)
         subset = rows.filter(pl.Series(mask))
-        predictions[mask] = np.asarray(booster.predict(_to_feature_frame(subset, columns)))
+        predictions[mask] = np.asarray(booster.predict(to_feature_frame(subset, columns)))
     return pl.Series("prediction", predictions, dtype=pl.Float64).fill_nan(None)
 
 
@@ -275,4 +275,5 @@ __all__ = [
     "monotone_constraints",
     "opponent_feature_columns",
     "predict_points",
+    "to_feature_frame",
 ]

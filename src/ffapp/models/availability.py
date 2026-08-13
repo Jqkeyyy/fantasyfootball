@@ -63,7 +63,7 @@ def _to_feature_frame(rows: pl.DataFrame) -> pd.DataFrame:
     return pdf
 
 
-def _calibration_split(
+def calibration_split(
     train_rows: pl.DataFrame, calibration_weeks: int
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Splits `train_rows` into (fit_rows, calibration_rows) by real
@@ -110,7 +110,7 @@ def fit_availability_model(
     backtest-week edge case, not a design choice) -- still better than
     crashing or skipping calibration outright.
     """
-    fit_rows, calibration_rows = _calibration_split(train_rows, calibration_weeks)
+    fit_rows, calibration_rows = calibration_split(train_rows, calibration_weeks)
     if fit_rows.is_empty() or calibration_rows.is_empty():
         fit_rows = calibration_rows = train_rows
 
@@ -182,6 +182,7 @@ __all__ = [
     "TARGET_COLUMN",
     "AvailabilityPredictor",
     "FittedAvailabilityModel",
+    "calibration_split",
     "fit_availability_model",
     "predict_p_active",
 ]

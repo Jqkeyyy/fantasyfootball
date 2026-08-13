@@ -77,11 +77,15 @@ DEFAULT_LIGHTGBM_SETTINGS = LightGBMSettings(
 )
 
 
+DEFAULT_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90)
+
+
 @dataclass(frozen=True)
 class ModelSettings:
     min_train_rows: int
     retrain_cadence_weeks: int
     lightgbm: LightGBMSettings = DEFAULT_LIGHTGBM_SETTINGS
+    quantiles: tuple[float, ...] = DEFAULT_QUANTILES
 
 
 @dataclass(frozen=True)
@@ -153,10 +157,13 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         colsample_bytree=float(lightgbm_raw.get("colsample_bytree", d.colsample_bytree)),
         reg_lambda=float(lightgbm_raw.get("reg_lambda", d.reg_lambda)),
     )
+    quantiles_raw = model_raw.get("quantiles")
+    quantiles = tuple(float(q) for q in quantiles_raw) if quantiles_raw else DEFAULT_QUANTILES
     model = ModelSettings(
         min_train_rows=int(model_raw.get("min_train_rows", 2000)),
         retrain_cadence_weeks=int(model_raw.get("retrain_cadence_weeks", 1)),
         lightgbm=lightgbm,
+        quantiles=quantiles,
     )
 
     return Settings(

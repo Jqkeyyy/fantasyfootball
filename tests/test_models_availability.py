@@ -103,13 +103,13 @@ def test_predict_p_active_learns_the_real_report_status_signal() -> None:
     assert preds[1] - preds[0] > 0.3
 
 
-# --- _calibration_split ----------------------------------------------------------------
+# --- calibration_split ----------------------------------------------------------------
 
 
 def test_calibration_split_holds_out_the_most_recent_real_weeks() -> None:
     train = _training_frame(n_weeks=12, rows_per_week=2)
 
-    fit_rows, calibration_rows = availability._calibration_split(train, calibration_weeks=4)
+    fit_rows, calibration_rows = availability.calibration_split(train, calibration_weeks=4)
 
     fit_weeks = set(fit_rows["week"].unique().to_list())
     calibration_weeks = set(calibration_rows["week"].unique().to_list())
@@ -124,7 +124,7 @@ def test_calibration_split_falls_back_to_the_full_set_for_very_few_weeks() -> No
     an empty split."""
     train = _training_frame(n_weeks=1, rows_per_week=4)
 
-    fit_rows, calibration_rows = availability._calibration_split(train, calibration_weeks=4)
+    fit_rows, calibration_rows = availability.calibration_split(train, calibration_weeks=4)
 
     # at least one side is non-empty; fit_availability_model handles the
     # both-nonempty-but-identical or one-empty case explicitly.

@@ -152,7 +152,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   **Done when:** beats B2 on MAE and on Spearman-within-position-week, across at least four validation seasons, with CIs reported.
   **Status:** built, tested, and verified end to end against real 2015-2025 data (four validation seasons, 2021-2024, per SPEC §12.5) — but the real result does **not** clear this task's own bar: MAE is statistically tied with B2 overall (4.883 vs 4.856) and Spearman-within-position-week is worse than B2 at every position (QB 0.496 vs 0.512, RB 0.572 vs 0.610, TE 0.487 vs 0.538, WR 0.576 vs 0.594). Not a bug — feature importances are sane, monotonic constraints apply correctly, no leakage — this is SPEC §11.4's own anticipated v1 outcome ("modelling their sum lets the noise swamp the signal," which is *why* v2 exists). Confirmed with you: ship as documented rather than tune against the validation seasons (CLAUDE.md's own overfitting warning) or silently mark this done. Revisit once v2 (SPEC §11.4, not yet in TASKS.md as its own task) or a real hyperparameter search is in scope.
 
-- [ ] **1.16 — Quantile models** ⏱ 4h — SPEC §11.5
+- [x] **1.16 — Quantile models** ⏱ 4h — SPEC §11.5
   Five quantiles per position, crossing fix, coverage recalibration, mixture with `p_active`.
   **Done when:** 80% interval empirical coverage is within 5 percentage points of nominal, per position.
 

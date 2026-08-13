@@ -87,6 +87,18 @@ def test_load_settings_defaults_seasons_and_model_sections_when_absent(tmp_path:
     assert settings.model.retrain_cadence_weeks == 1
     assert settings.model.lightgbm.n_estimators == 800
     assert settings.model.lightgbm.learning_rate == pytest.approx(0.03)
+    assert settings.model.quantiles == pytest.approx((0.10, 0.25, 0.50, 0.75, 0.90))
+
+
+def test_load_settings_reads_model_quantiles(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\nmodel:\n  quantiles: [0.05, 0.5, 0.95]\n"
+    )
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.model.quantiles == pytest.approx((0.05, 0.5, 0.95))
 
 
 def test_load_settings_reads_lightgbm_hyperparams(tmp_path: Path) -> None:
