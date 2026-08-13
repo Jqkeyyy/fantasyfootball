@@ -90,6 +90,7 @@ _PREDICTIONS_SCHEMA = {
     "season": pl.Int64,
     "week": pl.Int64,
     "position": pl.Utf8,
+    "team": pl.Utf8,
     "target": pl.Float64,
     "predictor": pl.Utf8,
     "prediction": pl.Float64,
@@ -109,6 +110,9 @@ def run_walk_forward_backtest(
     fitting and predicting with each of `predictors`. Returns one row
     per (player_id, season, week, predictor) with the real `target`
     alongside the `prediction`, ready for task 1.13's metrics module.
+    Carries `team` (the player's real NFL team that week) so decision-
+    quality metrics can pair flex-eligible teammates without a second
+    join back to `features`.
     """
     predictions: list[pl.DataFrame] = []
     for season in validation_seasons:
@@ -124,7 +128,7 @@ def run_walk_forward_backtest(
             if target_rows.is_empty():
                 continue
 
-            base = target_rows.select("player_id", "season", "week", "position", "target")
+            base = target_rows.select("player_id", "season", "week", "position", "team", "target")
             for predictor in predictors:
                 fitted = predictor.fit(train_rows)
                 preds = predictor.predict(fitted, target_rows)

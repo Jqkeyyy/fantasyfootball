@@ -21,9 +21,9 @@ def _features() -> pl.DataFrame:
     rows = []
     for season in (2020, 2021):
         for week in (1, 2, 3):
-            for player, position, target, b1 in (
-                ("p1", "RB", 10.0 + week, float(week)),
-                ("p2", "WR", 5.0 + week, float(week) * 2),
+            for player, position, team, target, b1 in (
+                ("p1", "RB", "KC", 10.0 + week, float(week)),
+                ("p2", "WR", "BAL", 5.0 + week, float(week) * 2),
             ):
                 rows.append(
                     {
@@ -31,6 +31,7 @@ def _features() -> pl.DataFrame:
                         "season": season,
                         "week": week,
                         "position": position,
+                        "team": team,
                         "target": target,
                         "b1_col": b1,
                     }
@@ -159,6 +160,7 @@ def test_output_has_one_row_per_player_week_predictor_with_target_and_prediction
         "season",
         "week",
         "position",
+        "team",
         "target",
         "predictor",
         "prediction",
@@ -185,6 +187,7 @@ def test_returns_empty_dataframe_with_the_right_schema_when_nothing_qualifies() 
         "season",
         "week",
         "position",
+        "team",
         "target",
         "predictor",
         "prediction",

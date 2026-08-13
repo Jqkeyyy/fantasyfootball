@@ -141,6 +141,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
 - [ ] **1.13 — Metrics module** ⏱ 4h — SPEC §12.4
   Accuracy, ranking, distribution, and both decision-quality metrics (start/sit accuracy and lineup regret). Bootstrap CIs resampled by week.
   **Done when:** every metric is computed per position with observation counts and confidence intervals reported.
+  **Status:** everything built and verified against real data except **lineup regret** — needs `sim/lineup.py` (SPEC §13.1 / task 2.1), which is ordered *after* this task and doesn't exist yet. Confirmed with you: deferred, not guessed past. Revisit and check this box once 2.1 lands `optimal_lineup_points` and `lineup_regret()` is wired into `evaluation/metrics.py`.
 
 - [ ] **1.14 — Availability model** ⏱ 4h — SPEC §11.2
   LightGBM classifier plus isotonic calibration.

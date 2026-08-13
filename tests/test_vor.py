@@ -82,6 +82,32 @@ def test_replacement_level_standard_12_team_league_with_flex() -> None:
     )
 
 
+def test_startable_counts_matches_replacement_levels_own_baseline() -> None:
+    """`startable_counts` is a public accessor for the same fixed-point
+    baseline `replacement_level` already computes internally (task 1.13's
+    `evaluation.metrics` reuses it directly) -- the rank counts here must
+    be exactly the ranks `replacement_level`'s own docstring already
+    hand-verifies for this fixture (RB 36, others dedicated-only)."""
+    points_by_position = {
+        "QB": [90.0 - (i - 1) for i in range(1, 16)],
+        "RB": [200.0 - (i - 1) for i in range(1, 61)],
+        "WR": [60.0 - (i - 1) for i in range(1, 31)],
+        "TE": [55.0 - (i - 1) for i in range(1, 21)],
+        "K": [30.0 - (i - 1) for i in range(1, 16)],
+        "DST": [25.0 - (i - 1) for i in range(1, 21)],
+    }
+    league_format = _format(
+        n_teams=12,
+        starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DST": 1},
+        flex_slots={"FLEX": 1, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB", "WR", "TE"]},
+    )
+
+    counts = vor.startable_counts(points_by_position, league_format)
+
+    assert counts == {"QB": 12, "RB": 36, "WR": 24, "TE": 12, "K": 12, "DST": 12}
+
+
 def test_replacement_level_converges_within_two_passes_for_the_standard_league() -> None:
     """TASKS.md 0.9's literal acceptance bar: convergence in under 10 passes.
     Capping max_iterations at 2 must already match the fully-converged

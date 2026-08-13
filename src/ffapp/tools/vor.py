@@ -90,6 +90,22 @@ def _converge_baseline(
     return baseline
 
 
+def startable_counts(
+    points_by_position: dict[str, list[float]],
+    league_format: LeagueFormat,
+    *,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> dict[str, int]:
+    """Public accessor for SPEC §9.4's fixed-point baseline counts --
+    reused directly by `evaluation.metrics` (task 1.13) for "startable"
+    row scoping and top-k precision (SPEC §12.4), so both places share
+    exactly one definition of "how many players at this position are
+    startable in this league format," never a second one that could
+    silently drift from this module's own VOR baseline.
+    """
+    return _converge_baseline(points_by_position, league_format, max_iterations)
+
+
 def replacement_level(
     projections: pl.DataFrame,
     league_format: LeagueFormat,
@@ -159,4 +175,5 @@ __all__ = [
     "DEFAULT_POINTS_COLUMN",
     "compute_vor",
     "replacement_level",
+    "startable_counts",
 ]
