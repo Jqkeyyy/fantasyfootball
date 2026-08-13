@@ -105,14 +105,22 @@ def run_walk_forward_backtest(
     validation_seasons: Sequence[int],
     train_start: int,
     min_train_rows: int,
+    target_column: str = "target",
 ) -> pl.DataFrame:
     """Walk forward over every (season, week) in `validation_seasons`,
     fitting and predicting with each of `predictors`. Returns one row
-    per (player_id, season, week, predictor) with the real `target`
+    per (player_id, season, week, predictor) with the real outcome
+    (`features`'s own `target_column`, renamed to `target` in the output)
     alongside the `prediction`, ready for task 1.13's metrics module.
     Carries `team` (the player's real NFL team that week) so decision-
     quality metrics can pair flex-eligible teammates without a second
     join back to `features`.
+
+    `target_column` defaults to `"target"` (fantasy points, SPEC §11.1)
+    but the harness itself has no opinion on what's being predicted --
+    task 1.14's availability model reuses this same harness with
+    `target_column="availability_flag"` (a binary outcome, SPEC §11.2)
+    rather than a second, parallel walk-forward loop.
     """
     predictions: list[pl.DataFrame] = []
     for season in validation_seasons:
@@ -128,7 +136,14 @@ def run_walk_forward_backtest(
             if target_rows.is_empty():
                 continue
 
-            base = target_rows.select("player_id", "season", "week", "position", "team", "target")
+            base = target_rows.select(
+                "player_id",
+                "season",
+                "week",
+                "position",
+                "team",
+                pl.col(target_column).cast(pl.Float64).alias("target"),
+            )
             for predictor in predictors:
                 fitted = predictor.fit(train_rows)
                 preds = predictor.predict(fitted, target_rows)

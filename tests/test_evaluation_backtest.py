@@ -211,6 +211,31 @@ def test_multiple_predictors_each_produce_their_own_rows() -> None:
     assert result.height == 12  # 2 players x 3 weeks x 2 predictors
 
 
+# --- target_column ---------------------------------------------------------------------
+
+
+def test_target_column_lets_the_harness_predict_a_different_outcome_column() -> None:
+    """Task 1.14's own need: predicting `availability_flag` (a bool),
+    not `target` (fantasy points), through the same harness."""
+    features = _features().with_columns((pl.col("player_id") == "p1").alias("availability_flag"))
+
+    result = backtest.run_walk_forward_backtest(
+        features,
+        _schedule([1, 2, 3]),
+        [backtest.BaselinePredictor("b1", "b1_col")],
+        validation_seasons=[2021],
+        train_start=2015,
+        min_train_rows=1,
+        target_column="availability_flag",
+    )
+
+    # p1's real availability_flag is True (1.0) every week; p2's is False.
+    p1_targets = result.filter(pl.col("player_id") == "p1")["target"].unique().to_list()
+    p2_targets = result.filter(pl.col("player_id") == "p2")["target"].unique().to_list()
+    assert p1_targets == [1.0]
+    assert p2_targets == [0.0]
+
+
 # --- BaselinePredictor ----------------------------------------------------------------
 
 

@@ -28,6 +28,8 @@ target week's own game (is it at home, what's the weather, what does the
 injury report say as of the Friday before kickoff) -- also joined
 directly, for the same reason: these are legitimately known *before*
 that week's kickoff, not data leaking from the outcome itself.
+`features.depth_chart` (task 1.14) is the same case again: a team's real
+depth chart is public before kickoff.
 
 `features.team_context.CURRENT_WEEK_COLUMNS` (Vegas line, teammate
 vacated shares) are the same "current week" case as `opponent`/
@@ -46,7 +48,7 @@ from collections.abc import Iterable
 
 import polars as pl
 
-from ffapp.features import opponent, situation, team_context, usage
+from ffapp.features import depth_chart, opponent, player_bio, situation, team_context, usage
 from ffapp.features.registry import FEATURE_REGISTRY, FeatureSpec
 from ffapp.interim.build import SKILL_POSITIONS
 from ffapp.scoring.engine import score_stat_line
@@ -215,6 +217,7 @@ def build_player_week_features(
     defense_position_allowed: pl.DataFrame,
     injuries: pl.DataFrame,
     weather: pl.DataFrame,
+    depth_charts: pl.DataFrame,
     scoring_settings: dict[str, float],
     *,
     registry: dict[str, FeatureSpec] | None = None,
@@ -240,6 +243,8 @@ def build_player_week_features(
     grid = opponent.build_opponent_features(
         grid, schedule, defense_position_allowed, registry=effective_registry
     )
+    grid = depth_chart.build_depth_chart_features(grid, depth_charts, registry=effective_registry)
+    grid = player_bio.build_player_bio_features(grid, rosters, registry=effective_registry)
 
     usage_features = usage.build_usage_features(
         player_week_usage, player_week_stats, scoring_settings, registry=effective_registry

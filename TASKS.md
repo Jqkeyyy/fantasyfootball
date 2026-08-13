@@ -143,7 +143,7 @@ Goal: automated weekly projections that beat baseline B2, with a working evaluat
   **Done when:** every metric is computed per position with observation counts and confidence intervals reported.
   **Status:** everything built and verified against real data except **lineup regret** — needs `sim/lineup.py` (SPEC §13.1 / task 2.1), which is ordered *after* this task and doesn't exist yet. Confirmed with you: deferred, not guessed past. Revisit and check this box once 2.1 lands `optimal_lineup_points` and `lineup_regret()` is wired into `evaluation/metrics.py`.
 
-- [ ] **1.14 — Availability model** ⏱ 4h — SPEC §11.2
+- [x] **1.14 — Availability model** ⏱ 4h — SPEC §11.2
   LightGBM classifier plus isotonic calibration.
   **Done when:** calibration curve is near-diagonal on held-out weeks; Brier score beats a positional base-rate predictor.
 

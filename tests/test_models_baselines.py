@@ -138,6 +138,36 @@ def test_add_b0_is_null_with_no_prior_season_and_no_current_season_trailing_data
     assert result.row(0, named=True)["b0_positional_mean"] is None
 
 
+# --- add_availability_base_rate (task 1.14) ----------------------------------------------
+
+
+def test_add_availability_base_rate_pools_across_all_players_at_the_position() -> None:
+    """Same shape as B0 (`_positional_rolling_rate`), applied to
+    `availability_flag` instead of `target`."""
+    df = pl.DataFrame(
+        [
+            _row(player_id="p1", position="WR", week=1, availability_flag=True),
+            _row(player_id="p2", position="WR", week=1, availability_flag=False),
+            _row(player_id="p1", position="WR", week=2, availability_flag=True),
+            _row(player_id="p2", position="WR", week=2, availability_flag=True),
+        ]
+    )
+
+    result = baselines.add_availability_base_rate(df)
+
+    week2 = result.filter(pl.col("week") == 2)
+    # both players' week-2 prediction = fraction of WR week-1 rows active (1/2) = 0.5
+    assert week2["availability_base_rate"].to_list() == pytest.approx([0.5, 0.5])
+
+
+def test_add_availability_base_rate_is_null_with_no_trailing_data() -> None:
+    df = pl.DataFrame([_row(season=2015, week=1, availability_flag=True)])
+
+    result = baselines.add_availability_base_rate(df)
+
+    assert result.row(0, named=True)["availability_base_rate"] is None
+
+
 # --- add_b3_fp_weekly_consensus ---------------------------------------------------------
 
 

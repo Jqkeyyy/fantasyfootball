@@ -293,6 +293,61 @@ def test_interval_coverage_counts_the_fraction_actually_inside_the_interval() ->
     assert coverage == pytest.approx(1 / 3)
 
 
+# --- distribution: brier_score / calibration_curve --------------------------------------
+
+
+def test_brier_score_is_zero_for_a_perfect_prediction() -> None:
+    assert metrics.brier_score([1.0, 0.0, 1.0], [1.0, 0.0, 1.0]) == pytest.approx(0.0)
+
+
+def test_brier_score_is_one_for_the_worst_possible_prediction() -> None:
+    assert metrics.brier_score([1.0, 0.0], [0.0, 1.0]) == pytest.approx(1.0)
+
+
+def test_brier_score_penalizes_overconfident_wrong_predictions_more() -> None:
+    """A confident wrong call (p=0.9, actual=0) costs more than a
+    hedged one (p=0.6, actual=0) -- the squared-error definition's point."""
+    confident_wrong = metrics.brier_score([0.9], [0.0])
+    hedged_wrong = metrics.brier_score([0.6], [0.0])
+
+    assert confident_wrong > hedged_wrong
+
+
+def test_calibration_curve_is_perfectly_diagonal_when_prediction_matches_frequency() -> None:
+    """10 rows all predicting p=0.7, and exactly 7/10 actually happened --
+    the single populated bin's predicted mean and actual mean must match."""
+    predicted = [0.7] * 10
+    actual = [1.0] * 7 + [0.0] * 3
+
+    curve = metrics.calibration_curve(predicted, actual, n_bins=10)
+
+    assert len(curve) == 1
+    mean_predicted, mean_actual, n = curve[0]
+    assert mean_predicted == pytest.approx(0.7)
+    assert mean_actual == pytest.approx(0.7)
+    assert n == 10
+
+
+def test_calibration_curve_skips_empty_bins() -> None:
+    curve = metrics.calibration_curve([0.05, 0.95], [0.0, 1.0], n_bins=10)
+
+    assert len(curve) == 2
+
+
+def test_calibration_curve_flags_a_miscalibrated_predictor() -> None:
+    """A predictor that always says p=0.9 but is only right half the
+    time -- predicted and actual means must clearly diverge."""
+    predicted = [0.9] * 10
+    actual = [1.0] * 5 + [0.0] * 5
+
+    curve = metrics.calibration_curve(predicted, actual, n_bins=10)
+
+    mean_predicted, mean_actual, _ = curve[0]
+    assert mean_predicted == pytest.approx(0.9)
+    assert mean_actual == pytest.approx(0.5)
+    assert abs(mean_predicted - mean_actual) > 0.3
+
+
 # --- start_sit_accuracy ---------------------------------------------------------------
 
 

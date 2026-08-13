@@ -52,20 +52,24 @@ def add_b2_ewm_4(player_week_features: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def add_b0_positional_mean(player_week_features: pl.DataFrame) -> pl.DataFrame:
-    """B0: "positional weekly mean" -- SPEC calls this the "sanity floor."
-    Pooled across *every* player at a position (not per-player, the
-    distinguishing feature from B1/B2), cumulative season-to-date through
-    week W-1. A season's own week 1 has no current-season trailing data,
-    so it falls back to the *entire* prior season's own positional mean
-    (same fallback convention as `features.usage.prior_season`); the
+def _positional_rolling_rate(
+    player_week_features: pl.DataFrame, target_column: str, output_column: str
+) -> pl.DataFrame:
+    """Shared machinery behind B0 and the availability base-rate baseline
+    (task 1.14): pooled-across-players, season-to-date-through-week-W-1
+    mean of `target_column`. A season's own week 1 has no current-season
+    trailing data, so it falls back to the *entire* prior season's own
+    mean (same fallback convention as `features.usage.prior_season`); the
     very first tracked season's own week 1 has neither and stays
     honestly null, same precedent as task 1.7's `proe` and task 1.8's
     opponent adjustment for the identical reason.
     """
     by_week = (
         player_week_features.group_by(["position", "season", "week"])
-        .agg(pl.col("target").sum().alias("_week_sum"), pl.len().alias("_week_n"))
+        .agg(
+            pl.col(target_column).cast(pl.Float64).sum().alias("_week_sum"),
+            pl.len().alias("_week_n"),
+        )
         .sort(["position", "season", "week"])
     )
     prior_sum = pl.col("_week_sum").cum_sum().shift(1).over(["position", "season"])
@@ -76,19 +80,40 @@ def add_b0_positional_mean(player_week_features: pl.DataFrame) -> pl.DataFrame:
 
     prior_season_mean = (
         player_week_features.group_by(["position", "season"])
-        .agg(pl.col("target").mean().alias("_prior_season_mean"))
+        .agg(pl.col(target_column).cast(pl.Float64).mean().alias("_prior_season_mean"))
         .with_columns((pl.col("season") + 1).alias("season"))
     )
 
     combined = (
         with_current_season_mean.join(prior_season_mean, on=["position", "season"], how="left")
         .with_columns(
-            pl.coalesce(["_current_season_mean", "_prior_season_mean"]).alias("b0_positional_mean")
+            pl.coalesce(["_current_season_mean", "_prior_season_mean"]).alias(output_column)
         )
-        .select("position", "season", "week", "b0_positional_mean")
+        .select("position", "season", "week", output_column)
     )
 
     return player_week_features.join(combined, on=["position", "season", "week"], how="left")
+
+
+def add_b0_positional_mean(player_week_features: pl.DataFrame) -> pl.DataFrame:
+    """B0: "positional weekly mean" -- SPEC calls this the "sanity floor."
+    Pooled across *every* player at a position (not per-player, the
+    distinguishing feature from B1/B2) -- see `_positional_rolling_rate`
+    for the shared season-to-date/prior-season-fallback mechanics.
+    """
+    return _positional_rolling_rate(player_week_features, "target", "b0_positional_mean")
+
+
+def add_availability_base_rate(player_week_features: pl.DataFrame) -> pl.DataFrame:
+    """The availability model's own comparison baseline (SPEC §11.2/task
+    1.14's own acceptance bar: "Brier score beats a positional base-rate
+    predictor") -- exactly B0's shape (`_positional_rolling_rate`),
+    applied to `availability_flag` instead of `target`: "what fraction of
+    this position's players were active, on average, through last week."
+    """
+    return _positional_rolling_rate(
+        player_week_features, "availability_flag", "availability_base_rate"
+    )
 
 
 def add_b3_fp_weekly_consensus(fp_weekly: pl.DataFrame, players_dim: pl.DataFrame) -> pl.DataFrame:
@@ -126,6 +151,7 @@ def add_b3_fp_weekly_consensus(fp_weekly: pl.DataFrame, players_dim: pl.DataFram
 
 
 __all__ = [
+    "add_availability_base_rate",
     "add_b0_positional_mean",
     "add_b1_season_to_date_mean",
     "add_b2_ewm_4",

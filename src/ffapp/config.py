@@ -56,9 +56,32 @@ class SeasonsSettings:
 
 
 @dataclass(frozen=True)
+class LightGBMSettings:
+    n_estimators: int
+    learning_rate: float
+    num_leaves: int
+    min_child_samples: int
+    subsample: float
+    colsample_bytree: float
+    reg_lambda: float
+
+
+DEFAULT_LIGHTGBM_SETTINGS = LightGBMSettings(
+    n_estimators=800,
+    learning_rate=0.03,
+    num_leaves=31,
+    min_child_samples=40,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_lambda=1.0,
+)
+
+
+@dataclass(frozen=True)
 class ModelSettings:
     min_train_rows: int
     retrain_cadence_weeks: int
+    lightgbm: LightGBMSettings = DEFAULT_LIGHTGBM_SETTINGS
 
 
 @dataclass(frozen=True)
@@ -119,9 +142,21 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
     )
 
     model_raw = raw.get("model", {})
+    lightgbm_raw = model_raw.get("lightgbm", {})
+    d = DEFAULT_LIGHTGBM_SETTINGS
+    lightgbm = LightGBMSettings(
+        n_estimators=int(lightgbm_raw.get("n_estimators", d.n_estimators)),
+        learning_rate=float(lightgbm_raw.get("learning_rate", d.learning_rate)),
+        num_leaves=int(lightgbm_raw.get("num_leaves", d.num_leaves)),
+        min_child_samples=int(lightgbm_raw.get("min_child_samples", d.min_child_samples)),
+        subsample=float(lightgbm_raw.get("subsample", d.subsample)),
+        colsample_bytree=float(lightgbm_raw.get("colsample_bytree", d.colsample_bytree)),
+        reg_lambda=float(lightgbm_raw.get("reg_lambda", d.reg_lambda)),
+    )
     model = ModelSettings(
         min_train_rows=int(model_raw.get("min_train_rows", 2000)),
         retrain_cadence_weeks=int(model_raw.get("retrain_cadence_weeks", 1)),
+        lightgbm=lightgbm,
     )
 
     return Settings(

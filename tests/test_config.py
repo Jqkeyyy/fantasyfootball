@@ -85,6 +85,34 @@ def test_load_settings_defaults_seasons_and_model_sections_when_absent(tmp_path:
     assert settings.seasons.current == 2026
     assert settings.model.min_train_rows == 2000
     assert settings.model.retrain_cadence_weeks == 1
+    assert settings.model.lightgbm.n_estimators == 800
+    assert settings.model.lightgbm.learning_rate == pytest.approx(0.03)
+
+
+def test_load_settings_reads_lightgbm_hyperparams(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\n"
+        "model:\n"
+        "  lightgbm:\n"
+        "    n_estimators: 50\n"
+        "    learning_rate: 0.1\n"
+        "    num_leaves: 7\n"
+        "    min_child_samples: 5\n"
+        "    subsample: 0.5\n"
+        "    colsample_bytree: 0.6\n"
+        "    reg_lambda: 2.0\n"
+    )
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.model.lightgbm.n_estimators == 50
+    assert settings.model.lightgbm.learning_rate == pytest.approx(0.1)
+    assert settings.model.lightgbm.num_leaves == 7
+    assert settings.model.lightgbm.min_child_samples == 5
+    assert settings.model.lightgbm.subsample == pytest.approx(0.5)
+    assert settings.model.lightgbm.colsample_bytree == pytest.approx(0.6)
+    assert settings.model.lightgbm.reg_lambda == pytest.approx(2.0)
 
 
 def test_load_league_reads_slug_and_scoring_settings() -> None:

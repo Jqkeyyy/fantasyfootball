@@ -441,6 +441,46 @@ def interval_coverage(
     return float(((t >= lo) & (t <= hi)).mean())
 
 
+def brier_score(
+    predicted_prob: Sequence[float] | np.ndarray, actual: Sequence[float] | np.ndarray
+) -> float:
+    """Mean squared error of a predicted probability against a real
+    binary (0/1) outcome -- SPEC §11.2's own calibration metric for the
+    availability model (task 1.14): "Brier score beats a positional
+    base-rate predictor."
+    """
+    p = np.asarray(predicted_prob, dtype=float)
+    a = np.asarray(actual, dtype=float)
+    return float(np.mean((p - a) ** 2))
+
+
+def calibration_curve(
+    predicted_prob: Sequence[float] | np.ndarray,
+    actual: Sequence[float] | np.ndarray,
+    *,
+    n_bins: int = 10,
+) -> list[tuple[float, float, int]]:
+    """Buckets rows into `n_bins` equal-width probability bins; returns
+    `(mean predicted probability, mean actual outcome, n rows)` per
+    non-empty bin, ascending -- SPEC §12.4's "predicted quantile vs
+    realised frequency" calibration check, applied to a binary
+    probability (task 1.14's availability model) rather than a points
+    quantile: is the model's stated confidence trustworthy? A
+    "near-diagonal" curve (SPEC §11.2/task 1.14's own acceptance bar)
+    means the two columns of each tuple are close.
+    """
+    p = np.asarray(predicted_prob, dtype=float)
+    a = np.asarray(actual, dtype=float)
+    bin_idx = np.clip((p * n_bins).astype(int), 0, n_bins - 1)
+    result: list[tuple[float, float, int]] = []
+    for b in range(n_bins):
+        mask = bin_idx == b
+        if not mask.any():
+            continue
+        result.append((float(p[mask].mean()), float(a[mask].mean()), int(mask.sum())))
+    return result
+
+
 # --- decision quality (SPEC §12.4) -------------------------------------------------------
 
 
@@ -549,6 +589,8 @@ __all__ = [
     "accuracy_metrics",
     "bootstrap_ci_over_rows",
     "bootstrap_ci_over_weekly_values",
+    "brier_score",
+    "calibration_curve",
     "interval_coverage",
     "pinball_loss",
     "ranking_metrics",

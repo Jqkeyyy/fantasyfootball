@@ -1,3 +1,5 @@
+from datetime import date
+
 import polars as pl
 import pytest
 
@@ -86,6 +88,7 @@ def _roster_row(**kwargs: object) -> dict:
         "team": "KC",
         "position": "WR",
         "status": "ACT",
+        "birth_date": date(1995, 1, 1),
     }
     row.update(kwargs)
     return row
@@ -389,6 +392,15 @@ def test_build_player_week_features_lag_shifts_usage_but_not_opponent_or_situati
             "is_dome": pl.Boolean,
         },
     )
+    depth_charts = pl.DataFrame(
+        {
+            "season": [2025, 2025],
+            "week": [1, 2],
+            "gsis_id": ["p1", "p1"],
+            "formation": ["Offense", "Offense"],
+            "depth_team": ["2", "1"],  # varies by week -- proves the no-shift join
+        }
+    )
 
     result = build.build_player_week_features(
         rosters,
@@ -400,6 +412,7 @@ def test_build_player_week_features_lag_shifts_usage_but_not_opponent_or_situati
         defense_position_allowed,
         injuries,
         weather,
+        depth_charts,
         SCORING,
         registry={},
     )
@@ -415,3 +428,10 @@ def test_build_player_week_features_lag_shifts_usage_but_not_opponent_or_situati
     # verification): implied_team_total must be week 2's own value
     # (27.5), never week 1's shifted-forward value (24.0).
     assert week2["implied_team_total"] == pytest.approx(27.5)
+    # depth_chart_rank (task 1.14): week 2's own real depth slot (1), not
+    # week 1's shifted-forward value (2).
+    assert week2["depth_chart_rank"] == 1
+    # age (task 1.14): a real, non-null fractional age from rosters' own
+    # birth_date.
+    assert week2["age"] is not None
+    assert week2["age"] > 0
