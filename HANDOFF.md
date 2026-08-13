@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-13
 **Last machine:** `Maybe` (Windows). Sleeper reachable here — confirmed live, `api.sleeper.app` returns 200.
-**Last commit:** `ea5cd70` (pushed) — task 2.6 (Waiver wire) plus this session's doc restructuring and 1.13/1.17 reconciliation. Working tree now has further uncommitted changes on top: task 1.18 (`src/ffapp/models/predict.py`, CLI wiring, both test files) and task 1.19 (`src/ffapp/app/weekly_rankings_page.py`, `src/ffapp/app/pages/2_Weekly_Rankings.py`, `features/opponent.py`'s `team_opponent` rename, its test file), plus this file/`TASKS.md`/`docs/JOURNAL.md` — not committed, per standing rule (only commit when explicitly asked).
+**Last commit:** `a75554a` (pushed) — task 1.18 (Projection output pipeline) + task 1.19 (Streamlit weekly rankings page). Working tree is clean, nothing uncommitted.
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. Maintenance rules are at the bottom.
 
@@ -20,7 +20,7 @@ Task 2.6 (Waiver wire) is complete — built this session, the first task on thi
 
 Task 1.18 (Projection output pipeline) is complete — new `src/ffapp/models/predict.py` + `ffapp project --week N` CLI command, composing the availability/points/quantile models (tasks 1.14/1.15/1.16) into SPEC §6.2's `outputs/projections.parquet` schema. Verified for real against already-played weeks (2025 weeks 10/11 — 2026 has no nflverse release yet): 445/477 real projections, 0 nulls, full provenance, real upsert-by-`(season, week)` behavior confirmed with a second real run.
 
-Task 1.19 (Streamlit weekly rankings page) is also complete — new `src/ffapp/app/weekly_rankings_page.py` + `src/ffapp/app/pages/2_Weekly_Rankings.py`, SPEC §15's second page. Verified live in a real Chrome session via `claude-in-chrome` (see §7 for the connection hiccup and how it resolved) against the real weeks 1.18 generated: position tabs, the floor/ceiling visible range, and both filters (position + real Sleeper-resolved availability) all confirmed working against real data, 0 console errors. Not yet committed. Full evidence for both tasks is in `docs/JOURNAL.md`.
+Task 1.19 (Streamlit weekly rankings page) is also complete — new `src/ffapp/app/weekly_rankings_page.py` + `src/ffapp/app/pages/2_Weekly_Rankings.py`, SPEC §15's second page. Verified live in a real Chrome session via `claude-in-chrome` (see §7 for the connection hiccup and how it resolved) against the real weeks 1.18 generated: position tabs, the floor/ceiling visible range, and both filters (position + real Sleeper-resolved availability) all confirmed working against real data, 0 console errors. Both 1.18 and 1.19 committed as `a75554a`, pushed. Full evidence for both tasks is in `docs/JOURNAL.md`.
 
 **Next task: undecided.** 1.18/1.19 close out everything else in Phase 1 — the one remaining open item there is 1.15 (Conditional points model v1), a known, already-explained gap from an earlier session (the real model doesn't beat B2, documented as a genuine v1 result, not something to silently fix by tuning against validation seasons — revisit only once v2/a real hyperparameter search is in scope). Remaining open Phase 2 work: 2.8 (SOS/schedule grid — needs the full skill-position feature pipeline plus a real Streamlit heatmap page, neither built, deliberately not attempted), 2.10 (News pipeline, untouched), 2.11 (Model health page, untouched).
 
@@ -37,9 +37,9 @@ Task 1.19 (Streamlit weekly rankings page) is also complete — new `src/ffapp/a
 
 ## 3. In progress
 
-Nothing is mid-implementation. Tasks 1.18 and 1.19's new files are complete, tested, and verified against real data (1.19 verified live in a real browser), just not yet committed — a plain `git add`/commit of the files listed in the header is all that's needed next session if you haven't already asked for it by then.
+Nothing is mid-implementation and nothing is uncommitted. Resuming cold next session means picking one of §1's named next-task options (1.15 revisit, or Phase 2's 2.8/2.10/2.11) — there is no half-finished work to recover first.
 
-This session's own work, in order: (1) reconciled `TASKS.md` against an orphaned commit (message `"g"`) from a prior session that had landed real, tested work for 1.13/1.17 without updating either tracking doc; (2) restructured this file — moved §2/§4/§5 to `docs/JOURNAL.md` verbatim, this file keeps only state and the rebuild/environment reference below; (3) built, verified, committed, and pushed task 2.6 (Waiver wire); (4) built and verified task 1.18 (Projection output pipeline) end to end against real data; (5) built and verified task 1.19 (Streamlit weekly rankings page) end to end in a real browser session. 1.18/1.19 not yet committed.
+This session's own work, in order: (1) reconciled `TASKS.md` against an orphaned commit (message `"g"`) from a prior session that had landed real, tested work for 1.13/1.17 without updating either tracking doc; (2) restructured this file — moved §2/§4/§5 to `docs/JOURNAL.md` verbatim, this file keeps only state and the rebuild/environment reference below; (3) built, verified, committed, and pushed task 2.6 (Waiver wire); (4) built, verified, committed, and pushed tasks 1.18 (Projection output pipeline) and 1.19 (Streamlit weekly rankings page) together, the latter verified live in a real browser session after resolving a real Chrome/Vivaldi extension-connection issue (see §7).
 
 ---
 

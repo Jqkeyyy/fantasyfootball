@@ -72,4 +72,4 @@ Say so directly rather than complying if you notice any of the following. These 
 
 ## Current phase
 
-**Phase 0 — draft board.** Everything else waits. See `TASKS.md`.
+**Phase 1 — projections pipeline, nearly complete; Phase 2 partly built out of order.** Phase 0 (draft board) shipped long ago. Phase 1's only open item is 1.15 (conditional points model v1 — built, but doesn't beat the B2 baseline; a documented, genuine result, not a bug to silently fix). Several Phase 2 tasks (2.1–2.7, 2.9) are also already done, built ahead of strict order once their own prerequisites turned out not to need Sleeper/unbuilt pipelines — each confirmed with the user first, see `docs/JOURNAL.md`. Check `HANDOFF.md` §1 for the live, current picture; this line is a coarse pointer, not the source of truth.
