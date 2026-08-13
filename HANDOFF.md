@@ -1,8 +1,8 @@
 # HANDOFF.md — current state
 
-**Last updated:** 2026-08-12
-**Last machine:** Maybe (Windows)
-**Last commit:** `6bfff8e` — docs: fix stale rebuild-from-empty script for depth_charts
+**Last updated:** 2026-08-13
+**Last machine:** Work (hostname `ITHQ-172-26-LT1`, Windows) — genuinely new machine (Sleeper is blocked here, see §7).
+**Last commit:** `217f53c` — feat: evaluation report generator (task 1.17, in progress)
 
 This file is **state and decisions**, not design. `SPEC.md` and the addenda hold the design; never restate them here. If a line here could have been written before any code existed, it does not belong in this file.
 
@@ -13,8 +13,8 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 ## 1. Where things stand
 
 **Current phase:** Phase 1 — projections pipeline (Phase 0 is complete: 0.1–0.14 all done, verified, committed. **The draft board is real, ships today, and is safe to actually draft from on Aug 22.**)
-**Next task:** 1.17 (Evaluation report) — see SPEC §12.6. Nothing blocking it.
-**First concrete step:** a markdown report generator writing `data/outputs/eval/<timestamp>/report.md` (a new, dedicated file alongside `predictions.parquet`, task 1.12's own existing output in the same directory) with every metric from `evaluation.metrics` (task 1.13) computed per position, versus every baseline (B0-B3), plus feature importances (real attributes on the fitted `lgb.LGBMRegressor`/`LGBMClassifier` objects task 1.14-1.16 already produce) and calibration plots (`evaluation.metrics.calibration_curve`, already built and reused by task 1.16 — needs a real plotting step now, e.g. matplotlib or a simple ASCII/markdown table, not built yet). **Done when:** a report is generated and archived under a timestamped directory (reports are kept, never overwritten — same "archive, don't overwrite" precedent `run_walk_forward_backtest`'s own `<timestamp>` output directories already establish).
+**Next task:** 1.17 (Evaluation report) — see SPEC §12.6. **In progress, not done — see §3.** TASKS.md's checkbox is deliberately still unticked.
+**First concrete step:** this session (2026-08-13, the new `ITHQ-172-26-LT1` work machine) built and unit/integration-tested the markdown report generator (`src/ffapp/evaluation/report.py`) and wired it into `ffapp evaluate` (writes `report.md` alongside `predictions.parquet` in the same timestamped directory), but could only exercise it against small synthetic fixtures — this machine has no `data/` at all and its network blocks `api.sleeper.app` (see §7), so nothing real could be run. **Remaining work, for a session with both `data/` materialised and Sleeper reachable:** (1) run `ffapp evaluate --seasons ...` for real once `features/player_week_features.parquet` exists; (2) fit real `FittedPointsModels`/`FittedQuantileModels`/availability boosters (tasks 1.14-1.16, ad hoc script, see §6) over the full training window and pass them through `report.extract_feature_importance` (already built, unit-tested with a stub booster) into `render_report_markdown`'s `feature_importances` param — the CLI command doesn't do this yet, only the underlying function does (same "no CLI wiring yet for the advanced piece" precedent as several Phase 0 tasks); (3) do the same for calibration curves (`evaluation.metrics.calibration_curve`, task 1.16) into the `calibration_curves` param — rendered as a markdown table, confirmed as an acceptable stand-in for a real plotted image, not guessed. Only then tick 1.17's TASKS.md box.
 
 **Blocking on me (the human), not the agent:**
 
@@ -253,7 +253,15 @@ Maintenance rules are at the bottom. Update this file at the end of every sessio
 
 ## 3. Work in progress
 
-None. 0.1–1.14 and 1.16 are complete, verified, committed, and pushed. 1.15 is code-complete, tested, and verified, but its own real-data result doesn't clear its acceptance bar, so its TASKS.md checkbox is intentionally left unchecked (see its own entry) — this doesn't block 1.16 or 1.17. 1.13's lineup regret remains a separate documented, deferred gap (see its own entry, revisit at task 2.1).
+**1.17 (Evaluation report) — code-complete against fixtures, not verified against real data, not committed.** Built this session on the new `ITHQ-172-26-LT1` work machine (see header/§7):
+
+- New `src/ffapp/evaluation/report.py`: `extract_feature_importance(booster, top_n=20)` (pairs a fitted booster's own `feature_name_`/`feature_importances_`, sorted descending), `render_report_markdown(...)` (the metrics table — grouped by metric name, one row per position/scope/predictor, `MetricResult`'s own CI — plus optional feature-importance and calibration sections), `write_report(output_dir, markdown)` (writes `report.md`, archived alongside `predictions.parquet`, never overwritten).
+- `src/ffapp/cli.py`'s `evaluate` command now also computes `accuracy_metrics`/`ranking_metrics`/`start_sit_accuracy` (task 1.13) over the predictions it just backtested and writes `report.md` into the same timestamped directory — but only for B0-B2 (the command's own pre-existing scope), with empty feature-importance/calibration sections (no CLI path yet for fitted 1.14-1.16 models — see §1's remaining-work list).
+- `tests/test_evaluation_report.py` (13 tests) + `tests/test_cli_evaluate.py` (2 tests, the first CLI-level test `evaluate` has ever had) — all passing, 652 tests total (`uv run pytest -q`, up from 637 at session start), `ruff check`/`ruff format --check`/`mypy src/` all clean.
+- **Not run against anything real.** No live verification this session at all — the machine has no `data/` (fresh checkout) and this network's Cisco Umbrella filter blocks `api.sleeper.app` outright (confirmed: `curl` gets a real `block.sse.cisco.com` redirect page, not a generic timeout — see §7). Every other dependency this project needs (nflverse/GitHub raw, PyPI, FantasyPros/FantasyFootballCalculator/CBS) was confirmed reachable from here, so only Sleeper is the blocker, not a blanket network policy.
+- Committed as `217f53c` (`feat: evaluation report generator (task 1.17, in progress)`), confirmed with you first per CLAUDE.md's commit-on-request rule.
+
+0.1–1.14 and 1.16 are otherwise complete, verified, committed, and pushed. 1.15 is code-complete, tested, and verified, but its own real-data result doesn't clear its acceptance bar, so its TASKS.md checkbox is intentionally left unchecked (see its own entry) — this doesn't block 1.16 or 1.17. 1.13's lineup regret remains a separate documented, deferred gap (see its own entry, revisit at task 2.1).
 
 ## 4. Decisions made during implementation
 
@@ -562,9 +570,9 @@ Defaults to the primary league; `--league <slug>` and `--offline/--no-offline` a
 | This session (2026-08-11/12, hostname `Maybe`) | ✓ (live matchups pulled for both leagues' 2025 seasons) | ✓ (`nflreadpy` pulled real player_stats/team_stats/schedules/pbp for 2025) | ✓ | ✓ for FantasyPros/ESPN/FantasySharks/CBS Sports/FFToday (all fetched real live data at the time). NFL.com/Yahoo/Sharp Football Analysis were reachable (HTTP 200) but have no accessible data — see HANDOFF §4, not a network problem. |
 | This session (2026-08-12, hostname `Maybe`), task 1.3 | n/a | ✓ | n/a | n/a — but **Open-Meteo confirmed reachable**, both `api.open-meteo.com/v1/forecast` and `archive-api.open-meteo.com/v1/archive`, live-called successfully for real stadium coordinates. |
 | Home | ? | ? | ? | ? |
-| Work | ✗ | ? | ? | ✗ |
+| Work (2026-08-13, hostname `ITHQ-172-26-LT1`) — **confirmed for real this session, replacing the old placeholder guess row** | ✗ — `api.sleeper.app`'s TLS handshake fails via plain `curl` (schannel revocation-check error), but that's a red herring: with `--ssl-no-revoke` the connection completes and returns a real Cisco Umbrella block page (`block.sse.cisco.com` redirect, HTTP 403) — this network's content filter blocks Sleeper specifically, not a TLS/cert problem. Every `ffapp` command that touches Sleeper (league config, scoring settings, rosters, draft state) is unusable from here. | ✓ (`raw.githubusercontent.com`, `github.com` both 200) | ✓ (`uv sync` completed clean, 81 packages) | ✓ — FantasyPros, FantasyFootballCalculator, CBS Sports all 200 (the placeholder guess this row replaces had assumed ✗) |
 
-> **Sixth session in a row now, all on hostname `Maybe`.** This session opened with "resuming on a different machine" — checked the actual hostname, it still reads `Maybe`, so no new row was added and this is being treated as the same machine per the standing rule below. If a genuinely different machine shows up (different hostname), add it as a new row rather than overwriting this one.
+> **Sixth session in a row on hostname `Maybe` ended 2026-08-12.** This session (2026-08-13) opened with "resuming on a different machine" — checked the actual hostname this time and it's genuinely different (`ITHQ-172-26-LT1`, not `Maybe`), so the Work row above is real data, not a repeat of the `Maybe`-again false alarm this note used to warn about. If yet another machine shows up, add another new row rather than overwriting this one.
 
 ---
 
