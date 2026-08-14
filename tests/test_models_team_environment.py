@@ -3,6 +3,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from ffapp.config import DEFAULT_LIGHTGBM_SETTINGS
 from ffapp.models import team_environment
 
 
@@ -96,3 +97,65 @@ def test_add_team_environment_baselines_b2_never_leaks_the_target_week() -> None
     # never week 2's own (70) -- with a single prior week, ewm_4 of one point
     # equals that point exactly.
     assert row["team_plays_b2_ewm_4"] == pytest.approx(65.0)
+
+
+# --- fit_team_environment_model / predict_team_environment / TeamEnvironmentPredictor (task 4) ---
+
+
+def _training_rows() -> pl.DataFrame:
+    """20 rows, enough real variation in the feature columns for LightGBM
+    to fit without every leaf collapsing to a single value."""
+    rows = []
+    for i in range(20):
+        rows.append(
+            {
+                "team": "KC",
+                "season": 2024,
+                "week": (i % 17) + 1,
+                "team_plays": 60.0 + i,
+                "pass_rate": 0.5 + (i % 5) * 0.02,
+                "implied_team_total": 20.0 + i * 0.3,
+                "spread": -3.0 + i * 0.1,
+                "proe_ewm_5": 0.01 * i,
+                "neutral_pace_ewm_8": 28.0 - i * 0.1,
+                "opponent_neutral_pace_ewm_8": 29.0 + i * 0.1,
+            }
+        )
+    return pl.DataFrame(rows)
+
+
+def test_fit_and_predict_team_plays_model() -> None:
+    train_rows = _training_rows()
+
+    model = team_environment.fit_team_environment_model(
+        train_rows, target_column="team_plays", lightgbm_params=DEFAULT_LIGHTGBM_SETTINGS
+    )
+    predictions = team_environment.predict_team_environment(model, train_rows)
+
+    assert predictions.len() == train_rows.height
+    assert predictions.null_count() == 0
+
+
+def test_fit_and_predict_pass_rate_model() -> None:
+    train_rows = _training_rows()
+
+    model = team_environment.fit_team_environment_model(
+        train_rows, target_column="pass_rate", lightgbm_params=DEFAULT_LIGHTGBM_SETTINGS
+    )
+    predictions = team_environment.predict_team_environment(model, train_rows)
+
+    assert predictions.len() == train_rows.height
+    assert predictions.null_count() == 0
+
+
+def test_team_environment_predictor_satisfies_the_harness_protocol() -> None:
+    train_rows = _training_rows()
+    predictor = team_environment.TeamEnvironmentPredictor(
+        name="team_env_plays", target_column="team_plays", lightgbm_params=DEFAULT_LIGHTGBM_SETTINGS
+    )
+
+    fitted = predictor.fit(train_rows)
+    predictions = predictor.predict(fitted, train_rows)
+
+    assert predictor.name == "team_env_plays"
+    assert predictions.len() == train_rows.height

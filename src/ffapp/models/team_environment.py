@@ -17,8 +17,13 @@ two always sum to the predicted total exactly, by construction.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
+import lightgbm as lgb
 import polars as pl
 
+from ffapp.config import LightGBMSettings
 from ffapp.features.build import lag_shift_join
 from ffapp.models.baselines import pooled_rolling_mean
 
@@ -34,6 +39,20 @@ CURRENT_FEATURE_COLUMNS = [
 FEATURE_COLUMNS = TRAILING_FEATURE_COLUMNS + CURRENT_FEATURE_COLUMNS
 
 TARGET_COLUMNS = ["team_plays", "pass_rate"]
+
+_INCREASING_FEATURES = {
+    "team_plays": {"neutral_pace_ewm_8", "opponent_neutral_pace_ewm_8"},
+    "pass_rate": {"proe_ewm_5"},
+}
+
+
+def monotone_constraints(target_column: str) -> list[int]:
+    """LightGBM's own `monotone_constraints` vector, aligned 1:1 with
+    `FEATURE_COLUMNS`'s order -- `1` (increasing) for this target's own
+    `_INCREASING_FEATURES` entry, `0` (unconstrained) everywhere else.
+    Mirrors `models.points.monotone_constraints`'s own shape."""
+    increasing = _INCREASING_FEATURES[target_column]
+    return [1 if column in increasing else 0 for column in FEATURE_COLUMNS]
 
 
 def build_team_environment_table(team_context_features: pl.DataFrame) -> pl.DataFrame:
@@ -93,11 +112,74 @@ def add_team_environment_baselines(table: pl.DataFrame) -> pl.DataFrame:
     return with_b2
 
 
+def to_feature_frame(rows: pl.DataFrame) -> Any:
+    """Polars -> pandas only at this fit/predict boundary (CLAUDE.md's own
+    convention, same as `models.points`/`models.dst`). No categorical
+    columns here -- every Stage 1 feature is numeric."""
+    return rows.select(FEATURE_COLUMNS).to_pandas()
+
+
+@dataclass
+class FittedTeamEnvironmentModel:
+    booster: lgb.LGBMRegressor
+    target_column: str
+
+
+def fit_team_environment_model(
+    train_rows: pl.DataFrame, *, target_column: str, lightgbm_params: LightGBMSettings
+) -> FittedTeamEnvironmentModel:
+    booster = lgb.LGBMRegressor(
+        n_estimators=lightgbm_params.n_estimators,
+        learning_rate=lightgbm_params.learning_rate,
+        num_leaves=lightgbm_params.num_leaves,
+        min_child_samples=lightgbm_params.min_child_samples,
+        subsample=lightgbm_params.subsample,
+        colsample_bytree=lightgbm_params.colsample_bytree,
+        reg_lambda=lightgbm_params.reg_lambda,
+        monotone_constraints=monotone_constraints(target_column),
+        verbosity=-1,
+    )
+    booster.fit(to_feature_frame(train_rows), train_rows[target_column].to_numpy())
+    return FittedTeamEnvironmentModel(booster=booster, target_column=target_column)
+
+
+def predict_team_environment(model: FittedTeamEnvironmentModel, rows: pl.DataFrame) -> pl.Series:
+    predictions = model.booster.predict(to_feature_frame(rows))
+    return pl.Series("prediction", predictions, dtype=pl.Float64)
+
+
+class TeamEnvironmentPredictor:
+    """A `evaluation.backtest.Predictor` wrapping
+    `fit_team_environment_model`/`predict_team_environment`, exercised via
+    the same `run_walk_forward_backtest` harness every other predictor in
+    this project uses -- construct one per target (`team_plays`,
+    `pass_rate`), each with its own `name`."""
+
+    def __init__(self, *, name: str, target_column: str, lightgbm_params: LightGBMSettings) -> None:
+        self.name = name
+        self.target_column = target_column
+        self.lightgbm_params = lightgbm_params
+
+    def fit(self, train_rows: pl.DataFrame) -> Any:
+        return fit_team_environment_model(
+            train_rows, target_column=self.target_column, lightgbm_params=self.lightgbm_params
+        )
+
+    def predict(self, fitted: Any, target_rows: pl.DataFrame) -> pl.Series:
+        return predict_team_environment(fitted, target_rows)
+
+
 __all__ = [
     "CURRENT_FEATURE_COLUMNS",
     "FEATURE_COLUMNS",
     "TARGET_COLUMNS",
     "TRAILING_FEATURE_COLUMNS",
+    "FittedTeamEnvironmentModel",
+    "TeamEnvironmentPredictor",
     "add_team_environment_baselines",
     "build_team_environment_table",
+    "fit_team_environment_model",
+    "monotone_constraints",
+    "predict_team_environment",
+    "to_feature_frame",
 ]
