@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 import typer
@@ -8,6 +9,7 @@ from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
 from ffapp.config import Settings, load_all_leagues, load_league, load_primary_league, load_settings
 from ffapp.draft import board as draft_board
+from ffapp.draft import export as draft_export
 from ffapp.env import load_env
 from ffapp.evaluation import backtest
 from ffapp.evaluation import metrics as evaluation_metrics
@@ -276,6 +278,53 @@ def draft_board_command(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_csv(output_path)
     typer.echo(f"Wrote {result.height} players to {output_path}")
+
+
+@draft_app.command("export")
+def draft_export_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to the league's own configured season."
+    ),
+    out: Path | None = typer.Option(  # noqa: B008 -- same typer.Option default pattern as above
+        None,
+        "--out",
+        help="Output HTML path. Defaults to data/outputs/draft_board_<season>_export.html; "
+        "a CSV fallback is written alongside it with a .csv extension.",
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Self-contained static HTML export of the draft board (SPEC-ADDENDUM-03.md §D):
+    board data and every script inline, no CDN, no external fonts, no network calls --
+    opens on a phone with WiFi and cellular both off. Also writes a CSV fallback.
+    """
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    resolved_season = season if season is not None else league_config.season
+
+    try:
+        bundle = draft_export.build_export_bundle(
+            league_config, settings, season=resolved_season, offline=offline
+        )
+    except (
+        draft_board.NoRankingsSourcesAvailableError,
+        draft_board.NotEnoughPicksError,
+    ) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    html_path = (
+        out if out is not None else draft_export.export_html_path(settings, season=resolved_season)
+    )
+    csv_path = html_path.with_suffix(".csv")
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(draft_export.render_html(bundle, league=league_config), encoding="utf-8")
+    bundle.board.write_csv(csv_path)
+    typer.echo(f"Wrote {bundle.board.height} players to {html_path} and {csv_path}")
 
 
 def _flex_eligible_positions(fmt: LeagueFormat) -> set[str]:

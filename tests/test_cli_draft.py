@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 import ffapp.cli as cli
 from ffapp.config import CacheSettings, LeagueConfig, Settings
 from ffapp.draft import board as draft_board
+from ffapp.draft import export as draft_export
 
 runner = CliRunner()
 
@@ -140,3 +141,66 @@ def test_draft_board_reports_not_enough_picks_error(
 
     assert result.exit_code == 1
     assert "only 1 pick" in result.output
+
+
+# --- draft export --------------------------------------------------------------
+
+_PICK_CONTEXT = draft_board.PickContext(my_roster_id=7, my_slot=3, my_picks=[3, 18, 27])
+
+
+def _stub_export_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(draft_board, "build_draft_board", lambda league, settings, **kwargs: _BOARD)
+    monkeypatch.setattr(
+        draft_board, "resolve_pick_context", lambda league, settings, **kwargs: _PICK_CONTEXT
+    )
+    monkeypatch.setattr(
+        draft_export.rankings, "fetch_adp", lambda *args, **kwargs: Path("adp.json")
+    )
+    monkeypatch.setattr(draft_export, "_RANKINGS_SOURCE_FETCHERS", {})
+
+
+def test_draft_export_writes_html_and_csv(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    _stub_export_bundle(monkeypatch)
+
+    result = runner.invoke(cli.app, ["draft", "export"])
+
+    assert result.exit_code == 0
+    html_path = fixture_settings.data_root / "outputs" / "draft_board_2026_export.html"
+    csv_path = fixture_settings.data_root / "outputs" / "draft_board_2026_export.csv"
+    assert html_path.exists()
+    assert csv_path.exists()
+    assert "Elite RB" in html_path.read_text(encoding="utf-8")
+    assert pl.read_csv(csv_path)["player"].to_list() == ["Elite RB"]
+
+
+def test_draft_export_respects_custom_out_path(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    _stub_export_bundle(monkeypatch)
+    custom_out = tmp_path / "phone" / "board.html"
+
+    result = runner.invoke(cli.app, ["draft", "export", "--out", str(custom_out)])
+
+    assert result.exit_code == 0
+    assert custom_out.exists()
+    assert (tmp_path / "phone" / "board.csv").exists()
+
+
+def test_draft_export_reports_no_rankings_sources_error(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+
+    def raise_no_sources(league: object, settings: object, **kwargs: object) -> pl.DataFrame:
+        raise draft_board.NoRankingsSourcesAvailableError("nothing to aggregate")
+
+    monkeypatch.setattr(draft_board, "build_draft_board", raise_no_sources)
+
+    result = runner.invoke(cli.app, ["draft", "export"])
+
+    assert result.exit_code == 1
+    assert "nothing to aggregate" in result.output

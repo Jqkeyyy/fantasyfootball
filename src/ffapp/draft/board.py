@@ -18,6 +18,7 @@ import json
 import logging
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,52 @@ class NoRankingsSourcesAvailableError(Exception):
 class NotEnoughPicksError(Exception):
     """This drafter owns fewer than 2 picks this draft -- p_avail_after_next
     and opportunity_cost have no second pick to reference."""
+
+
+@dataclass(frozen=True)
+class PickContext:
+    my_roster_id: int
+    my_slot: int | None
+    my_picks: list[int]
+
+
+def resolve_pick_context(
+    league: LeagueConfig, settings: Settings, *, season: int, offline: bool | None = None
+) -> PickContext:
+    """Draft slot and every overall pick number the drafter owns this draft
+    (SPEC §9.6), accounting for traded picks. Shared by `build_draft_board`
+    (needs `next_pick`/`after_next_pick` for survival probabilities) and
+    `draft.export` (needs the full list plus slot for the static export's
+    header, SPEC-ADDENDUM-03.md §D) -- extracted rather than duplicated so
+    the two never drift on how a pick's owner is resolved.
+    """
+    assert league.league_id is not None
+    rosters_raw: list[dict[str, Any]] = json.loads(
+        sleeper.fetch_rosters(league.league_id, offline=offline, settings=settings).read_text()
+    )
+    draft_raw = json.loads(
+        sleeper.fetch_drafts(league.league_id, offline=offline, settings=settings).read_text()
+    )[0]
+    traded_picks_path = sleeper.fetch_traded_picks(
+        league.league_id, offline=offline, settings=settings
+    )
+    traded_picks = pick_order.parse_traded_picks(json.loads(traded_picks_path.read_text()))
+    assert settings.sleeper_username is not None
+    user_path = sleeper.fetch_user(settings.sleeper_username, offline=offline, settings=settings)
+    user = json.loads(user_path.read_text())
+    my_roster_id = pick_order.resolve_my_roster_id(user["user_id"], rosters_raw)
+    roster_by_slot = pick_order.roster_id_by_slot(draft_raw["draft_order"], rosters_raw)
+    my_slot = next((slot for slot, rid in roster_by_slot.items() if rid == my_roster_id), None)
+    my_picks = pick_order.my_pick_numbers(
+        my_roster_id,
+        draft_order=draft_raw["draft_order"],
+        rosters=rosters_raw,
+        traded_picks=traded_picks,
+        n_teams=draft_raw["settings"]["teams"],
+        num_rounds=draft_raw["settings"]["rounds"],
+        season=str(season),
+    )
+    return PickContext(my_roster_id=my_roster_id, my_slot=my_slot, my_picks=my_picks)
 
 
 def _fetch_point_sources(
@@ -295,35 +342,14 @@ def build_draft_board(
     adp_df = aggregate.add_join_key(rankings.normalize_adp(adp_raw, season=season))
     with_adp = adp_tool.join_adp(excluded_keepers, adp_df)
 
-    draft_raw = json.loads(
-        sleeper.fetch_drafts(league.league_id, offline=offline, settings=settings).read_text()
-    )[0]
-    traded_picks = pick_order.parse_traded_picks(
-        json.loads(
-            sleeper.fetch_traded_picks(
-                league.league_id, offline=offline, settings=settings
-            ).read_text()
-        )
-    )
-    assert settings.sleeper_username is not None
-    user_path = sleeper.fetch_user(settings.sleeper_username, offline=offline, settings=settings)
-    user = json.loads(user_path.read_text())
-    my_roster_id = pick_order.resolve_my_roster_id(user["user_id"], rosters_raw)
-    my_picks = pick_order.my_pick_numbers(
-        my_roster_id,
-        draft_order=draft_raw["draft_order"],
-        rosters=rosters_raw,
-        traded_picks=traded_picks,
-        n_teams=draft_raw["settings"]["teams"],
-        num_rounds=draft_raw["settings"]["rounds"],
-        season=str(season),
-    )
-    if len(my_picks) < 2:
+    pick_context = resolve_pick_context(league, settings, season=season, offline=offline)
+    if len(pick_context.my_picks) < 2:
         raise NotEnoughPicksError(
-            f"Only {len(my_picks)} pick(s) resolved for roster {my_roster_id} this draft -- "
-            "need at least 2 (p_avail_after_next/opportunity_cost need a second pick)."
+            f"Only {len(pick_context.my_picks)} pick(s) resolved for roster "
+            f"{pick_context.my_roster_id} this draft -- need at least 2 "
+            "(p_avail_after_next/opportunity_cost need a second pick)."
         )
-    next_pick, after_next_pick = my_picks[0], my_picks[1]
+    next_pick, after_next_pick = pick_context.my_picks[0], pick_context.my_picks[1]
 
     with_survival = adp_tool.add_survival_probabilities(
         with_adp,
@@ -348,7 +374,9 @@ __all__ = [
     "BOARD_COLUMNS",
     "NoRankingsSourcesAvailableError",
     "NotEnoughPicksError",
+    "PickContext",
     "build_draft_board",
     "draft_board_csv_path",
     "finalize_draft_board",
+    "resolve_pick_context",
 ]

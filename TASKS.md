@@ -85,6 +85,16 @@ If you are running short on time, the minimum viable path is 0.1 → 0.6 → 0.7
   Poll `/draft/{draft_id}/picks`, maintain the available pool, display best-available-by-VOR, tier depth remaining per position, positional run detection, and your starting-lineup gaps.
   **Done when:** tested end to end against a completed mock draft, replaying its picks; the available pool stays correct throughout.
 
+- [ ] **0.15 — Mobile draft page** 🔴 ⏱ 3h
+  ADDENDUM-03 §C
+  New `src/ffapp/app/pages/5_Draft_Mobile.py`: card-per-player layout (name/position/team/bye, tier/VOR, one-line "why"), best available filtered to the current pool (20–30 players, not 300), three numbers above the fold (best available by VOR, tier depth remaining per position, survival probability to your next pick), position filter as a big-tap-target button row, 10-second auto-refresh with a visible "last updated" timestamp. No hover, tooltips, or side-by-side comparison. Minimum 16px body text.
+  **Done when:** the page is usable one-handed on a real phone, shows tier depth remaining, and auto-refreshes during a replayed draft.
+
+- [x] **0.16 — Static HTML export** 🔴 ⏱ 2h
+  ADDENDUM-03 §D
+  New `ffapp draft export --league <slug> [--out <path>]`: writes a single self-contained `.html` file — full board sorted by VOR with tier breaks, board data embedded as inline JSON, all CSS/JS inline, no CDN links, no external fonts, no network calls. Client-side position filter and text search. Header states the generation timestamp and the age of the ADP and rankings inputs (per ADDENDUM-02 §C.3). Includes draft slot and computed pick numbers. Also export the same board as CSV as a second fallback.
+  **Done when:** the file opens on the phone with WiFi and cellular disabled, filters work, and the input-age header is present and accurate.
+
 ---
 
 # Phase 1 — projections pipeline (season weeks 1–6)
