@@ -49,7 +49,6 @@ def test_build_team_environment_table_lag_shifts_trailing_features_by_one_week()
     row = result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).row(0, named=True)
     assert row["proe_ewm_5"] == pytest.approx(0.02)  # week 1's value, not week 2's 0.03
     assert row["neutral_pace_ewm_8"] == pytest.approx(28.0)  # week 1's value
-    assert row["opponent_neutral_pace_ewm_8"] == pytest.approx(31.5)  # week 1's value
 
 
 def test_build_team_environment_table_first_week_has_null_trailing_features() -> None:
@@ -66,3 +65,7 @@ def test_build_team_environment_table_current_week_features_are_not_shifted() ->
     row = result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).row(0, named=True)
     assert row["implied_team_total"] == pytest.approx(27.0)  # week 2's own real Vegas line
     assert row["spread"] == pytest.approx(-2.5)
+    # week 2's own real opponent pace value, not week 1's 31.5 -- already
+    # internally lagged upstream (see add_opponent_pace), so it must not be
+    # shifted a second time here.
+    assert row["opponent_neutral_pace_ewm_8"] == pytest.approx(31.0)

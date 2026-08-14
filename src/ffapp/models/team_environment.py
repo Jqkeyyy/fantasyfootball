@@ -24,11 +24,11 @@ from ffapp.features.build import lag_shift_join
 TRAILING_FEATURE_COLUMNS = [
     "proe_ewm_5",
     "neutral_pace_ewm_8",
-    "opponent_neutral_pace_ewm_8",
 ]
 CURRENT_FEATURE_COLUMNS = [
     "implied_team_total",
     "spread",
+    "opponent_neutral_pace_ewm_8",
 ]
 FEATURE_COLUMNS = TRAILING_FEATURE_COLUMNS + CURRENT_FEATURE_COLUMNS
 
