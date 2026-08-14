@@ -20,6 +20,7 @@ player_id is a reasonable follow-up, not required by 0.7's acceptance bar.
 
 from __future__ import annotations
 
+import logging
 import statistics
 from collections.abc import Sequence
 
@@ -29,7 +30,73 @@ from ffapp.ids.mapping import normalize_name
 from ffapp.scoring.engine import score_stat_line
 from ffapp.scoring.keymap import STAT_KEY_MAP, DirectStat
 
+logger = logging.getLogger("ffapp.projections.aggregate")
+
 TRIM = 0.2
+
+# DST rows arrive under wildly different spellings per source -- confirmed
+# live against every real per-stat source's own actual output: ESPN uses
+# "{Nickname} D/ST" ("Texans D/ST"), FantasySharks/FFToday use the full
+# "{City} {Nickname}" ("Houston Texans"), CBS uses the city alone, or a
+# disambiguated "L.A."/"N.Y." prefix for the two shared-city pairs
+# ("L.A. Rams", "N.Y. Jets"), and the ADP source (FantasyFootballCalculator)
+# uses "{City} Defense" ("Houston Defense", "LA Rams Defense" -- no periods,
+# unlike CBS's own "L.A."/"N.Y." style). Before this table existed, none of
+# these spellings normalized to the same join_key, so every DST silently
+# never aggregated across sources at all -- each board row was really one
+# source's single, uncross-validated opinion (n_sources=1, dispersion=0.0
+# on every one of the 32 real teams, confirmed live), *and* ADP/survival
+# probability came back null for every DST too, same root cause.
+#
+# 26 of the 32 ADP names below are directly confirmed live; ADP coverage is
+# thin for 6 teams (ARI, CAR, IND, KC, LV, TB -- real, not a bug, same as
+# any other thin-ADP-coverage player elsewhere on the board). Those 6 follow
+# the exact "{City} Defense" pattern all 26 confirmed ones share, using the
+# same city spelling as the CBS column, so they're filled in rather than
+# left as a real gap in a table that exists specifically to close gaps.
+_DST_TEAMS: list[tuple[str, str, str, str, str]] = [
+    ("ARI", "Arizona Cardinals", "Cardinals D/ST", "Arizona", "Arizona Defense"),
+    ("ATL", "Atlanta Falcons", "Falcons D/ST", "Atlanta", "Atlanta Defense"),
+    ("BAL", "Baltimore Ravens", "Ravens D/ST", "Baltimore", "Baltimore Defense"),
+    ("BUF", "Buffalo Bills", "Bills D/ST", "Buffalo", "Buffalo Defense"),
+    ("CAR", "Carolina Panthers", "Panthers D/ST", "Carolina", "Carolina Defense"),
+    ("CHI", "Chicago Bears", "Bears D/ST", "Chicago", "Chicago Defense"),
+    ("CIN", "Cincinnati Bengals", "Bengals D/ST", "Cincinnati", "Cincinnati Defense"),
+    ("CLE", "Cleveland Browns", "Browns D/ST", "Cleveland", "Cleveland Defense"),
+    ("DAL", "Dallas Cowboys", "Cowboys D/ST", "Dallas", "Dallas Defense"),
+    ("DEN", "Denver Broncos", "Broncos D/ST", "Denver", "Denver Defense"),
+    ("DET", "Detroit Lions", "Lions D/ST", "Detroit", "Detroit Defense"),
+    ("GB", "Green Bay Packers", "Packers D/ST", "Green Bay", "Green Bay Defense"),
+    ("HOU", "Houston Texans", "Texans D/ST", "Houston", "Houston Defense"),
+    ("IND", "Indianapolis Colts", "Colts D/ST", "Indianapolis", "Indianapolis Defense"),
+    ("JAX", "Jacksonville Jaguars", "Jaguars D/ST", "Jacksonville", "Jacksonville Defense"),
+    ("KC", "Kansas City Chiefs", "Chiefs D/ST", "Kansas City", "Kansas City Defense"),
+    ("LV", "Las Vegas Raiders", "Raiders D/ST", "Las Vegas", "Las Vegas Defense"),
+    ("LAR", "Los Angeles Rams", "Rams D/ST", "L.A. Rams", "LA Rams Defense"),
+    ("LAC", "Los Angeles Chargers", "Chargers D/ST", "L.A. Chargers", "LA Chargers Defense"),
+    ("MIA", "Miami Dolphins", "Dolphins D/ST", "Miami", "Miami Defense"),
+    ("MIN", "Minnesota Vikings", "Vikings D/ST", "Minnesota", "Minnesota Defense"),
+    ("NE", "New England Patriots", "Patriots D/ST", "New England", "New England Defense"),
+    ("NO", "New Orleans Saints", "Saints D/ST", "New Orleans", "New Orleans Defense"),
+    ("NYG", "New York Giants", "Giants D/ST", "N.Y. Giants", "NY Giants Defense"),
+    ("NYJ", "New York Jets", "Jets D/ST", "N.Y. Jets", "NY Jets Defense"),
+    ("PHI", "Philadelphia Eagles", "Eagles D/ST", "Philadelphia", "Philadelphia Defense"),
+    ("PIT", "Pittsburgh Steelers", "Steelers D/ST", "Pittsburgh", "Pittsburgh Defense"),
+    ("SF", "San Francisco 49ers", "49ers D/ST", "San Francisco", "San Francisco Defense"),
+    ("SEA", "Seattle Seahawks", "Seahawks D/ST", "Seattle", "Seattle Defense"),
+    ("TB", "Tampa Bay Buccaneers", "Buccaneers D/ST", "Tampa Bay", "Tampa Bay Defense"),
+    ("TEN", "Tennessee Titans", "Titans D/ST", "Tennessee", "Tennessee Defense"),
+    ("WSH", "Washington Commanders", "Commanders D/ST", "Washington", "Washington Defense"),
+]
+
+DST_TEAM_ABBREVIATIONS: dict[str, str] = {
+    normalize_name(variant): abbrev
+    for abbrev, full_name, espn_name, cbs_name, adp_name in _DST_TEAMS
+    for variant in (full_name, espn_name, cbs_name, adp_name)
+}
+DST_CANONICAL_NAMES: dict[str, str] = {
+    abbrev: full_name for abbrev, full_name, *_rest in _DST_TEAMS
+}
 
 _DIRECT_STAT_COLUMNS = {
     spec.column for spec in STAT_KEY_MAP.values() if isinstance(spec, DirectStat)
@@ -88,11 +155,51 @@ def apply_league_scoring(df: pl.DataFrame, scoring_settings: dict[str, float]) -
     return df.with_columns(points.alias("points"))
 
 
+def _canonicalize_dst_player_names(df: pl.DataFrame) -> pl.DataFrame:
+    """Rewrite `player_name` to one canonical "City Nickname" form per real
+    NFL team for every DST row (see `DST_TEAM_ABBREVIATIONS`'s own module
+    -level comment) -- every source's own spelling collapses onto the same
+    string before `add_join_key` builds a join_key from it, so DST rows
+    finally aggregate across sources the way every other position already
+    does. A DST name this table doesn't recognise (a future source-side
+    spelling change) is left as-is and logged, not silently dropped or
+    crashed on -- no worse than the pre-fix behaviour for that one row.
+    """
+    if "position" not in df.columns or not (df["position"] == "DST").any():
+        return df
+
+    normalized = pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8)
+    abbrev = normalized.replace_strict(DST_TEAM_ABBREVIATIONS, default=None, return_dtype=pl.Utf8)
+    canonical = abbrev.replace_strict(DST_CANONICAL_NAMES, default=None, return_dtype=pl.Utf8)
+
+    is_dst = pl.col("position") == "DST"
+    unresolved = df.filter(is_dst & canonical.is_null())
+    if unresolved.height:
+        logger.warning(
+            "%d DST row(s) have an unrecognised team name, left uncanonicalised: %s",
+            unresolved.height,
+            unresolved["player_name"].to_list(),
+        )
+
+    return df.with_columns(
+        pl.when(is_dst & canonical.is_not_null())
+        .then(canonical)
+        .otherwise(pl.col("player_name"))
+        .alias("player_name")
+    )
+
+
 def add_join_key(df: pl.DataFrame) -> pl.DataFrame:
     """Cross-source player-matching key: normalized name + position (see
     module docstring for why this isn't the canonical player_id crosswalk).
+
+    DST rows are canonicalised first (`_canonicalize_dst_player_names`) --
+    every source spells DST team names differently, and without this the
+    same real team's rows from different sources would build different
+    join_keys and never aggregate together at all.
     """
-    return df.with_columns(
+    canonicalized = _canonicalize_dst_player_names(df)
+    return canonicalized.with_columns(
         (
             pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8)
             + "|"
@@ -201,6 +308,8 @@ def aggregate_projections(
 
 
 __all__ = [
+    "DST_CANONICAL_NAMES",
+    "DST_TEAM_ABBREVIATIONS",
     "TRIM",
     "add_join_key",
     "aggregate_projections",

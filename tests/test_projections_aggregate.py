@@ -102,6 +102,99 @@ def test_add_join_key_distinguishes_same_name_different_position() -> None:
     assert keyed["join_key"][0] != keyed["join_key"][1]
 
 
+# --- add_join_key: DST cross-source name canonicalization -----------------------
+#
+# Confirmed live against every real per-stat source's own actual output
+# (2026 season, this project's own data): ESPN spells DST "{Nickname}
+# D/ST" ("Texans D/ST"), FantasySharks/FFToday spell it the full "{City}
+# {Nickname}" ("Houston Texans"), CBS spells it just the city ("Houston"),
+# or a disambiguated "L.A."/"N.Y." prefix for the two shared-city pairs.
+# Before DST_TEAM_ABBREVIATIONS existed, none of these four spellings
+# normalized to the same join_key, so a real DST never aggregated across
+# sources at all -- every one of the 32 real teams showed n_sources=1,
+# dispersion=0.0 on the real board.
+
+
+def test_add_join_key_merges_the_same_real_dst_spelled_four_different_ways() -> None:
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="Texans D/ST", position="DST"),  # ESPN
+            _source_row(player_name="Houston Texans", position="DST"),  # FantasySharks/FFToday
+            _source_row(player_name="Houston", position="DST"),  # CBS
+        ]
+    )
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["join_key"].n_unique() == 1
+    assert keyed["player_name"].to_list() == ["Houston Texans"] * 3
+
+
+def test_add_join_key_disambiguates_the_two_shared_city_dst_pairs() -> None:
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="L.A. Rams", position="DST"),
+            _source_row(player_name="L.A. Chargers", position="DST"),
+            _source_row(player_name="N.Y. Giants", position="DST"),
+            _source_row(player_name="N.Y. Jets", position="DST"),
+        ]
+    )
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["join_key"].n_unique() == 4  # all four stay genuinely distinct
+    assert keyed["player_name"].to_list() == [
+        "Los Angeles Rams",
+        "Los Angeles Chargers",
+        "New York Giants",
+        "New York Jets",
+    ]
+
+
+def test_add_join_key_leaves_an_unrecognised_dst_name_uncanonicalised_not_crashed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    df = pl.DataFrame([_source_row(player_name="Mystery Team FC", position="DST")])
+
+    with caplog.at_level("WARNING"):
+        keyed = aggregate.add_join_key(df)
+
+    assert keyed["player_name"][0] == "Mystery Team FC"
+    assert any("unrecognised" in record.message for record in caplog.records)
+
+
+def test_add_join_key_does_not_touch_non_dst_rows_that_share_a_dst_style_name() -> None:
+    """A real skill player who happens to share text with a DST spelling
+    (unlikely, but the guard is `position == "DST"`, not a name match)
+    must not get rewritten."""
+    df = pl.DataFrame([_source_row(player_name="Houston", position="WR")])
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["player_name"][0] == "Houston"
+
+
+def test_dst_canonical_names_and_abbreviations_cover_all_32_real_teams() -> None:
+    assert len(aggregate.DST_CANONICAL_NAMES) == 32
+    # 4 real spellings per team (ESPN / FantasySharks-FFToday / CBS / ADP),
+    # all 32 teams.
+    assert len(aggregate.DST_TEAM_ABBREVIATIONS) == 32 * 4
+
+
+def test_add_join_key_recognises_the_adp_sources_defense_spelling() -> None:
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="Houston Defense", position="DST"),
+            _source_row(player_name="Houston Texans", position="DST"),
+        ]
+    )
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["join_key"].n_unique() == 1
+    assert keyed["player_name"].to_list() == ["Houston Texans", "Houston Texans"]
+
+
 # --- build_reference_curve / map_ranks_to_points -------------------------------
 
 
