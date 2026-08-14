@@ -1,6 +1,7 @@
 .env
 
 data/
+rankings/
 vendor/
 
 __pycache__/

@@ -21,6 +21,7 @@ dependencies = [
     "pulp>=3.3.2",
     "anthropic>=0.122.0",
     "defusedxml>=0.7.1",
+    "fastexcel>=0.20.2",
 ]
 
 [project.scripts]
