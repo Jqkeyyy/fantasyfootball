@@ -211,6 +211,7 @@ def render_html(bundle: ExportBundle, *, league: LeagueConfig) -> str:
   :root {{
     --bg: #ffffff; --fg: #111827; --muted: #6b7280; --border: #e5e7eb;
     --accent: #2563eb; --accent-fg: #ffffff; --tier-line: #f59e0b; --stale: #b91c1c;
+    --keeper-bg: #fff3cd;
   }}
   * {{ box-sizing: border-box; }}
   body {{
@@ -239,6 +240,7 @@ def render_html(bundle: ExportBundle, *, league: LeagueConfig) -> str:
   }}
   thead {{ position: sticky; top: 0; background: var(--bg); }}
   tr.tier-break td {{ border-top: 3px solid var(--tier-line); }}
+  tr.keeper-row td {{ background: var(--keeper-bg); }}
   .table-wrap {{ overflow-x: auto; }}
   .count {{ color: var(--muted); font-size: 0.8rem; margin-top: 0.5rem; }}
 </style>
@@ -285,9 +287,10 @@ def render_html(bundle: ExportBundle, *, league: LeagueConfig) -> str:
     return d.innerHTML;
   }}
 
-  function fmt(key, value) {{
+  function fmt(key, value, row) {{
     if (value === null || value === undefined) return '--';
     if (key === 'p_avail_next') return Math.round(value * 100) + '%';
+    if (key === 'player' && row && row.is_keeper) return '🔒 ' + esc(value);
     if (typeof value === 'number') {{
       return Number.isInteger(value) ? String(value) : value.toFixed(1);
     }}
@@ -298,20 +301,26 @@ def render_html(bundle: ExportBundle, *, league: LeagueConfig) -> str:
     var q = search.value.trim().toLowerCase();
     var lastTier = null;
     var shown = 0;
+    var keepersShown = 0;
     tbody.innerHTML = '';
     data.forEach(function (row) {{
       if (activePos !== 'ALL' && row.position !== activePos) return;
       if (q && String(row.player || '').toLowerCase().indexOf(q) === -1) return;
       shown += 1;
+      if (row.is_keeper) keepersShown += 1;
       var tr = document.createElement('tr');
-      if (lastTier !== null && row.tier !== lastTier) tr.className = 'tier-break';
+      var classes = [];
+      if (lastTier !== null && row.tier !== lastTier) classes.push('tier-break');
+      if (row.is_keeper) classes.push('keeper-row');
+      if (classes.length) tr.className = classes.join(' ');
       lastTier = row.tier;
       tr.innerHTML = columns.map(function (key) {{
-        return '<td>' + fmt(key, row[key]) + '</td>';
+        return '<td>' + fmt(key, row[key], row) + '</td>';
       }}).join('');
       tbody.appendChild(tr);
     }});
-    countEl.textContent = shown + ' of ' + data.length + ' players shown';
+    countEl.textContent = shown + ' of ' + data.length + ' players shown'
+      + (keepersShown ? ' (🔒 ' + keepersShown + ' keepers)' : '');
   }}
 
   search.addEventListener('input', render);

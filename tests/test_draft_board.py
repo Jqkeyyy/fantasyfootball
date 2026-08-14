@@ -86,6 +86,7 @@ def _board_input() -> pl.DataFrame:
             "p_avail_next": [0.1, 0.6, 1.0],
             "opportunity_cost": [40.0, 5.0, 0.0],
             "tier": [1, 1, 3],
+            "is_keeper": [True, False, False],
         }
     )
 
@@ -133,6 +134,20 @@ def test_finalize_draft_board_column_order_matches_spec_9_7() -> None:
     result = board.finalize_draft_board(_board_input(), as_of_utc="x", git_commit=None)
 
     assert result.columns == board.BOARD_COLUMNS
+
+
+def test_finalize_draft_board_carries_is_keeper_through_and_never_excludes_a_keeper() -> None:
+    """Keepers stay on the board (a real, later request) -- `is_keeper` is
+    purely informational, not a filter, so a keeper still gets ranked
+    exactly like any other player."""
+    result = board.finalize_draft_board(_board_input(), as_of_utc="x", git_commit=None)
+
+    assert result.height == 3  # the keeper (Elite RB) was not dropped
+    keeper_row = result.filter(pl.col("player") == "Elite RB").row(0, named=True)
+    assert keeper_row["is_keeper"] is True
+    assert keeper_row["overall_rank"] == 1  # ranked on VOR like everyone else
+    non_keeper_rows = result.filter(pl.col("player") != "Elite RB")
+    assert non_keeper_rows["is_keeper"].to_list() == [False, False]
 
 
 # --- _fetch_point_sources: graceful per-source degradation ------------------

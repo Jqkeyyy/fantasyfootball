@@ -28,6 +28,7 @@ _BOARD = pl.DataFrame(
         "pos_rank": [1],
         "tier": [1],
         "player": ["Elite RB"],
+        "is_keeper": [False],
         "position": ["RB"],
         "team": ["DET"],
         "bye_week": [6],

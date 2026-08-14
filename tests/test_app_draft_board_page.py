@@ -107,3 +107,47 @@ def test_style_tier_breaks_renders_alternating_background_colors_at_tier_boundar
     html = styler.to_html()
     assert "background-color: #f4f6fa" in html
     assert "background-color: #ffffff" in html
+
+
+def _board_with_keeper() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player": ["A", "B", "C"],
+            "position": ["RB", "WR", "TE"],
+            "tier": [1, 1, 2],
+            "is_keeper": [True, False, False],
+        }
+    )
+
+
+def test_style_tier_breaks_highlights_a_keeper_row_with_a_distinct_color() -> None:
+    styler = draft_board_page.style_tier_breaks(_board_with_keeper())
+
+    html = styler.to_html()
+    assert f"background-color: {draft_board_page._KEEPER_HIGHLIGHT_COLOR}" in html
+
+
+def test_style_tier_breaks_prefixes_a_keeper_players_displayed_name_with_a_lock_marker() -> None:
+    styler = draft_board_page.style_tier_breaks(_board_with_keeper())
+
+    assert list(styler.data["player"]) == ["\U0001f512 A", "B", "C"]
+
+
+def test_style_tier_breaks_never_mutates_the_original_dataframes_player_column() -> None:
+    """The lock-emoji prefix is a rendering-time-only change on the
+    Styler's own throwaway pandas copy -- the real polars `df` (and so
+    the CSV, draft.live's join-key matching, and every other consumer)
+    must keep the clean player name."""
+    original = _board_with_keeper()
+
+    draft_board_page.style_tier_breaks(original)
+
+    assert original["player"].to_list() == ["A", "B", "C"]
+
+
+def test_style_tier_breaks_with_no_is_keeper_column_behaves_as_before() -> None:
+    """A `df` with no `is_keeper` column (e.g. an older fixture) gets no
+    keeper styling or name mutation -- backward compatible."""
+    styler = draft_board_page.style_tier_breaks(_board())
+
+    assert list(styler.data["player"]) == ["A", "B", "C", "D"]

@@ -60,6 +60,7 @@ def filter_board(
 
 
 _TIER_SHADE_COLORS = ("#f4f6fa", "#ffffff")
+_KEEPER_HIGHLIGHT_COLOR = "#fff3cd"
 
 
 def tier_shade_groups(tiers: list[int]) -> list[int]:
@@ -86,12 +87,31 @@ def style_tier_breaks(df: pl.DataFrame, *, tier_column: str = "tier") -> Styler:
     this exact rendering boundary only (CLAUDE.md: polars is the default;
     pandas only where a library boundary requires it -- here, Streamlit's
     `st.dataframe` styling is pandas-Styler-based, not polars-native).
+
+    Keeper rows (a real `is_keeper` boolean column, when present) get a
+    distinct amber highlight overriding tier shading, plus a lock-emoji
+    prefix on the displayed player name -- the project owner asked for
+    keepers to be loudly visible on the board, not silently missing.
+    Both are purely a rendering-time change on this function's own throw
+    -away pandas copy: the underlying polars `df` (and so the real CSV,
+    `draft.live`'s join-key matching, and every other consumer) keeps the
+    player name clean. A `df` with no `is_keeper` column (e.g. an older
+    fixture) behaves exactly as before this feature existed.
     """
     pandas_df = df.to_pandas().reset_index(drop=True)
     groups = tier_shade_groups(pandas_df[tier_column].tolist())
+    has_keeper_column = "is_keeper" in pandas_df.columns
+    is_keeper = pandas_df["is_keeper"].tolist() if has_keeper_column else [False] * len(pandas_df)
+
+    if has_keeper_column and "player" in pandas_df.columns:
+        pandas_df["player"] = [
+            f"\U0001f512 {name}" if keeper else name
+            for name, keeper in zip(pandas_df["player"], is_keeper, strict=True)
+        ]
 
     def _row_style(row: pd.Series) -> list[str]:
-        color = _TIER_SHADE_COLORS[groups[cast(int, row.name)]]
+        idx = cast(int, row.name)
+        color = _KEEPER_HIGHLIGHT_COLOR if is_keeper[idx] else _TIER_SHADE_COLORS[groups[idx]]
         return [f"background-color: {color}"] * len(row)
 
     return pandas_df.style.apply(_row_style, axis=1)

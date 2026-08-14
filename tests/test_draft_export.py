@@ -24,6 +24,7 @@ _BOARD = pl.DataFrame(
         "pos_rank": [1, 1, 1],
         "tier": [1, 1, 2],
         "player": ["Elite RB", "Good WR", "Deep Bench TE"],
+        "is_keeper": [True, False, False],
         "position": ["RB", "WR", "TE"],
         "team": ["DET", "CIN", "KC"],
         "bye_week": [6, 10, 12],
@@ -171,6 +172,20 @@ def test_render_html_embeds_every_player_as_inline_json() -> None:
     assert "Elite RB" in result
     assert "Good WR" in result
     assert "Deep Bench TE" in result
+
+
+def test_render_html_embeds_the_is_keeper_flag_in_the_inline_json() -> None:
+    result = draft_export.render_html(_bundle(), league=_LEAGUE)
+
+    assert '"is_keeper":true' in result.replace(" ", "")
+
+
+def test_render_html_includes_keeper_row_styling_and_marker_logic() -> None:
+    result = draft_export.render_html(_bundle(), league=_LEAGUE)
+
+    assert "keeper-row" in result
+    assert "is_keeper" in result
+    assert "\U0001f512" in result  # lock emoji marker
 
 
 def test_render_html_has_no_external_network_references() -> None:

@@ -6,10 +6,21 @@ projection/valuation logic lives here -- this module is orchestration glue,
 not a new source of truth.
 
 `playoff_sos` is left null throughout (SPEC §14.5 isn't built yet -- TASKS.md
-0.12 says explicitly to leave it null rather than fake it). `as_of_utc` and
-`git_commit` are appended beyond SPEC §9.7's own column table, per
-CLAUDE.md's standing rule that every output artefact records them; there is
-no `model_version` yet since Phase 0 has no trained model.
+0.12 says explicitly to leave it null rather than fake it). `as_of_utc`,
+`git_commit`, and `is_keeper` are appended beyond SPEC §9.7's own column
+table, per CLAUDE.md's standing rule that every output artefact records
+its own provenance; there is no `model_version` yet since Phase 0 has no
+trained model.
+
+Kept players are no longer excluded from the board (a real design change,
+made live this session at the project owner's own request after they
+noticed the board was silently missing this year's real keepers) -- every
+other computed column (VOR, tier, ADP survival probability, opportunity
+cost) still treats a keeper exactly like any other player, so `is_keeper`
+is purely informational, not a filter: a keeper's own `p_avail_next`/
+`opportunity_cost` describe a hypothetical "if this pick were live," not
+a real upcoming draft event, since Sleeper auto-assigns keepers their own
+real pick before the live draft assistant (`draft.live`) ever sees them.
 """
 
 from __future__ import annotations
@@ -49,6 +60,7 @@ BOARD_COLUMNS = [
     "pos_rank",
     "tier",
     "player",
+    "is_keeper",
     "position",
     "team",
     "bye_week",
@@ -278,12 +290,12 @@ def finalize_draft_board(
     df: pl.DataFrame, *, as_of_utc: str, git_commit: str | None
 ) -> pl.DataFrame:
     """Add ranks (`overall_rank`, `pos_rank`, `value_vs_adp`) and select the
-    final SPEC §9.7 column set, sorted by VOR descending. `df` must already
-    carry every other board column (`vor`, `position`, `player_name`,
-    `team`, `bye_week`, `proj_points_adj`, `proj_ppg`, `expected_games`,
-    `dispersion`, `n_sources`, `adp`, `adp_sd`, `p_avail_next`,
-    `opportunity_cost`, `tier`) -- this function only ranks and reshapes,
-    it doesn't compute any of those.
+    final SPEC §9.7 column set (plus `is_keeper`), sorted by VOR descending.
+    `df` must already carry every other board column (`vor`, `position`,
+    `player_name`, `team`, `bye_week`, `proj_points_adj`, `proj_ppg`,
+    `expected_games`, `dispersion`, `n_sources`, `adp`, `adp_sd`,
+    `p_avail_next`, `opportunity_cost`, `tier`, `is_keeper`) -- this
+    function only ranks and reshapes, it doesn't compute any of those.
     """
     ranked = _add_ranks(df)
     return ranked.sort("vor", descending=True).select(
@@ -291,6 +303,7 @@ def finalize_draft_board(
         "pos_rank",
         "tier",
         pl.col("player_name").alias("player"),
+        "is_keeper",
         "position",
         "team",
         "bye_week",
@@ -369,7 +382,9 @@ def build_draft_board(
     )
     keeper_ids = adp_tool.keeper_sleeper_ids(rosters_raw)
     keeper_keys = adp_tool.keeper_join_keys(keeper_ids, players_dim)
-    excluded_keepers = adp_tool.exclude_keepers(with_vor, keeper_keys)
+    with_keeper_flag = with_vor.with_columns(
+        pl.col("join_key").is_in(list(keeper_keys)).alias("is_keeper")
+    )
 
     adp_raw = json.loads(
         rankings.fetch_adp(
@@ -377,7 +392,7 @@ def build_draft_board(
         ).read_text()
     )
     adp_df = aggregate.add_join_key(rankings.normalize_adp(adp_raw, season=season))
-    with_adp = adp_tool.join_adp(excluded_keepers, adp_df)
+    with_adp = adp_tool.join_adp(with_keeper_flag, adp_df)
 
     pick_context = resolve_pick_context(league, settings, season=season, offline=offline)
     if len(pick_context.my_picks) < 2:

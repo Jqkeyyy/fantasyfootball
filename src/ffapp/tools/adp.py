@@ -6,14 +6,17 @@ against the primary league's real 2026 data and scoped with the project
 owner before building:
 
 - **Keepers.** This is a 1-keeper league (`league.settings.max_keepers`).
-  Kept players never enter the draft pool at all -- SPEC-ADDENDUM-01.md's
-  own scope note ("Dynasty or keeper league valuation... Redraft only")
-  covers *valuation methodology*, not this: a kept player left in the
-  draftable pool would get a real, wrong survival probability and
-  opportunity cost for a pick that will never happen. Sleeper's roster
-  objects carry a `keepers` field directly (list of sleeper player_ids);
-  `keeper_join_keys` resolves those to the same normalized `(name,
-  position)` join key `projections/aggregate.py` already uses.
+  Sleeper's roster objects carry a `keepers` field directly (list of
+  sleeper player_ids); `keeper_join_keys` resolves those to the same
+  normalized `(name, position)` join key `projections/aggregate.py`
+  already uses. `exclude_keepers` (below) drops them outright, kept here
+  as a standalone tested utility -- `draft.board.build_draft_board`
+  itself no longer calls it (a later real-request change: keepers now
+  stay on the board, flagged `is_keeper`, since the project owner wanted
+  to see who's locked in and how good they are, not have them silently
+  vanish). Their `p_avail_next`/`opportunity_cost` on the board are
+  informational only, describing a hypothetical "if this pick were
+  live," not a real upcoming draft event.
 - **Traded picks.** Handled upstream by `draft.pick_order` -- this module
   just consumes whatever pick numbers it's given, real or not.
 """
