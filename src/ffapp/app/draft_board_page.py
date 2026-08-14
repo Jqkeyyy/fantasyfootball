@@ -160,22 +160,31 @@ def consensus_rankings(df: pl.DataFrame) -> pl.DataFrame:
     """Player/position/team plus the cross-source consensus columns only --
     the individual `rank_<source>` columns are each source's own tab
     instead (`single_source_rankings`), not shown side by side here.
+    `#` is a plain 1-indexed row count over the current (already
+    avg_rank-sorted) order -- avg_rank/median_rank are cross-source
+    statistics, not a clean "this player is Nth" position on their own,
+    which is what's actually easy to scan at a glance.
     """
     return df.select(
         "player", "position", "team", "avg_rank", "median_rank", "rank_sd", "n_sources"
-    )
+    ).with_row_index(name="#", offset=1)
 
 
 def single_source_rankings(df: pl.DataFrame, source: str) -> pl.DataFrame:
     """One source's own positional rank, sorted by that source's rank
     ascending. Players that source doesn't cover are dropped -- a null
-    rank there means no opinion, not a real ranking to display.
+    rank there means no opinion, not a real ranking to display. `#` is a
+    plain 1-indexed row count over the current (already rank-sorted, and
+    possibly position-filtered) order -- distinct from `rank`, that
+    source's own real published rank, which can have gaps once filtered
+    to one position (e.g. RB7, RB9, RB11, ...).
     """
     column = f"rank_{source}"
     return (
         df.filter(pl.col(column).is_not_null())
         .select("player", "position", "team", pl.col(column).alias("rank"))
         .sort("rank")
+        .with_row_index(name="#", offset=1)
     )
 
 

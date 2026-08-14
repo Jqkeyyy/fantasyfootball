@@ -223,6 +223,7 @@ def test_consensus_rankings_keeps_only_the_cross_source_columns() -> None:
     result = draft_board_page.consensus_rankings(_source_rankings())
 
     assert result.columns == [
+        "#",
         "player",
         "position",
         "team",
@@ -234,14 +235,22 @@ def test_consensus_rankings_keeps_only_the_cross_source_columns() -> None:
     assert result["player"].to_list() == ["Star RB", "Deep WR"]
 
 
+def test_consensus_rankings_numbers_rows_sequentially_from_one() -> None:
+    result = draft_board_page.consensus_rankings(_source_rankings())
+
+    assert result["#"].to_list() == [1, 2]
+
+
 def test_single_source_rankings_drops_players_that_source_does_not_cover() -> None:
     result = draft_board_page.single_source_rankings(_source_rankings(), "espn")
 
     assert result["player"].to_list() == ["Star RB"]  # Deep WR has no rank_espn
-    assert result.columns == ["player", "position", "team", "rank"]
+    assert result.columns == ["#", "player", "position", "team", "rank"]
+    assert result["#"].to_list() == [1]
 
 
 def test_single_source_rankings_sorts_by_that_sources_own_rank() -> None:
     result = draft_board_page.single_source_rankings(_source_rankings(), "fantasypros")
 
     assert result["player"].to_list() == ["Star RB", "Deep WR"]  # rank 3 before rank 29
+    assert result["#"].to_list() == [1, 2]  # sequential position, not the real rank value
