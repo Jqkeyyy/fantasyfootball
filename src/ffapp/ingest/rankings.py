@@ -39,6 +39,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -95,7 +96,16 @@ def _get_session() -> requests.Session:
 
 def _get_espn_json(season: int) -> dict[str, Any]:
     """Fetch the bulk ESPN player projections payload. The only network call
-    this function makes."""
+    this function makes.
+
+    `view=kona_player_info` is required -- confirmed live: without it, the
+    endpoint still returns 200 but `players` is entirely absent from the
+    response (this is what silently produced 0 rows). ESPN apparently
+    changed this endpoint to only include the player list for a recognised
+    `view` value; `kona_player_info`, `players_wl`, and `kona_playercard`
+    all work, `kona_player_info` chosen since it's the one most community
+    ESPN API wrappers (e.g. cwendt94/espn-api) use for this same call.
+    """
     filt = {
         "players": {
             "limit": ESPN_PLAYER_LIMIT,
@@ -104,6 +114,7 @@ def _get_espn_json(season: int) -> dict[str, Any]:
     }
     response = _get_session().get(
         ESPN_URL_TEMPLATE.format(season=season),
+        params={"view": "kona_player_info"},
         headers={"X-Fantasy-Filter": json.dumps(filt)},
         timeout=30,
     )
@@ -216,7 +227,7 @@ def fetch_espn(
     settings = _resolve_settings(settings)
     return _fetch_json(
         filename=f"espn_{season}.json",
-        call_desc=f"GET {ESPN_URL_TEMPLATE.format(season=season)}",
+        call_desc=f"GET {ESPN_URL_TEMPLATE.format(season=season)}?view=kona_player_info",
         cache_key="rankings_espn",
         load=lambda: _get_espn_json(season),
         row_count=lambda payload: len(payload.get("players", [])),
@@ -949,6 +960,9 @@ _FFTODAY_COLUMNS: dict[str, list[str | None]] = {
 _FFTODAY_HEADER_ROWS = 2
 
 
+FFTODAY_REQUEST_DELAY_SECONDS = 1.5
+
+
 def _get_fftoday_html(pos: str, season: int) -> str:
     """Fetch one position's FFToday projections page. The only network call
     this function makes."""
@@ -957,6 +971,22 @@ def _get_fftoday_html(pos: str, season: int) -> str:
     )
     response.raise_for_status()
     return response.text
+
+
+def _get_fftoday_pages(season: int) -> dict[str, str]:
+    """All six position pages, with a small delay between requests --
+    confirmed live: firing all six back-to-back with no delay reliably
+    403s one of them (a basic rate limit FFToday appears to have added
+    since task 0.7 was first built, when this worked with no delay); a
+    `FFTODAY_REQUEST_DELAY_SECONDS` gap between requests avoided it in
+    repeated live retesting.
+    """
+    pages: dict[str, str] = {}
+    for i, pos in enumerate(FFTODAY_POSITIONS):
+        if i > 0:
+            time.sleep(FFTODAY_REQUEST_DELAY_SECONDS)
+        pages[pos] = _get_fftoday_html(pos, season)
+    return pages
 
 
 def fetch_fftoday(
@@ -971,7 +1001,7 @@ def fetch_fftoday(
         filename=f"fftoday_{season}.json",
         call_desc=f"GET {FFTODAY_URL_TEMPLATE} for pos in {FFTODAY_POSITIONS}",
         cache_key="rankings_fftoday",
-        load=lambda: {pos: _get_fftoday_html(pos, season) for pos in FFTODAY_POSITIONS},
+        load=lambda: _get_fftoday_pages(season),
         row_count=lambda payload: len(payload),
         artifact="fftoday",
         params=f"season={season}",

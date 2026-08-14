@@ -32,6 +32,44 @@ def _age_stamp(hours: float) -> str:
 FIXTURE_PAYLOAD = {"players": [{"player": {"fullName": "Fixture Player"}}]}
 
 
+# --- _get_espn_json ---------------------------------------------------------
+
+
+class _FakeEspnResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeEspnSession:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url: str, **kwargs: object) -> _FakeEspnResponse:
+        self.calls.append((url, kwargs))
+        return _FakeEspnResponse(self._payload)
+
+
+def test_get_espn_json_requests_the_kona_player_info_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirmed live: without `view=kona_player_info`, ESPN's endpoint
+    still returns 200 but `players` is entirely absent from the response --
+    this was the real cause of the board silently running on 0 ESPN rows."""
+    fake_session = _FakeEspnSession(FIXTURE_PAYLOAD)
+    monkeypatch.setattr(rankings, "_get_session", lambda: fake_session)
+
+    result = rankings._get_espn_json(2026)
+
+    assert result == FIXTURE_PAYLOAD
+    [(_, kwargs)] = fake_session.calls
+    assert kwargs["params"] == {"view": "kona_player_info"}
+
+
 # --- fetch_espn -----------------------------------------------------------
 
 
@@ -1046,6 +1084,7 @@ def test_fetch_fftoday_online_writes_raw_html_per_position_and_sidecar(
 ) -> None:
     fixture_by_pos = {pos: f"<html>{pos}</html>" for pos in rankings.FFTODAY_POSITIONS}
     monkeypatch.setattr(rankings, "_get_fftoday_html", lambda pos, season: fixture_by_pos[pos])
+    monkeypatch.setattr(rankings.time, "sleep", lambda seconds: None)
 
     path = rankings.fetch_fftoday(2026, offline=False, settings=settings)
 
@@ -1054,6 +1093,27 @@ def test_fetch_fftoday_online_writes_raw_html_per_position_and_sidecar(
     meta = json.loads(sidecar_path(path).read_text())
     assert meta["source"] == "rankings"
     assert meta["cache_key"] == "rankings_fftoday"
+
+
+def test_get_fftoday_pages_sleeps_between_requests_but_not_before_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live-confirmed fix: firing all six FFToday position requests
+    back-to-back with no delay reliably 403s one of them -- a small delay
+    between requests (not before the first, which would just waste time)
+    avoided it in repeated live retesting."""
+    fetched: list[str] = []
+    slept: list[float] = []
+    monkeypatch.setattr(
+        rankings, "_get_fftoday_html", lambda pos, season: fetched.append(pos) or ""
+    )
+    monkeypatch.setattr(rankings.time, "sleep", lambda seconds: slept.append(seconds))
+
+    rankings._get_fftoday_pages(2026)
+
+    assert fetched == list(rankings.FFTODAY_POSITIONS)
+    assert len(slept) == len(rankings.FFTODAY_POSITIONS) - 1
+    assert all(s == rankings.FFTODAY_REQUEST_DELAY_SECONDS for s in slept)
 
 
 def test_fetch_fftoday_offline_without_cache_raises_offline_cache_miss(
