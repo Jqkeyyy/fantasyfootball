@@ -8,6 +8,7 @@ import ffapp.cli as cli
 from ffapp.config import CacheSettings, LeagueConfig, Settings
 from ffapp.draft import board as draft_board
 from ffapp.draft import export as draft_export
+from ffapp.draft import replay as draft_replay
 
 runner = CliRunner()
 
@@ -204,3 +205,78 @@ def test_draft_export_reports_no_rankings_sources_error(
 
     assert result.exit_code == 1
     assert "nothing to aggregate" in result.output
+
+
+# --- draft live --replay --------------------------------------------------------
+
+_SESSION = draft_replay.ReplaySession(
+    draft_id="d1",
+    picks=[{"pick_no": 1}],
+    started_at_utc="2026-08-13T00:00:00+00:00",
+    pace_seconds=8.0,
+)
+
+
+def test_draft_live_replay_starts_a_session(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    started_with: dict[str, object] = {}
+
+    def fake_start(
+        league: object, settings: object, *, pace_seconds: float, offline: object
+    ) -> object:
+        started_with["pace_seconds"] = pace_seconds
+        return _SESSION
+
+    monkeypatch.setattr(draft_replay, "start_replay", fake_start)
+
+    result = runner.invoke(cli.app, ["draft", "live", "--replay", "--pace-seconds", "5"])
+
+    assert result.exit_code == 0
+    assert "d1" in result.output
+    assert started_with["pace_seconds"] == 5.0
+
+
+def test_draft_live_replay_reports_no_completed_draft_error(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+
+    def raise_no_draft(league: object, settings: object, **kwargs: object) -> object:
+        raise draft_replay.NoCompletedDraftError("no completed draft")
+
+    monkeypatch.setattr(draft_replay, "start_replay", raise_no_draft)
+
+    result = runner.invoke(cli.app, ["draft", "live", "--replay"])
+
+    assert result.exit_code == 1
+    assert "no completed draft" in result.output
+
+
+def test_draft_live_stop_clears_the_session(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    stopped_with: dict[str, object] = {}
+    monkeypatch.setattr(
+        draft_replay,
+        "stop_replay",
+        lambda settings, *, league_slug: stopped_with.update(league_slug=league_slug),
+    )
+
+    result = runner.invoke(cli.app, ["draft", "live", "--stop"])
+
+    assert result.exit_code == 0
+    assert stopped_with["league_slug"] == "test-league"
+
+
+def test_draft_live_without_replay_or_stop_reports_usage_error(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+
+    result = runner.invoke(cli.app, ["draft", "live"])
+
+    assert result.exit_code == 1
+    assert "--replay" in result.output

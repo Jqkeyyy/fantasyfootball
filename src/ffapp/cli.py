@@ -10,6 +10,7 @@ from ffapp.cache.offline import is_offline
 from ffapp.config import Settings, load_all_leagues, load_league, load_primary_league, load_settings
 from ffapp.draft import board as draft_board
 from ffapp.draft import export as draft_export
+from ffapp.draft import replay as draft_replay
 from ffapp.env import load_env
 from ffapp.evaluation import backtest
 from ffapp.evaluation import metrics as evaluation_metrics
@@ -325,6 +326,62 @@ def draft_export_command(
     html_path.write_text(draft_export.render_html(bundle, league=league_config), encoding="utf-8")
     bundle.board.write_csv(csv_path)
     typer.echo(f"Wrote {bundle.board.height} players to {html_path} and {csv_path}")
+
+
+@draft_app.command("live")
+def draft_live_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    replay: bool = typer.Option(
+        False,
+        "--replay",
+        help="Start a replay session against the league's most recent completed real draft, "
+        "for local UI verification without a real draft in progress (SPEC-ADDENDUM-03.md §E).",
+    ),
+    pace_seconds: float = typer.Option(
+        8.0, "--pace-seconds", help="Seconds between each replayed pick becoming visible."
+    ),
+    stop: bool = typer.Option(False, "--stop", help="Clear an active replay session."),
+    offline: bool | None = typer.Option(  # noqa: B008 -- same typer.Option default pattern as above
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Live draft assistant support (SPEC §9.8; task 0.14). Real-time polling
+    itself lives in the Streamlit app's own Live Draft tab and Draft Mobile
+    page (a refresh button / auto-refresh, both hitting Sleeper directly);
+    this command only manages recorded-draft replay sessions those pages
+    read instead when one is active, for verification before a real draft.
+    """
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+
+    if stop:
+        draft_replay.stop_replay(settings, league_slug=league_config.slug)
+        typer.echo(f"Stopped replay for {league_config.slug}.")
+        return
+
+    if not replay:
+        typer.echo(
+            "ffapp draft live currently only supports --replay (start a recorded-draft replay "
+            "session) or --stop. Real live polling happens in the Streamlit app itself.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        session = draft_replay.start_replay(
+            league_config, settings, pace_seconds=pace_seconds, offline=offline
+        )
+    except draft_replay.NoCompletedDraftError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"Replaying draft {session.draft_id} ({len(session.picks)} real picks) for "
+        f"{league_config.slug} -- one more pick every {pace_seconds:.0f}s. Open the Draft "
+        "Mobile page in Streamlit to watch it (`ffapp draft live --stop` to clear)."
+    )
 
 
 def _flex_eligible_positions(fmt: LeagueFormat) -> set[str]:
