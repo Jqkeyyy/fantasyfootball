@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,11 +36,12 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from rapidfuzz import fuzz, process
 
 from ffapp.config import REPO_ROOT, LeagueConfig, Settings
 from ffapp.draft import pick_order
 from ffapp.ids import mapping
-from ffapp.ingest import nflverse, rankings, sleeper
+from ffapp.ingest import manual_rankings, nflverse, rankings, sleeper
 from ffapp.league_format import parse_league_format
 from ffapp.projections import aggregate, games_played
 from ffapp.tools import adp as adp_tool
@@ -91,9 +93,9 @@ def draft_board_csv_path(settings: Settings, *, season: int) -> Path:
 
 def source_rankings_csv_path(settings: Settings, *, season: int) -> Path:
     """`data/outputs/source_rankings_<season>.csv` -- the "no model" board:
-    each source's own positional rank side by side, no VOR/league-scoring
-    valuation. Written by the same `ffapp draft board` command as the main
-    board, read by the Streamlit page's per-source tabs.
+    each source's own real published overall rank side by side, no VOR/
+    league-scoring valuation. Written by the same `ffapp draft board`
+    command as the main board, read by the Streamlit page's per-source tabs.
     """
     return settings.data_root / "outputs" / f"source_rankings_{season}.csv"
 
@@ -141,17 +143,12 @@ _RANK_SOURCE_FETCHERS: dict[str, Callable[[int, bool | None, Settings], pl.DataF
     ),
 }
 
-# For `build_source_rankings`'s per-source tabs: a name in POINT_SOURCE_NAMES
-# has no native published rank of its own -- its `rank_<source>` column is
-# this league's own scoring applied to that source's raw stat projections,
-# then sorted (`aggregate.rank_within_position`), NOT that source's own
-# editorial ranking. Confirmed live: CBS's real "Fantasy Experts" rankings
-# page has Jahmyr Gibbs above Bijan Robinson, but CBS's *stat-projections*
-# page (the only CBS artifact this app fetches, SPEC §9.2) projects Robinson
-# for more catches/yards, which this league's real PPR scoring settings
-# legitimately rank higher -- correct math, different question than "what
-# does CBS's own rankings page say." A name in RANK_SOURCE_NAMES is a real
-# native rank, scraped as-is, no scoring model involved.
+# `build_draft_board`'s own point/rank split, unrelated to `build_source_
+# rankings` -- that now sources every tab from `ingest.manual_rankings`'s
+# real published overall ranks instead (see that module's docstring for
+# why: CBS/ESPN/FantasySharks/FFToday's live-scraped data here is stat
+# projections, not a rank of any kind, confirmed live to disagree with
+# CBS's own real rankings page in exactly the way you'd expect).
 POINT_SOURCE_NAMES = frozenset(_POINT_SOURCE_FETCHERS)
 RANK_SOURCE_NAMES = frozenset(_RANK_SOURCE_FETCHERS)
 
@@ -455,6 +452,163 @@ def _per_source_rank_columns(df: pl.DataFrame) -> list[str]:
     return sorted(col for col in df.columns if col.startswith("rank_") and col != "rank_sd")
 
 
+def _cbs_manual_name_candidates(
+    other_sources: list[pl.DataFrame],
+) -> dict[str, dict[str, dict[str, tuple[str, list[float]]]]]:
+    """Real full names (and each identity's own ranks, for the ambiguity
+    tie-break below) from `other_sources` (the other six manual-ranking
+    DataFrames), grouped by position and then by the same "<first-initial>.
+    <rest>" abbreviated form CBS's manual export uses ("Jahmyr Gibbs" ->
+    "J. Gibbs"), normalised via `mapping.normalize_name` -- the exact-match
+    half of `_resolve_cbs_manual_names`. Each abbreviated-form bucket is
+    itself keyed by real player identity (`aggregate.add_join_key`'s own
+    join_key, which already folds in the DST/nickname alias table and
+    suffix-stripping) rather than the raw name string, so "Kenneth Walker
+    III"/"Kenneth Walker"/"Ken Walker III" -- three real spellings of the
+    same real player across three different sources -- collapse into one
+    identity instead of looking like three candidates. Only a bucket with
+    2+ *distinct* identities is a genuine ambiguity.
+
+    Deliberately NOT `players_dim`: a real collision confirmed live,
+    `players_dim`'s much larger universe (every player nflverse/Sleeper has
+    ever tracked, including deep bench and long-retired players no real
+    cheat sheet would list) has two real RBs who both abbreviate to
+    "J. Taylor" -- "Jonathan Taylor" and an obscure "J'Mari Taylor" -- and
+    CBS's own "J. Taylor" row silently resolved to whichever one happened
+    to sort first, not the real Jonathan Taylor CBS actually ranked. The
+    other six sources' own player pools are already scoped to exactly the
+    same tier of real, currently-relevant players a cheat sheet covers.
+    """
+    grouped: dict[str, dict[str, dict[str, tuple[str, list[float]]]]] = {}
+    for df in other_sources:
+        keyed = aggregate.add_join_key(df.select("player_name", "position", "rank"))
+        for row in keyed.iter_rows(named=True):
+            full_name, position, join_key, rank = (
+                row["player_name"],
+                row["position"],
+                row["join_key"],
+                row["rank"],
+            )
+            if full_name is None or position is None:
+                continue
+            tokens = full_name.split()
+            if not tokens:
+                continue
+            abbreviated = (
+                f"{tokens[0][0]}. {' '.join(tokens[1:])}" if len(tokens) > 1 else tokens[0]
+            )
+            abbreviated_key = mapping.normalize_name(abbreviated)
+            by_identity = grouped.setdefault(position, {}).setdefault(abbreviated_key, {})
+            name, ranks = by_identity.get(join_key, (full_name, []))
+            if len(full_name) > len(name):
+                name = full_name  # prefer the longest spelling seen (keeps suffixes)
+            if rank is not None:
+                ranks.append(rank)
+            by_identity[join_key] = (name, ranks)
+    return grouped
+
+
+def _resolve_cbs_manual_names(
+    cbs_df: pl.DataFrame, other_sources: list[pl.DataFrame], *, fuzzy_floor: int = 90
+) -> pl.DataFrame:
+    """CBS's manual export abbreviates every name ("J. Gibbs") with no team
+    column to disambiguate -- resolved here against the other six manual
+    sources' own real full names (see `_cbs_manual_name_candidates` for why
+    not `players_dim`, and for how same-player spelling variants across
+    sources are collapsed to one identity rather than looking ambiguous),
+    position-scoped (never cross-position, matching every other fuzzy-match
+    precedent in this codebase, `ids.mapping.fuzzy_match_remainder`).
+    Matching the same normalised abbreviated form exactly handles the
+    overwhelming majority; rapidfuzz is the fallback for anything that
+    doesn't (typos, an unusual abbreviation).
+
+    Two *different* real players at the same position genuinely sharing one
+    abbreviated form (e.g. Bijan Robinson vs. Brian Robinson Jr., confirmed
+    live) is resolved by proximity: whichever candidate's own average rank
+    (across the other sources) is closest to CBS's own rank for this row
+    wins -- CBS ranking "B. Robinson" #2 overall is obviously about the
+    player every other source *also* has near #2, not the one they have
+    near #90, and the same logic correctly goes the other way for a
+    "B. Robinson" row CBS ranks much lower. Only when neither candidate has
+    any rank data to compare (never observed live, but not assumed away)
+    does this fall back to leaving the row unresolved -- silently picking
+    one with no signal at all would be worse than leaving it abbreviated.
+    A row with no confident match keeps its original abbreviated name and
+    logs a warning -- never silently dropped (CLAUDE.md rule 4).
+    """
+    candidates_by_position = _cbs_manual_name_candidates(other_sources)
+
+    def resolve_one(position: str, abbreviated_name: str, cbs_rank: float | None) -> str | None:
+        by_abbreviation = candidates_by_position.get(position, {})
+        normalized = mapping.normalize_name(abbreviated_name)
+        by_identity = by_abbreviation.get(normalized)
+        if by_identity is not None:
+            if len(by_identity) == 1:
+                return next(iter(by_identity.values()))[0]
+            if cbs_rank is not None:
+                scored = [
+                    (abs(statistics.mean(ranks) - cbs_rank), name)
+                    for name, ranks in by_identity.values()
+                    if ranks
+                ]
+                if scored:
+                    return min(scored, key=lambda item: item[0])[1]
+            return None
+        flat_pool = {
+            name: abbreviated_key
+            for abbreviated_key, identities in by_abbreviation.items()
+            for name, _ranks in identities.values()
+        }
+        if not flat_pool:
+            return None
+        choice = process.extractOne(
+            normalized, flat_pool, scorer=fuzz.ratio, score_cutoff=fuzzy_floor
+        )
+        return choice[2] if choice is not None else None
+
+    rows = cbs_df.select("position", "player_name", "rank").iter_rows(named=True)
+    resolved = [resolve_one(row["position"], row["player_name"], row["rank"]) for row in rows]
+
+    unresolved = [
+        original
+        for original, full_name in zip(cbs_df["player_name"].to_list(), resolved, strict=True)
+        if full_name is None
+    ]
+    if unresolved:
+        logger.warning(
+            "%d CBS manual-ranking row(s) could not be resolved to a real player name, "
+            "left abbreviated: %s",
+            len(unresolved),
+            unresolved,
+        )
+
+    final_names = [
+        full_name if full_name is not None else original
+        for original, full_name in zip(cbs_df["player_name"].to_list(), resolved, strict=True)
+    ]
+    return cbs_df.with_columns(pl.Series("player_name", final_names))
+
+
+def _fetch_manual_rankings_sources() -> list[pl.DataFrame]:
+    """Same graceful per-source degradation as `_fetch_point_sources` --
+    a missing or malformed manual-ranking file (not yet uploaded, or
+    uploaded with an unexpected layout) must not sink the whole "no model"
+    board.
+    """
+    sources = []
+    for source_name, (fetch, normalize) in manual_rankings.MANUAL_RANKING_FETCHERS.items():
+        try:
+            df = normalize(fetch())
+        except Exception as exc:
+            logger.warning("skipping manual ranking source %r: %s", source_name, exc)
+            continue
+        if df.height == 0:
+            logger.warning("skipping manual ranking source %r: returned 0 rows", source_name)
+            continue
+        sources.append(df)
+    return sources
+
+
 def build_source_rankings(
     league: LeagueConfig,
     settings: Settings,
@@ -462,35 +616,41 @@ def build_source_rankings(
     season: int,
     offline: bool | None = None,
 ) -> pl.DataFrame:
-    """Assemble the "no model" board: each source's own positional rank
-    side by side, plus avg/median/sd across sources (see
-    `aggregate.aggregate_source_ranks`'s own docstring for what "no model"
-    means here -- a point-projection source still needs league scoring
-    applied to turn its stat line into a rank at all, but there's no VOR,
-    no tiers, no ADP, unlike `build_draft_board`).
+    """Assemble the "no model" board: each source's own real, published
+    overall rank side by side, plus avg/median/sd across sources (see
+    `aggregate.aggregate_source_ranks`'s own docstring). Sourced entirely
+    from `ingest.manual_rankings` -- manually-exported cheat sheets the
+    project owner downloaded and dropped in `rankings/` at the repo root,
+    each carrying a genuine overall rank, unlike this app's own live
+    scrapers (`ingest.rankings`, used by `build_draft_board` instead,
+    fetch per-stat projections for four of these seven sources, not a
+    published rank of any kind). No VOR, no tiers, no ADP. `season`/
+    `offline` are unused today (the manual files aren't season- or
+    network-parameterised) -- kept for call-site symmetry with
+    `build_draft_board` and in case a future upload becomes season-specific.
     """
-    scoring_settings = league.league_cache["scoring_settings"]
-
-    point_sources = _fetch_point_sources(season, offline=offline, settings=settings)
-    if not point_sources:
-        raise NoRankingsSourcesAvailableError(
-            "Every per-stat rankings source failed or returned no data -- nothing to build "
-            "source rankings from. Check network reachability and each source's own status."
-        )
-    ranked_point_sources = [
-        aggregate.rank_within_position(aggregate.apply_league_scoring(df, scoring_settings))
-        for df in point_sources
-    ]
-    rank_sources = _fetch_rank_sources(season, offline=offline, settings=settings)
-
-    all_sources = [aggregate.add_join_key(df) for df in (*ranked_point_sources, *rank_sources)]
-    ranks = aggregate.aggregate_source_ranks(all_sources)
-
     crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
     sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
     players_dim = mapping.build_players_dim(
         crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
     )
+
+    manual_sources = _fetch_manual_rankings_sources()
+    if not manual_sources:
+        raise NoRankingsSourcesAvailableError(
+            f"No manual ranking files found in {manual_rankings.MANUAL_RANKINGS_DIR} -- nothing "
+            "to build source rankings from. Upload the cheat-sheet exports there (see "
+            "ingest/manual_rankings.py for the expected filenames)."
+        )
+    non_cbs_sources = [df for df in manual_sources if df["source"][0] != "cbs"]
+    manual_sources = [
+        _resolve_cbs_manual_names(df, non_cbs_sources) if df["source"][0] == "cbs" else df
+        for df in manual_sources
+    ]
+
+    all_sources = [aggregate.add_join_key(df) for df in manual_sources]
+    ranks = aggregate.aggregate_source_ranks(all_sources)
+
     with_team = ranks.join(_team_by_join_key(players_dim), on="join_key", how="left")
 
     eligible_positions = {

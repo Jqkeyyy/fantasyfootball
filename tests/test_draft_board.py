@@ -111,6 +111,129 @@ def test_per_source_rank_columns_excludes_rank_sd() -> None:
     assert result == ["rank_cbs", "rank_espn"]
 
 
+# --- _resolve_cbs_manual_names ---------------------------------------------------
+
+
+def _other_source(rows: list[tuple[str, str, float]]) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player_name": [name for name, _, _ in rows],
+            "position": [position for _, position, _ in rows],
+            "rank": [rank for _, _, rank in rows],
+        },
+        schema={"player_name": pl.Utf8, "position": pl.Utf8, "rank": pl.Float64},
+    )
+
+
+def _cbs_row(position: str, player_name: str, rank: float) -> pl.DataFrame:
+    return pl.DataFrame({"position": [position], "player_name": [player_name], "rank": [rank]})
+
+
+def test_resolve_cbs_manual_names_matches_the_abbreviated_form_exactly() -> None:
+    other_sources = [_other_source([("Jahmyr Gibbs", "RB", 1.0)])]
+    cbs_df = _cbs_row("RB", "J. Gibbs", 1.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Jahmyr Gibbs"]
+
+
+def test_resolve_cbs_manual_names_strips_a_suffix_via_normalize_name() -> None:
+    other_sources = [_other_source([("Luther Burden III", "WR", 47.0)])]
+    cbs_df = _cbs_row("WR", "L. Burden III", 47.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Luther Burden III"]
+
+
+def test_resolve_cbs_manual_names_is_scoped_to_the_same_position() -> None:
+    """A same-initial player at a different position must never match --
+    same precedent as every other cross-source join in this codebase."""
+    other_sources = [_other_source([("Ja'Marr Chase", "WR", 3.0)])]
+    cbs_df = _cbs_row("RB", "J. Chase", 3.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["J. Chase"]  # left abbreviated, not misassigned
+
+
+def test_resolve_cbs_manual_names_leaves_an_unresolvable_row_abbreviated_not_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """CLAUDE.md rule 4: never silently drop a row in a join."""
+    other_sources: list[pl.DataFrame] = [_other_source([])]
+    cbs_df = _cbs_row("RB", "Z. Mystery", 150.0)
+
+    with caplog.at_level("WARNING"):
+        result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result.height == 1
+    assert result["player_name"].to_list() == ["Z. Mystery"]
+    assert any("could not be resolved" in record.message for record in caplog.records)
+
+
+def test_resolve_cbs_manual_names_falls_back_to_fuzzy_matching_a_near_miss() -> None:
+    other_sources = [_other_source([("Amon-Ra St. Brown", "WR", 6.0)])]
+    # A one-character-off abbreviation of "Amon-Ra St. Brown" -- close
+    # enough for the fuzzy fallback, not an exact match.
+    cbs_df = _cbs_row("WR", "A. St Brown", 6.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Amon-Ra St. Brown"]
+
+
+def test_resolve_cbs_manual_names_resolves_a_genuine_ambiguity_by_rank_proximity() -> None:
+    """Real bug, confirmed live: two different real RBs -- "Bijan Robinson"
+    (a top-5 overall pick) and "Brian Robinson Jr." (a late-round flex) --
+    both abbreviate to "B. Robinson". CBS's real "B. Robinson" row at
+    overall rank 2 is obviously about the player every other source *also*
+    has near rank 2, not the one near rank 90 -- resolved here by whichever
+    candidate's own average rank across the other sources is closer to
+    CBS's rank for this specific row, not guessed at or left ambiguous."""
+    other_sources = [
+        _other_source([("Bijan Robinson", "RB", 2.0), ("Brian Robinson Jr.", "RB", 91.0)])
+    ]
+    cbs_df = _cbs_row("RB", "B. Robinson", 2.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Bijan Robinson"]
+
+
+def test_resolve_cbs_manual_names_rank_proximity_goes_the_other_way_too() -> None:
+    """Same two real players as above, but this time CBS's own "B.
+    Robinson" row is deep (rank 88) -- proximity must correctly resolve to
+    the *other* candidate, proving this isn't just "always pick the star"."""
+    other_sources = [
+        _other_source([("Bijan Robinson", "RB", 2.0), ("Brian Robinson Jr.", "RB", 91.0)])
+    ]
+    cbs_df = _cbs_row("RB", "B. Robinson", 88.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Brian Robinson Jr."]
+
+
+def test_resolve_cbs_manual_names_does_not_treat_spelling_variants_as_ambiguous() -> None:
+    """Real bug in an earlier version of this fix: three different sources
+    spell the *same* real player three different ways ("Kenneth Walker
+    III"/"Kenneth Walker"/"Ken Walker III") -- these must collapse to one
+    identity (via the same join_key/alias-table logic add_join_key already
+    uses), not be flagged as three candidates and left unresolved."""
+    other_sources = [
+        _other_source([("Kenneth Walker III", "RB", 17.0)]),
+        _other_source([("Kenneth Walker", "RB", 15.0)]),
+        _other_source([("Ken Walker III", "RB", 16.0)]),
+    ]
+    cbs_df = _cbs_row("RB", "K. Walker III", 17.0)
+
+    result = board._resolve_cbs_manual_names(cbs_df, other_sources)
+
+    assert result["player_name"].to_list() == ["Kenneth Walker III"]
+
+
 # --- finalize_draft_board ----------------------------------------------------
 
 
