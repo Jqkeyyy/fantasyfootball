@@ -69,3 +69,30 @@ def test_build_team_environment_table_current_week_features_are_not_shifted() ->
     # internally lagged upstream (see add_opponent_pace), so it must not be
     # shifted a second time here.
     assert row["opponent_neutral_pace_ewm_8"] == pytest.approx(31.0)
+
+
+# --- add_team_environment_baselines (task 3) ----------------------------------------
+
+
+def _reshaped_table() -> pl.DataFrame:
+    base = team_environment.build_team_environment_table(_team_context_features())
+    return base
+
+
+def test_add_team_environment_baselines_adds_all_four_columns() -> None:
+    result = team_environment.add_team_environment_baselines(_reshaped_table())
+
+    assert "team_plays_league_mean" in result.columns
+    assert "team_plays_b2_ewm_4" in result.columns
+    assert "pass_rate_league_mean" in result.columns
+    assert "pass_rate_b2_ewm_4" in result.columns
+
+
+def test_add_team_environment_baselines_b2_never_leaks_the_target_week() -> None:
+    result = team_environment.add_team_environment_baselines(_reshaped_table())
+
+    row = result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).row(0, named=True)
+    # week 2's b2 baseline must be built only from week 1's real outcome (65),
+    # never week 2's own (70) -- with a single prior week, ewm_4 of one point
+    # equals that point exactly.
+    assert row["team_plays_b2_ewm_4"] == pytest.approx(65.0)

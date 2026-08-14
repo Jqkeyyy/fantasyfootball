@@ -52,67 +52,69 @@ def add_b2_ewm_4(player_week_features: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _positional_rolling_rate(
-    player_week_features: pl.DataFrame, target_column: str, output_column: str
+def pooled_rolling_mean(
+    df: pl.DataFrame, group_column: str, target_column: str, output_column: str
 ) -> pl.DataFrame:
-    """Shared machinery behind B0 and the availability base-rate baseline
-    (task 1.14): pooled-across-players, season-to-date-through-week-W-1
-    mean of `target_column`. A season's own week 1 has no current-season
-    trailing data, so it falls back to the *entire* prior season's own
-    mean (same fallback convention as `features.usage.prior_season`); the
-    very first tracked season's own week 1 has neither and stays
-    honestly null, same precedent as task 1.7's `proe` and task 1.8's
-    opponent adjustment for the identical reason.
+    """Shared machinery behind B0, the availability base-rate baseline
+    (task 1.14), and model v2 Stage 1's own league-mean baseline: pooled
+    (across every row sharing the same `group_column` value),
+    season-to-date-through-week-W-1 mean of `target_column`. A season's
+    own week 1 has no current-season trailing data, so it falls back to
+    the *entire* prior season's own mean (same fallback convention as
+    `features.usage.prior_season`); the very first tracked season's own
+    week 1 has neither and stays honestly null, same precedent as task
+    1.7's `proe` and task 1.8's opponent adjustment for the identical
+    reason.
     """
     by_week = (
-        player_week_features.group_by(["position", "season", "week"])
+        df.group_by([group_column, "season", "week"])
         .agg(
             pl.col(target_column).cast(pl.Float64).sum().alias("_week_sum"),
             pl.len().alias("_week_n"),
         )
-        .sort(["position", "season", "week"])
+        .sort([group_column, "season", "week"])
     )
-    prior_sum = pl.col("_week_sum").cum_sum().shift(1).over(["position", "season"])
-    prior_n = pl.col("_week_n").cum_sum().shift(1).over(["position", "season"])
+    prior_sum = pl.col("_week_sum").cum_sum().shift(1).over([group_column, "season"])
+    prior_n = pl.col("_week_n").cum_sum().shift(1).over([group_column, "season"])
     with_current_season_mean = by_week.with_columns(
         (prior_sum / prior_n).alias("_current_season_mean")
     )
 
     prior_season_mean = (
-        player_week_features.group_by(["position", "season"])
+        df.group_by([group_column, "season"])
         .agg(pl.col(target_column).cast(pl.Float64).mean().alias("_prior_season_mean"))
         .with_columns((pl.col("season") + 1).alias("season"))
     )
 
     combined = (
-        with_current_season_mean.join(prior_season_mean, on=["position", "season"], how="left")
+        with_current_season_mean.join(prior_season_mean, on=[group_column, "season"], how="left")
         .with_columns(
             pl.coalesce(["_current_season_mean", "_prior_season_mean"]).alias(output_column)
         )
-        .select("position", "season", "week", output_column)
+        .select(group_column, "season", "week", output_column)
     )
 
-    return player_week_features.join(combined, on=["position", "season", "week"], how="left")
+    return df.join(combined, on=[group_column, "season", "week"], how="left")
 
 
 def add_b0_positional_mean(player_week_features: pl.DataFrame) -> pl.DataFrame:
     """B0: "positional weekly mean" -- SPEC calls this the "sanity floor."
     Pooled across *every* player at a position (not per-player, the
-    distinguishing feature from B1/B2) -- see `_positional_rolling_rate`
-    for the shared season-to-date/prior-season-fallback mechanics.
+    distinguishing feature from B1/B2) -- see `pooled_rolling_mean` for
+    the shared season-to-date/prior-season-fallback mechanics.
     """
-    return _positional_rolling_rate(player_week_features, "target", "b0_positional_mean")
+    return pooled_rolling_mean(player_week_features, "position", "target", "b0_positional_mean")
 
 
 def add_availability_base_rate(player_week_features: pl.DataFrame) -> pl.DataFrame:
     """The availability model's own comparison baseline (SPEC §11.2/task
     1.14's own acceptance bar: "Brier score beats a positional base-rate
-    predictor") -- exactly B0's shape (`_positional_rolling_rate`),
+    predictor") -- exactly B0's shape (`pooled_rolling_mean`),
     applied to `availability_flag` instead of `target`: "what fraction of
     this position's players were active, on average, through last week."
     """
-    return _positional_rolling_rate(
-        player_week_features, "availability_flag", "availability_base_rate"
+    return pooled_rolling_mean(
+        player_week_features, "position", "availability_flag", "availability_base_rate"
     )
 
 
@@ -156,4 +158,5 @@ __all__ = [
     "add_b1_season_to_date_mean",
     "add_b2_ewm_4",
     "add_b3_fp_weekly_consensus",
+    "pooled_rolling_mean",
 ]

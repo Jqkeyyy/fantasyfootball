@@ -228,3 +228,23 @@ def test_add_b3_does_not_cross_match_different_positions() -> None:
     result = baselines.add_b3_fp_weekly_consensus(fp_weekly, players_dim)
 
     assert result.height == 0
+
+
+# --- pooled_rolling_mean (generalized, replaces _positional_rolling_rate) ---------
+
+
+def test_pooled_rolling_mean_works_with_a_different_group_column() -> None:
+    df = pl.DataFrame(
+        {
+            "position": ["TEAM_ENV", "TEAM_ENV", "TEAM_ENV", "TEAM_ENV"],
+            "season": [2025, 2025, 2025, 2025],
+            "week": [1, 1, 2, 2],
+            "target": [60.0, 70.0, 65.0, 75.0],
+        }
+    )
+
+    result = baselines.pooled_rolling_mean(df, "position", "target", "pooled_mean")
+
+    week2 = result.filter(pl.col("week") == 2)
+    # week 2's pooled mean is week 1's pooled average across both rows: (60+70)/2 = 65
+    assert week2["pooled_mean"].to_list() == pytest.approx([65.0, 65.0])
