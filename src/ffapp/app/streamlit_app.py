@@ -35,13 +35,16 @@ from ffapp.app.draft_board_page import (
     ROW_CAP_THRESHOLD,
     DraftBoardNotBuiltError,
     cap_rows,
+    consensus_rankings,
     filter_board,
     load_board,
+    single_source_rankings,
+    source_rank_columns,
     style_tier_breaks,
 )
 from ffapp.config import load_primary_league, load_settings
 from ffapp.draft import live
-from ffapp.draft.board import draft_board_csv_path
+from ffapp.draft.board import draft_board_csv_path, source_rankings_csv_path
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ingest import sleeper
 from ffapp.league_format import parse_league_format
@@ -65,6 +68,7 @@ def _load_board_cached(csv_path_str: str, mtime: float) -> pl.DataFrame:
 settings = load_settings()
 league = load_primary_league()
 csv_path = draft_board_csv_path(settings, season=league.season)
+source_rankings_path = source_rankings_csv_path(settings, season=league.season)
 
 st.title("Draft Board")
 st.caption(f"{league.display_name} -- {league.season}")
@@ -79,7 +83,13 @@ except DraftBoardNotBuiltError as exc:
     st.error(str(exc))
     st.stop()
 
-board_tab, live_tab = st.tabs(["Draft Board", "Live Draft"])
+source_rankings = None
+if source_rankings_path.exists():
+    source_rankings = _load_board_cached(
+        str(source_rankings_path), source_rankings_path.stat().st_mtime
+    )
+
+board_tab, pure_rankings_tab, live_tab = st.tabs(["Draft Board", "Pure Rankings", "Live Draft"])
 
 with board_tab:
     with st.sidebar:
@@ -114,6 +124,33 @@ with board_tab:
         as_of = board["as_of_utc"][0]
         commit = board["git_commit"][0]
         st.caption(f"Board generated {as_of}" + (f" at commit `{commit}`" if commit else ""))
+
+with pure_rankings_tab:
+    if source_rankings is None:
+        st.error(
+            f"No source rankings found at `{source_rankings_path}`. "
+            "Run `ffapp draft board` to build one (it writes both files)."
+        )
+    else:
+        st.caption(
+            "No model, no VOR -- each source's own positional rank (RB1, RB2, ...), "
+            "and a plain average/median across sources. Uses the same Position filter "
+            "as the Draft Board tab."
+        )
+        position_filtered = filter_board(source_rankings, positions=selected_positions)
+        sources = source_rank_columns(source_rankings)
+        consensus_subtab, *source_subtabs = st.tabs(["Consensus", *sources])
+
+        with consensus_subtab:
+            consensus_display = cap_rows(consensus_rankings(position_filtered))
+            st.caption(f"{consensus_display.height} players -- sorted by average rank.")
+            st.dataframe(consensus_display, use_container_width=True, height=700)
+
+        for source, subtab in zip(sources, source_subtabs, strict=True):
+            with subtab:
+                source_display = cap_rows(single_source_rankings(position_filtered, source))
+                st.caption(f"{source_display.height} players -- sorted by {source}'s own rank.")
+                st.dataframe(source_display, use_container_width=True, height=700)
 
 with live_tab:
     st.caption(

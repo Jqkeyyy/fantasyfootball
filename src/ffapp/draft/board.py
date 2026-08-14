@@ -89,6 +89,15 @@ def draft_board_csv_path(settings: Settings, *, season: int) -> Path:
     return settings.data_root / "outputs" / f"draft_board_{season}.csv"
 
 
+def source_rankings_csv_path(settings: Settings, *, season: int) -> Path:
+    """`data/outputs/source_rankings_<season>.csv` -- the "no model" board:
+    each source's own positional rank side by side, no VOR/league-scoring
+    valuation. Written by the same `ffapp draft board` command as the main
+    board, read by the Streamlit page's per-source tabs.
+    """
+    return settings.data_root / "outputs" / f"source_rankings_{season}.csv"
+
+
 # Sources with real per-stat projections (rescaled via league scoring before
 # aggregating, SPEC §9.2). Ranks-only sources (FantasyPros, FootballGuys,
 # DraftSharks) are handled separately below via _RANK_SOURCE_FETCHERS --
@@ -422,13 +431,82 @@ def build_draft_board(
     )
 
 
+def _per_source_rank_columns(df: pl.DataFrame) -> list[str]:
+    """Every `rank_<source>` column in `df`, sorted. `rank_sd` is the
+    cross-source dispersion column `aggregate.aggregate_source_ranks`
+    itself adds, not a source -- excluded despite the prefix match (a real
+    bug caught live: selecting it both explicitly and via this list raised
+    a polars DuplicateError).
+    """
+    return sorted(col for col in df.columns if col.startswith("rank_") and col != "rank_sd")
+
+
+def build_source_rankings(
+    league: LeagueConfig,
+    settings: Settings,
+    *,
+    season: int,
+    offline: bool | None = None,
+) -> pl.DataFrame:
+    """Assemble the "no model" board: each source's own positional rank
+    side by side, plus avg/median/sd across sources (see
+    `aggregate.aggregate_source_ranks`'s own docstring for what "no model"
+    means here -- a point-projection source still needs league scoring
+    applied to turn its stat line into a rank at all, but there's no VOR,
+    no tiers, no ADP, unlike `build_draft_board`).
+    """
+    scoring_settings = league.league_cache["scoring_settings"]
+
+    point_sources = _fetch_point_sources(season, offline=offline, settings=settings)
+    if not point_sources:
+        raise NoRankingsSourcesAvailableError(
+            "Every per-stat rankings source failed or returned no data -- nothing to build "
+            "source rankings from. Check network reachability and each source's own status."
+        )
+    ranked_point_sources = [
+        aggregate.rank_within_position(aggregate.apply_league_scoring(df, scoring_settings))
+        for df in point_sources
+    ]
+    rank_sources = _fetch_rank_sources(season, offline=offline, settings=settings)
+
+    all_sources = [aggregate.add_join_key(df) for df in (*ranked_point_sources, *rank_sources)]
+    ranks = aggregate.aggregate_source_ranks(all_sources)
+
+    crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
+    sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
+    players_dim = mapping.build_players_dim(
+        crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
+    )
+    with_team = ranks.join(_team_by_join_key(players_dim), on="join_key", how="left")
+
+    eligible_positions = {
+        _POSITION_ALIASES.get(position, position)
+        for position in mapping.league_relevant_positions(league)
+    }
+    scoped = with_team.filter(pl.col("position").is_in(list(eligible_positions)))
+
+    rank_columns = _per_source_rank_columns(scoped)
+    return scoped.select(
+        pl.col("player_name").alias("player"),
+        "position",
+        "team",
+        "avg_rank",
+        "median_rank",
+        "rank_sd",
+        "n_sources",
+        *rank_columns,
+    ).sort("avg_rank")
+
+
 __all__ = [
     "BOARD_COLUMNS",
     "NoRankingsSourcesAvailableError",
     "NotEnoughPicksError",
     "PickContext",
     "build_draft_board",
+    "build_source_rankings",
     "draft_board_csv_path",
     "finalize_draft_board",
     "resolve_pick_context",
+    "source_rankings_csv_path",
 ]

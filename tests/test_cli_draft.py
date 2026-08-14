@@ -50,6 +50,20 @@ _BOARD = pl.DataFrame(
 )
 
 
+_SOURCE_RANKINGS = pl.DataFrame(
+    {
+        "player": ["Elite RB"],
+        "position": ["RB"],
+        "team": ["DET"],
+        "avg_rank": [1.0],
+        "median_rank": [1.0],
+        "rank_sd": [0.0],
+        "n_sources": [4],
+        "rank_espn": [1.0],
+    }
+)
+
+
 @pytest.fixture
 def fixture_settings(tmp_path: Path) -> Settings:
     return Settings(
@@ -74,6 +88,9 @@ def test_draft_board_writes_csv_and_reports_row_count(
 ) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
     monkeypatch.setattr(draft_board, "build_draft_board", lambda league, settings, **kwargs: _BOARD)
+    monkeypatch.setattr(
+        draft_board, "build_source_rankings", lambda league, settings, **kwargs: _SOURCE_RANKINGS
+    )
 
     result = runner.invoke(cli.app, ["draft", "board"])
 
@@ -83,6 +100,9 @@ def test_draft_board_writes_csv_and_reports_row_count(
     assert output_path.exists()
     written = pl.read_csv(output_path)
     assert written["player"].to_list() == ["Elite RB"]
+    source_rankings_path = fixture_settings.data_root / "outputs" / "source_rankings_2026.csv"
+    assert source_rankings_path.exists()
+    assert pl.read_csv(source_rankings_path)["player"].to_list() == ["Elite RB"]
 
 
 def test_draft_board_defaults_season_to_the_leagues_own_season(
@@ -95,9 +115,13 @@ def test_draft_board_defaults_season_to_the_leagues_own_season(
         "build_draft_board",
         lambda league, settings, **kwargs: seasons_seen.append(kwargs["season"]) or _BOARD,
     )
+    monkeypatch.setattr(
+        draft_board, "build_source_rankings", lambda league, settings, **kwargs: _SOURCE_RANKINGS
+    )
 
-    runner.invoke(cli.app, ["draft", "board"])
+    result = runner.invoke(cli.app, ["draft", "board"])
 
+    assert result.exit_code == 0
     assert seasons_seen == [2026]
 
 
@@ -106,11 +130,15 @@ def test_draft_board_season_override_is_respected(
 ) -> None:
     monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
     monkeypatch.setattr(draft_board, "build_draft_board", lambda league, settings, **kwargs: _BOARD)
+    monkeypatch.setattr(
+        draft_board, "build_source_rankings", lambda league, settings, **kwargs: _SOURCE_RANKINGS
+    )
 
     result = runner.invoke(cli.app, ["draft", "board", "--season", "2025"])
 
     assert result.exit_code == 0
     assert (fixture_settings.data_root / "outputs" / "draft_board_2025.csv").exists()
+    assert (fixture_settings.data_root / "outputs" / "source_rankings_2025.csv").exists()
 
 
 def test_draft_board_reports_no_rankings_sources_error(

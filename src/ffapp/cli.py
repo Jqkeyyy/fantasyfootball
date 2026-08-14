@@ -258,7 +258,9 @@ def draft_board_command(
 ) -> None:
     """Assemble the draft board CSV (SPEC.md §9.7): every projected player,
     ranked by VOR, with tiers, ADP, survival probability, and opportunity
-    cost, written to data/outputs/draft_board_<season>.csv.
+    cost, written to data/outputs/draft_board_<season>.csv. Also writes the
+    "no model" source-rankings CSV alongside it (each source's own
+    positional rank, no VOR) to data/outputs/source_rankings_<season>.csv.
     """
     settings = load_settings()
     league_config = load_league(league) if league is not None else load_primary_league()
@@ -266,6 +268,9 @@ def draft_board_command(
 
     try:
         result = draft_board.build_draft_board(
+            league_config, settings, season=resolved_season, offline=offline
+        )
+        source_ranks = draft_board.build_source_rankings(
             league_config, settings, season=resolved_season, offline=offline
         )
     except (
@@ -279,6 +284,10 @@ def draft_board_command(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_csv(output_path)
     typer.echo(f"Wrote {result.height} players to {output_path}")
+
+    source_rankings_path = draft_board.source_rankings_csv_path(settings, season=resolved_season)
+    source_ranks.write_csv(source_rankings_path)
+    typer.echo(f"Wrote {source_ranks.height} players to {source_rankings_path}")
 
 
 @draft_app.command("export")

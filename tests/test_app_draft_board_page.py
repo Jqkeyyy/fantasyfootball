@@ -192,3 +192,56 @@ def test_style_tier_breaks_with_no_is_keeper_column_behaves_as_before() -> None:
     styler = draft_board_page.style_tier_breaks(_board())
 
     assert list(styler.data["player"]) == ["A", "B", "C", "D"]
+
+
+# --- source rankings ("no model" board) -----------------------------------------
+
+
+def _source_rankings() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player": ["Star RB", "Deep WR"],
+            "position": ["RB", "WR"],
+            "team": ["KC", "CIN"],
+            "avg_rank": [2.0, 30.0],
+            "median_rank": [2.0, 30.0],
+            "rank_sd": [0.5, 1.0],
+            "n_sources": [3, 2],
+            "rank_espn": [1.0, None],
+            "rank_fantasypros": [3.0, 29.0],
+        }
+    )
+
+
+def test_source_rank_columns_strips_the_rank_prefix_and_sorts() -> None:
+    result = draft_board_page.source_rank_columns(_source_rankings())
+
+    assert result == ["espn", "fantasypros"]
+
+
+def test_consensus_rankings_keeps_only_the_cross_source_columns() -> None:
+    result = draft_board_page.consensus_rankings(_source_rankings())
+
+    assert result.columns == [
+        "player",
+        "position",
+        "team",
+        "avg_rank",
+        "median_rank",
+        "rank_sd",
+        "n_sources",
+    ]
+    assert result["player"].to_list() == ["Star RB", "Deep WR"]
+
+
+def test_single_source_rankings_drops_players_that_source_does_not_cover() -> None:
+    result = draft_board_page.single_source_rankings(_source_rankings(), "espn")
+
+    assert result["player"].to_list() == ["Star RB"]  # Deep WR has no rank_espn
+    assert result.columns == ["player", "position", "team", "rank"]
+
+
+def test_single_source_rankings_sorts_by_that_sources_own_rank() -> None:
+    result = draft_board_page.single_source_rankings(_source_rankings(), "fantasypros")
+
+    assert result["player"].to_list() == ["Star RB", "Deep WR"]  # rank 3 before rank 29

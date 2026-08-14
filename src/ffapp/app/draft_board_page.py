@@ -143,13 +143,52 @@ def style_tier_breaks(df: pl.DataFrame, *, tier_column: str = "tier") -> Styler:
     return pandas_df.style.apply(_row_style, axis=1)
 
 
+def source_rank_columns(df: pl.DataFrame) -> list[str]:
+    """Every source this source-rankings table covers (`rank_<source>`
+    columns, stripped back down to just `<source>`), sorted alphabetically
+    -- for building one Streamlit tab per source. `rank_sd` is the
+    cross-source dispersion column, not a source, so it's excluded here.
+    """
+    return sorted(
+        col.removeprefix("rank_")
+        for col in df.columns
+        if col.startswith("rank_") and col != "rank_sd"
+    )
+
+
+def consensus_rankings(df: pl.DataFrame) -> pl.DataFrame:
+    """Player/position/team plus the cross-source consensus columns only --
+    the individual `rank_<source>` columns are each source's own tab
+    instead (`single_source_rankings`), not shown side by side here.
+    """
+    return df.select(
+        "player", "position", "team", "avg_rank", "median_rank", "rank_sd", "n_sources"
+    )
+
+
+def single_source_rankings(df: pl.DataFrame, source: str) -> pl.DataFrame:
+    """One source's own positional rank, sorted by that source's rank
+    ascending. Players that source doesn't cover are dropped -- a null
+    rank there means no opinion, not a real ranking to display.
+    """
+    column = f"rank_{source}"
+    return (
+        df.filter(pl.col(column).is_not_null())
+        .select("player", "position", "team", pl.col(column).alias("rank"))
+        .sort("rank")
+    )
+
+
 __all__ = [
     "DEFAULT_ROW_CAP",
     "ROW_CAP_THRESHOLD",
     "DraftBoardNotBuiltError",
     "cap_rows",
+    "consensus_rankings",
     "filter_board",
     "load_board",
+    "single_source_rankings",
+    "source_rank_columns",
     "style_tier_breaks",
     "tier_shade_groups",
 ]

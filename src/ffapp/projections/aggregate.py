@@ -239,21 +239,28 @@ def add_join_key(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def rank_within_position(df: pl.DataFrame) -> pl.DataFrame:
+    """Add an ordinal `rank` column (1 = best), ranking `points` descending
+    within each `position` -- for a point-projection source, which never
+    publishes a native rank of its own, this is the only way to express
+    that source's opinion as a rank in the same shape a ranks-only source
+    (FantasyPros, FootballGuys, DraftSharks) already carries natively.
+    """
+    return df.with_columns(
+        pl.col("points")
+        .rank(method="ordinal", descending=True)
+        .over("position")
+        .cast(pl.Int64)
+        .alias("rank")
+    )
+
+
 def build_reference_curve(point_sources: Sequence[pl.DataFrame]) -> pl.DataFrame:
     """SPEC §9.2: for each position, the median points-at-positional-rank
     across every point-providing source (each already scored via
     `apply_league_scoring`). Returns columns [position, rank, ref_points].
     """
-    ranked = [
-        df.with_columns(
-            pl.col("points")
-            .rank(method="ordinal", descending=True)
-            .over("position")
-            .cast(pl.Int64)
-            .alias("rank")
-        )
-        for df in point_sources
-    ]
+    ranked = [rank_within_position(df) for df in point_sources]
     combined = pl.concat(
         [df.select(["position", "rank", "points"]) for df in ranked], how="vertical"
     )
@@ -338,13 +345,76 @@ def aggregate_projections(
     )
 
 
+def aggregate_source_ranks(source_frames: Sequence[pl.DataFrame]) -> pl.DataFrame:
+    """The "no model" counterpart to `aggregate_projections`: per player,
+    each source's own positional rank side by side (`rank_<source>`), plus
+    `avg_rank`/`median_rank`/`rank_sd`/`n_sources` across whichever sources
+    actually covered that player. No league scoring, no VOR -- just each
+    source's own rank opinion, averaged.
+
+    Every frame here must already have `join_key` (`add_join_key`) and
+    `rank` (a ranks-only source's native rank, or a point source's own
+    `rank_within_position`) columns. Grouped by `join_key` alone, same
+    reasoning as `aggregate_projections`.
+
+    `rank` is cast to Float64 here, not trusted as-is -- a ranks-only
+    source's native rank is a real fractional consensus value (e.g.
+    FantasyPros' ecr), while `rank_within_position` returns Int64 (needed
+    to match `build_reference_curve`'s own join dtype, untouched here) --
+    concatenating the two as-is raises a polars SchemaError, confirmed live
+    running the real pipeline. Float64 loses nothing for either side.
+    """
+    combined = pl.concat(
+        [
+            df.select(
+                "join_key",
+                "player_name",
+                "position",
+                "source",
+                pl.col("rank").cast(pl.Float64),
+            )
+            for df in source_frames
+        ],
+        how="vertical",
+    ).filter(pl.col("rank").is_not_null())
+
+    stats = (
+        combined.group_by("join_key")
+        .agg(
+            pl.col("player_name").first(),
+            pl.col("position").first(),
+            pl.col("rank").alias("_rank_list"),
+        )
+        .with_columns(
+            pl.col("_rank_list").list.len().alias("n_sources"),
+            pl.col("_rank_list")
+            .map_elements(statistics.mean, return_dtype=pl.Float64)
+            .alias("avg_rank"),
+            pl.col("_rank_list")
+            .map_elements(statistics.median, return_dtype=pl.Float64)
+            .alias("median_rank"),
+            pl.col("_rank_list")
+            .map_elements(_dispersion, return_dtype=pl.Float64)
+            .alias("rank_sd"),
+        )
+        .drop("_rank_list")
+    )
+
+    wide = combined.pivot(on="source", index="join_key", values="rank", aggregate_function="first")
+    wide = wide.rename({col: f"rank_{col}" for col in wide.columns if col != "join_key"})
+
+    return stats.join(wide, on="join_key").sort("avg_rank")
+
+
 __all__ = [
     "DST_CANONICAL_NAMES",
     "DST_TEAM_ABBREVIATIONS",
     "TRIM",
     "add_join_key",
     "aggregate_projections",
+    "aggregate_source_ranks",
     "apply_league_scoring",
     "build_reference_curve",
     "map_ranks_to_points",
+    "rank_within_position",
 ]

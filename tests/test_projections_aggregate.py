@@ -195,6 +195,130 @@ def test_add_join_key_recognises_the_adp_sources_defense_spelling() -> None:
     assert keyed["player_name"].to_list() == ["Houston Texans", "Houston Texans"]
 
 
+# --- rank_within_position -------------------------------------------------------
+
+
+def test_rank_within_position_ranks_points_descending_per_position() -> None:
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="RB1", position="RB", points=100.0),
+            _source_row(player_name="RB2", position="RB", points=150.0),
+            _source_row(player_name="WR1", position="WR", points=200.0),
+        ]
+    )
+
+    ranked = aggregate.rank_within_position(df)
+
+    by_name = {row["player_name"]: row["rank"] for row in ranked.to_dicts()}
+    assert by_name == {"RB1": 2, "RB2": 1, "WR1": 1}  # WR1 doesn't compete with the RBs
+
+
+# --- aggregate_source_ranks -------------------------------------------------------
+#
+# The "no model" counterpart to aggregate_projections: no league scoring, no
+# VOR, just each source's own positional rank averaged across sources.
+
+
+def test_aggregate_source_ranks_computes_avg_median_sd_and_per_source_columns() -> None:
+    sources = [
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [_source_row(source="espn", player_name="Star RB", position="RB", rank=1.0)]
+            )
+        ),
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [_source_row(source="cbs", player_name="Star RB", position="RB", rank=2.0)]
+            )
+        ),
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [_source_row(source="fantasypros", player_name="Star RB", position="RB", rank=3.0)]
+            )
+        ),
+    ]
+
+    result = aggregate.aggregate_source_ranks(sources)
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["n_sources"] == 3
+    assert row["avg_rank"] == pytest.approx(2.0)
+    assert row["median_rank"] == pytest.approx(2.0)
+    assert row["rank_sd"] == pytest.approx(0.8164965809)  # pstdev(1, 2, 3)
+    assert row["rank_espn"] == 1.0
+    assert row["rank_cbs"] == 2.0
+    assert row["rank_fantasypros"] == 3.0
+
+
+def test_aggregate_source_ranks_merges_a_player_a_source_spells_differently() -> None:
+    """Same join_key merging behavior as aggregate_projections -- a source
+    missing a player just leaves that source's rank column null, not a
+    second row."""
+    sources = [
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [_source_row(source="espn", player_name="James Cook", position="RB", rank=5.0)]
+            )
+        ),
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [_source_row(source="cbs", player_name="James Cook III", position="RB", rank=7.0)]
+            )
+        ),
+    ]
+
+    result = aggregate.aggregate_source_ranks(sources)
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["n_sources"] == 2
+    assert row["rank_espn"] == 5.0
+    assert row["rank_cbs"] == 7.0
+
+
+def test_aggregate_source_ranks_merges_int_and_float_rank_dtypes() -> None:
+    """Real bug: a point source's rank comes from `rank_within_position`
+    (Int64, to match build_reference_curve's own join), while a native
+    ranks-only source's rank is a real fractional Float64 (e.g.
+    FantasyPros' ecr) -- concatenating both as-is raised a polars
+    SchemaError, caught only by running the real pipeline end to end."""
+    point_source = aggregate.rank_within_position(
+        pl.DataFrame(
+            [_source_row(source="espn", player_name="Star RB", position="RB", points=100.0)]
+        )
+    )
+    rank_source = pl.DataFrame(
+        [_source_row(source="fantasypros", player_name="Star RB", position="RB", rank=12.3)]
+    )
+
+    sources = [aggregate.add_join_key(point_source), aggregate.add_join_key(rank_source)]
+
+    result = aggregate.aggregate_source_ranks(sources)
+
+    assert result.height == 1
+    row = result.row(0, named=True)
+    assert row["rank_espn"] == pytest.approx(1.0)
+    assert row["rank_fantasypros"] == pytest.approx(12.3)
+
+
+def test_aggregate_source_ranks_sorted_by_avg_rank_ascending() -> None:
+    sources = [
+        aggregate.add_join_key(
+            pl.DataFrame(
+                [
+                    _source_row(source="espn", player_name="Worse RB", position="RB", rank=20.0),
+                    _source_row(source="espn", player_name="Better RB", position="RB", rank=1.0),
+                ]
+            )
+        ),
+    ]
+
+    result = aggregate.aggregate_source_ranks(sources)
+
+    assert result["player_name"].to_list() == ["Better RB", "Worse RB"]
+
+
 # --- build_reference_curve / map_ranks_to_points -------------------------------
 
 

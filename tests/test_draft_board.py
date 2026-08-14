@@ -25,6 +25,20 @@ def test_draft_board_csv_path_matches_spec_9_7() -> None:
     assert result == Path("data") / "outputs" / "draft_board_2026.csv"
 
 
+def test_source_rankings_csv_path_is_alongside_the_main_board() -> None:
+    settings = Settings(
+        data_root=Path("data"),
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=Path("data/raw"), offline_default=True, staleness_hours={}, warn_on_stale=True
+        ),
+    )
+
+    result = board.source_rankings_csv_path(settings, season=2026)
+
+    assert result == Path("data") / "outputs" / "source_rankings_2026.csv"
+
+
 # --- _team_by_join_key ---------------------------------------------------------
 
 
@@ -63,6 +77,29 @@ def test_team_by_join_key_prefers_the_row_with_a_real_sleeper_id() -> None:
 
     assert result.height == 1
     assert result.row(0, named=True)["team"] == "ARI"
+
+
+# --- _per_source_rank_columns ---------------------------------------------------
+
+
+def test_per_source_rank_columns_excludes_rank_sd() -> None:
+    """Real bug: rank_sd (cross-source dispersion) matches the `rank_`
+    prefix like a real per-source column would, but selecting it both
+    explicitly and via this list raised a polars DuplicateError, caught
+    only by running the real pipeline end to end."""
+    df = pl.DataFrame(
+        {
+            "join_key": ["a|RB"],
+            "avg_rank": [2.0],
+            "rank_sd": [0.5],
+            "rank_espn": [1.0],
+            "rank_cbs": [3.0],
+        }
+    )
+
+    result = board._per_source_rank_columns(df)
+
+    assert result == ["rank_cbs", "rank_espn"]
 
 
 # --- finalize_draft_board ----------------------------------------------------
