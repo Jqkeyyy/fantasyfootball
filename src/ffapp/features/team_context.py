@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
+from ffapp.features.opponent import team_opponent
 from ffapp.features.registry import FeatureSpec, register
 
 SOURCE_TABLE = "team_week_context"
@@ -140,6 +141,29 @@ def ol_continuity_raw(snap_counts: pl.DataFrame) -> pl.DataFrame:
     ).select("season", "week", "team", "ol_continuity_raw")
 
 
+def add_opponent_pace(
+    team_context_with_windows: pl.DataFrame, schedule: pl.DataFrame
+) -> pl.DataFrame:
+    """`opponent_neutral_pace_ewm_8`: the opponent's own `neutral_pace_ewm_8`
+    for this same (season, week), looked up via `team_opponent` and joined
+    onto this team's row. Must run after `neutral_pace_ewm_8` itself is
+    computed (self-referential lookup on the same table). A bye week (no
+    scheduled opponent) is honestly null, same convention as every other
+    unresolvable trailing value in this project."""
+    opponent_pace = team_context_with_windows.select(
+        pl.col("team").alias("opponent"),
+        "season",
+        "week",
+        pl.col("neutral_pace_ewm_8").alias("opponent_neutral_pace_ewm_8"),
+    )
+    with_opponent = team_context_with_windows.join(
+        team_opponent(schedule), on=["team", "season", "week"], how="left"
+    )
+    return with_opponent.join(opponent_pace, on=["opponent", "season", "week"], how="left").drop(
+        "opponent"
+    )
+
+
 @dataclass(frozen=True)
 class _WindowedFeature:
     raw_column: str
@@ -167,6 +191,7 @@ _WINDOWED_FEATURES = [
 
 def build_team_context_features(
     team_week_context: pl.DataFrame,
+    schedule: pl.DataFrame,
     snap_counts: pl.DataFrame,
     injuries: pl.DataFrame,
     usage_features: pl.DataFrame,
@@ -199,6 +224,20 @@ def build_team_context_features(
                 ),
                 registry=registry,
             )
+
+    result = add_opponent_pace(result, schedule)
+    register(
+        FeatureSpec(
+            name="opponent_neutral_pace_ewm_8",
+            description="the opponent's own trailing neutral-pace, sec/play",
+            positions=[],
+            window="ewm_8",
+            source_table=SOURCE_TABLE,
+            available_at_inference=True,
+            lag_weeks=1,
+        ),
+        registry=registry,
+    )
 
     # implied_team_total/spread: "current week", no smoothing -- straight
     # passthroughs of team_week_context's own already-current-week values.
@@ -302,6 +341,7 @@ def add_vacated_shares(
 __all__ = [
     "RULED_OUT_STATUS",
     "SOURCE_TABLE",
+    "add_opponent_pace",
     "add_vacated_shares",
     "build_team_context_features",
     "ewm",

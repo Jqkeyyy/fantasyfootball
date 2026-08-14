@@ -2,6 +2,7 @@ import polars as pl
 import pytest
 
 from ffapp.features import team_context
+from ffapp.features.registry import FeatureSpec
 
 # --- generic windowing primitives (team-grouped) -------------------------------------
 
@@ -21,6 +22,49 @@ def test_ewm_resets_at_a_season_boundary() -> None:
     rows = result.sort(["season", "week"]).to_dicts()
     assert rows[0]["x_ewm_3"] == pytest.approx(0.1)
     assert rows[3]["x_ewm_3"] == pytest.approx(0.9)  # new season: reset
+
+
+# --- add_opponent_pace ------------------------------------------------------------------
+
+
+def test_add_opponent_pace_looks_up_the_real_opponents_own_pace() -> None:
+    team_context_with_windows = pl.DataFrame(
+        {
+            "team": ["KC", "BAL"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "neutral_pace_ewm_8": [28.0, 31.5],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2025],
+            "week": [1],
+            "home_team": ["KC"],
+            "away_team": ["BAL"],
+        }
+    )
+
+    result = team_context.add_opponent_pace(team_context_with_windows, schedule)
+
+    kc = result.filter(pl.col("team") == "KC").row(0, named=True)
+    bal = result.filter(pl.col("team") == "BAL").row(0, named=True)
+    assert kc["opponent_neutral_pace_ewm_8"] == pytest.approx(31.5)  # KC's opponent is BAL
+    assert bal["opponent_neutral_pace_ewm_8"] == pytest.approx(28.0)  # BAL's opponent is KC
+
+
+def test_add_opponent_pace_is_null_for_a_bye_week() -> None:
+    team_context_with_windows = pl.DataFrame(
+        {"team": ["KC"], "season": [2025], "week": [1], "neutral_pace_ewm_8": [28.0]}
+    )
+    schedule = pl.DataFrame(
+        {"season": [], "week": [], "home_team": [], "away_team": []},
+        schema={"season": pl.Int64, "week": pl.Int64, "home_team": pl.Utf8, "away_team": pl.Utf8},
+    )  # no games scheduled at all -- KC's week 1 is unresolvable, same as a real bye
+
+    result = team_context.add_opponent_pace(team_context_with_windows, schedule)
+
+    assert result["opponent_neutral_pace_ewm_8"].to_list() == [None]
 
 
 # --- _starting_ol_by_game --------------------------------------------------------------
@@ -256,6 +300,9 @@ def test_build_team_context_features_registers_every_feature() -> None:
             "spread": [-3.0],
         }
     )
+    schedule = pl.DataFrame(
+        schema={"season": pl.Int64, "week": pl.Int64, "home_team": pl.Utf8, "away_team": pl.Utf8}
+    )
     snap_counts = pl.DataFrame(
         [_snap_row(pfr_player_id=pid, position=pos) for pid, pos in [("c1", "C")]]
     )
@@ -264,7 +311,7 @@ def test_build_team_context_features_registers_every_feature() -> None:
 
     registry: dict[str, object] = {}
     team_context.build_team_context_features(
-        twc, snap_counts, injuries, usage_features, registry=registry
+        twc, schedule, snap_counts, injuries, usage_features, registry=registry
     )
 
     expected = {
@@ -301,6 +348,9 @@ def test_build_team_context_features_windows_plays_per_game() -> None:
             "spread": [-3.0, -3.0],
         }
     )
+    schedule = pl.DataFrame(
+        schema={"season": pl.Int64, "week": pl.Int64, "home_team": pl.Utf8, "away_team": pl.Utf8}
+    )
     snap_counts = pl.DataFrame(
         [_snap_row(pfr_player_id=pid, position=pos) for pid, pos in [("c1", "C")]]
     ).clear()
@@ -308,8 +358,69 @@ def test_build_team_context_features_windows_plays_per_game() -> None:
     usage_features = pl.DataFrame([_usage_features_row()]).clear()
 
     result = team_context.build_team_context_features(
-        twc, snap_counts, injuries, usage_features, registry={}
+        twc, schedule, snap_counts, injuries, usage_features, registry={}
     )
 
     week1 = result.filter(pl.col("week") == 1).row(0, named=True)
     assert week1["plays_per_game_ewm_5"] == pytest.approx(60.0)  # first week: equals its own value
+
+
+def test_build_team_context_features_registers_opponent_neutral_pace() -> None:
+    team_week_context = pl.DataFrame(
+        {
+            "team": ["KC", "BAL"],
+            "season": [2025, 2025],
+            "week": [1, 1],
+            "plays": [65, 60],
+            "pass_rate": [0.6, 0.55],
+            "neutral_pace_sec": [28.0, 31.5],
+            "proe": [0.02, -0.01],
+            "epa_per_play_off": [0.1, 0.05],
+            "success_rate_off": [0.45, 0.42],
+            "implied_total": [24.5, 20.0],
+            "spread": [-3.0, 3.0],
+        }
+    )
+    schedule = pl.DataFrame(
+        {"season": [2025], "week": [1], "home_team": ["KC"], "away_team": ["BAL"]}
+    )
+    snap_counts = pl.DataFrame(
+        schema={
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "team": pl.Utf8,
+            "pfr_player_id": pl.Utf8,
+            "position": pl.Utf8,
+            "offense_snaps": pl.Int64,
+        }
+    )
+    injuries = pl.DataFrame(
+        schema={
+            "player_id": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "report_status": pl.Utf8,
+        }
+    )
+    usage_features = pl.DataFrame(
+        schema={
+            "player_id": pl.Utf8,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "team": pl.Utf8,
+            "target_share_ewm_3": pl.Float64,
+            "carry_share_ewm_3": pl.Float64,
+        }
+    )
+    registry: dict[str, FeatureSpec] = {}
+
+    result = team_context.build_team_context_features(
+        team_week_context, schedule, snap_counts, injuries, usage_features, registry=registry
+    )
+
+    assert "opponent_neutral_pace_ewm_8" in result.columns
+    assert "opponent_neutral_pace_ewm_8" in registry
+    spec = registry["opponent_neutral_pace_ewm_8"]
+    assert spec.source_table == team_context.SOURCE_TABLE
+    assert spec.lag_weeks == 1
+    assert spec.available_at_inference is True

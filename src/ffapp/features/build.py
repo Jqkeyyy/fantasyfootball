@@ -253,7 +253,12 @@ def build_player_week_features(
     grid = _lag_shift_join(grid, usage_features, "player_id", usage_cols)
 
     team_context_features = team_context.build_team_context_features(
-        team_week_context, snap_counts, injuries, usage_features, registry=effective_registry
+        team_week_context,
+        schedule,
+        snap_counts,
+        injuries,
+        usage_features,
+        registry=effective_registry,
     )
     team_context_cols = _registered_feature_columns(effective_registry, team_context.SOURCE_TABLE)
     # team_context.CURRENT_WEEK_COLUMNS (Vegas line, vacated shares) are
