@@ -52,4 +52,7 @@ cache:
     odds: 12
     weather_forecast: 6
     nflverse_player_ids: 168
+    espn: 2
+    cbssports: 2
+    yahoo: 2
   warn_on_stale: true
