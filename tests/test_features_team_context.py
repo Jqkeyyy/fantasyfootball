@@ -27,7 +27,41 @@ def test_ewm_resets_at_a_season_boundary() -> None:
 # --- add_opponent_pace ------------------------------------------------------------------
 
 
-def test_add_opponent_pace_looks_up_the_real_opponents_own_pace() -> None:
+def test_add_opponent_pace_uses_the_opponents_own_lagged_pace_not_this_weeks() -> None:
+    """Regression test for a real leakage bug found in task review: team T
+    and its week-W opponent O play the same game, so O's own week-W
+    neutral_pace_ewm_8 already reflects that shared game. The opponent's
+    pace used must be their own value from *before* week W (their week
+    W-1), never their own week-W value."""
+    team_context_with_windows = pl.DataFrame(
+        {
+            "team": ["KC", "KC", "BAL", "DEN", "DEN"],
+            "season": [2025, 2025, 2025, 2025, 2025],
+            "week": [1, 2, 1, 1, 2],
+            "neutral_pace_ewm_8": [28.0, 27.0, 31.5, 29.0, 30.0],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2025, 2025],
+            "week": [1, 2],
+            "home_team": ["KC", "KC"],
+            "away_team": ["BAL", "DEN"],
+        }
+    )
+
+    result = team_context.add_opponent_pace(team_context_with_windows, schedule)
+
+    kc_week2 = result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).row(0, named=True)
+    # KC's week-2 opponent is DEN; must use DEN's own week-1 (lagged) value (29.0),
+    # never DEN's own week-2 value (30.0) -- that would be the same-game leak.
+    assert kc_week2["opponent_neutral_pace_ewm_8"] == pytest.approx(29.0)
+
+
+def test_add_opponent_pace_is_null_for_a_teams_first_tracked_week() -> None:
+    """KC's week-1 opponent (BAL) has no prior week to lag from -- honestly
+    null, same convention as every other first-tracked-week trailing value
+    in this project."""
     team_context_with_windows = pl.DataFrame(
         {
             "team": ["KC", "BAL"],
@@ -37,23 +71,20 @@ def test_add_opponent_pace_looks_up_the_real_opponents_own_pace() -> None:
         }
     )
     schedule = pl.DataFrame(
-        {
-            "season": [2025],
-            "week": [1],
-            "home_team": ["KC"],
-            "away_team": ["BAL"],
-        }
+        {"season": [2025], "week": [1], "home_team": ["KC"], "away_team": ["BAL"]}
     )
 
     result = team_context.add_opponent_pace(team_context_with_windows, schedule)
 
-    kc = result.filter(pl.col("team") == "KC").row(0, named=True)
-    bal = result.filter(pl.col("team") == "BAL").row(0, named=True)
-    assert kc["opponent_neutral_pace_ewm_8"] == pytest.approx(31.5)  # KC's opponent is BAL
-    assert bal["opponent_neutral_pace_ewm_8"] == pytest.approx(28.0)  # BAL's opponent is KC
+    kc_week1 = result.filter((pl.col("team") == "KC") & (pl.col("week") == 1)).row(0, named=True)
+    assert kc_week1["opponent_neutral_pace_ewm_8"] is None
 
 
 def test_add_opponent_pace_is_null_for_a_bye_week() -> None:
+    """Distinct from the first-tracked-week case above: here the opponent
+    resolution itself fails (no scheduled game at all for this team this
+    week), rather than resolving to a real opponent who simply has no
+    prior-week value to lag from."""
     team_context_with_windows = pl.DataFrame(
         {"team": ["KC"], "season": [2025], "week": [1], "neutral_pace_ewm_8": [28.0]}
     )

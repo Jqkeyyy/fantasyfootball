@@ -44,15 +44,20 @@ RULED_OUT_STATUS = "Out"
 # directly) versus trailing/windowed values (through-and-including their
 # own week, needing task 1.9's own one-week shift onto a target week).
 # Every OTHER feature this module registers is windowed (proe_ewm_5,
-# neutral_pace_ewm_8, ...) and needs the shift; these four don't, despite
+# neutral_pace_ewm_8, ...) and needs the shift; these five don't, despite
 # sharing the same `source_table` -- `features.build` must not lump them
 # in with the windowed ones, or it silently staples last week's Vegas
-# line and injury news onto this week's row.
+# line and injury news onto this week's row. `opponent_neutral_pace_ewm_8`
+# belongs here too: it's WHO this week's real opponent is joined to a
+# value that's already safely lagged internally (see `add_opponent_pace`)
+# -- running it through the generic downstream shift a second time would
+# carry forward the *wrong* week's opponent instead.
 CURRENT_WEEK_COLUMNS = (
     "implied_team_total",
     "spread",
     "teammate_vacated_target_share",
     "teammate_vacated_carry_share",
+    "opponent_neutral_pace_ewm_8",
 )
 
 # task 1.7 ol_continuity: the "starting 5" per team-game is the top
@@ -144,17 +149,26 @@ def ol_continuity_raw(snap_counts: pl.DataFrame) -> pl.DataFrame:
 def add_opponent_pace(
     team_context_with_windows: pl.DataFrame, schedule: pl.DataFrame
 ) -> pl.DataFrame:
-    """`opponent_neutral_pace_ewm_8`: the opponent's own `neutral_pace_ewm_8`
-    for this same (season, week), looked up via `team_opponent` and joined
-    onto this team's row. Must run after `neutral_pace_ewm_8` itself is
-    computed (self-referential lookup on the same table). A bye week (no
-    scheduled opponent) is honestly null, same convention as every other
-    unresolvable trailing value in this project."""
-    opponent_pace = team_context_with_windows.select(
+    """`opponent_neutral_pace_ewm_8`: this week's real opponent's own
+    trailing pace, safely lagged. Two distinct things must both be
+    correct: WHICH team is the opponent (resolved from week W's own real
+    schedule, via team_opponent) and WHAT value of theirs is used (their
+    own pace *through week W-1*, never week W's own -- team T and its
+    week-W opponent O play the same game, so O's own week-W
+    neutral_pace_ewm_8 already reflects that shared game and would leak
+    it onto T's row otherwise). Registered as a "current week" fact (see
+    CURRENT_WEEK_COLUMNS) -- the value is already safely lagged
+    internally, so it must NOT go through build.py's generic downstream
+    shift a second time (that would carry forward the *wrong* week's
+    opponent instead)."""
+    lagged_pace = team_context_with_windows.sort(["team", "season", "week"]).with_columns(
+        pl.col("neutral_pace_ewm_8").shift(1).over(["team", "season"]).alias("_own_pace_lagged")
+    )
+    opponent_pace = lagged_pace.select(
         pl.col("team").alias("opponent"),
         "season",
         "week",
-        pl.col("neutral_pace_ewm_8").alias("opponent_neutral_pace_ewm_8"),
+        pl.col("_own_pace_lagged").alias("opponent_neutral_pace_ewm_8"),
     )
     with_opponent = team_context_with_windows.join(
         team_opponent(schedule), on=["team", "season", "week"], how="left"
