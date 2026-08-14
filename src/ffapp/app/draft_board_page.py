@@ -59,6 +59,32 @@ def filter_board(
     return filtered
 
 
+ROW_CAP_THRESHOLD = 1000
+DEFAULT_ROW_CAP = 400
+
+
+def cap_rows(
+    df: pl.DataFrame,
+    *,
+    threshold: int = ROW_CAP_THRESHOLD,
+    cap: int = DEFAULT_ROW_CAP,
+    show_all: bool = False,
+) -> pl.DataFrame:
+    """Truncate to the top `cap` rows once `df` exceeds `threshold` --
+    styling a 1000+ row table is genuinely slow to paint in Streamlit's own
+    dataframe grid (confirmed live, task 0.16's own JOURNAL entry), and the
+    project owner never needs to draft that deep anyway. `show_all` is a
+    real UI toggle (a button/checkbox in the page itself) that bypasses the
+    cap entirely -- this function doesn't decide when that happens, only
+    what to do once it has. Assumes `df` is already sorted the way it
+    should be truncated (VOR descending, the board's own default order);
+    never re-sorts.
+    """
+    if show_all or df.height <= threshold:
+        return df
+    return df.head(cap)
+
+
 _TIER_SHADE_COLORS = ("#f4f6fa", "#ffffff")
 _KEEPER_HIGHLIGHT_COLOR = "#fff3cd"
 
@@ -118,7 +144,10 @@ def style_tier_breaks(df: pl.DataFrame, *, tier_column: str = "tier") -> Styler:
 
 
 __all__ = [
+    "DEFAULT_ROW_CAP",
+    "ROW_CAP_THRESHOLD",
     "DraftBoardNotBuiltError",
+    "cap_rows",
     "filter_board",
     "load_board",
     "style_tier_breaks",

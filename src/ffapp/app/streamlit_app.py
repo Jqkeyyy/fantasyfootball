@@ -31,7 +31,10 @@ import polars as pl
 import streamlit as st
 
 from ffapp.app.draft_board_page import (
+    DEFAULT_ROW_CAP,
+    ROW_CAP_THRESHOLD,
     DraftBoardNotBuiltError,
+    cap_rows,
     filter_board,
     load_board,
     style_tier_breaks,
@@ -88,8 +91,24 @@ with board_tab:
 
     filtered = filter_board(board, positions=selected_positions, tiers=selected_tiers)
 
-    st.caption(f"{filtered.height} of {board.height} players shown -- sorted by VOR descending.")
-    st.dataframe(style_tier_breaks(filtered), use_container_width=True, height=700)
+    show_all = False
+    if filtered.height > ROW_CAP_THRESHOLD:
+        with st.sidebar:
+            show_all = st.checkbox(
+                f"Show all {filtered.height} players (slow to render)", value=False
+            )
+    displayed = cap_rows(filtered, show_all=show_all)
+
+    cap_note = (
+        f' (capped at {DEFAULT_ROW_CAP} -- check "Show all" in the sidebar for the rest)'
+        if displayed.height < filtered.height
+        else ""
+    )
+    st.caption(
+        f"{displayed.height} of {filtered.height} players shown{cap_note} -- "
+        "sorted by VOR descending."
+    )
+    st.dataframe(style_tier_breaks(displayed), use_container_width=True, height=700)
 
     if board.height > 0:
         as_of = board["as_of_utc"][0]

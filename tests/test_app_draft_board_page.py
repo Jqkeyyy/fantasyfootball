@@ -72,6 +72,47 @@ def test_filter_board_with_empty_list_returns_everything_not_nothing() -> None:
     assert result.height == 4
 
 
+# --- cap_rows ----------------------------------------------------------------------
+
+
+def _sized_board(n: int) -> pl.DataFrame:
+    return pl.DataFrame({"player": [f"P{i}" for i in range(n)], "vor": list(range(n, 0, -1))})
+
+
+def test_cap_rows_leaves_a_board_at_or_under_the_threshold_untouched() -> None:
+    board = _sized_board(draft_board_page.ROW_CAP_THRESHOLD)
+
+    result = draft_board_page.cap_rows(board)
+
+    assert result.height == draft_board_page.ROW_CAP_THRESHOLD
+
+
+def test_cap_rows_truncates_to_the_default_cap_once_over_threshold() -> None:
+    board = _sized_board(draft_board_page.ROW_CAP_THRESHOLD + 1)
+
+    result = draft_board_page.cap_rows(board)
+
+    assert result.height == draft_board_page.DEFAULT_ROW_CAP
+    expected = board.head(draft_board_page.DEFAULT_ROW_CAP)["player"].to_list()
+    assert result["player"].to_list() == expected
+
+
+def test_cap_rows_show_all_bypasses_the_cap() -> None:
+    board = _sized_board(draft_board_page.ROW_CAP_THRESHOLD + 1)
+
+    result = draft_board_page.cap_rows(board, show_all=True)
+
+    assert result.height == board.height
+
+
+def test_cap_rows_respects_custom_threshold_and_cap() -> None:
+    board = _sized_board(10)
+
+    result = draft_board_page.cap_rows(board, threshold=5, cap=3)
+
+    assert result.height == 3
+
+
 # --- tier_shade_groups -----------------------------------------------------------
 
 
