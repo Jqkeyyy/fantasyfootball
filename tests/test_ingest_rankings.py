@@ -564,6 +564,225 @@ def test_normalize_fantasypros_excludes_idp_positions() -> None:
     assert df.height == 0
 
 
+# --- fetch_footballguys -------------------------------------------------------
+
+
+def test_fetch_footballguys_online_writes_raw_html_and_sidecar(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    monkeypatch.setattr(rankings, "_get_footballguys_html", lambda: "<html>fixture</html>")
+
+    path = rankings.fetch_footballguys(offline=False, settings=settings)
+
+    assert path.exists()
+    assert path.read_text(encoding="utf-8") == "<html>fixture</html>"
+    meta = json.loads(sidecar_path(path).read_text())
+    assert meta["source"] == "rankings"
+    assert meta["cache_key"] == "rankings_footballguys"
+
+
+def test_fetch_footballguys_offline_without_cache_raises_offline_cache_miss(
+    settings: Settings,
+) -> None:
+    with pytest.raises(OfflineCacheMiss) as exc_info:
+        rankings.fetch_footballguys(offline=True, settings=settings)
+
+    assert "rankings" in str(exc_info.value)
+    assert "footballguys" in str(exc_info.value)
+
+
+# --- normalize_footballguys ---------------------------------------------------
+
+
+def _footballguys_row(
+    *, rank: int, name: str, pos_class: str, pos_text: str, team: str | None
+) -> str:
+    team_span = f'<span class="team-abbr team-abbr-{team}"> {team}</span>' if team else ""
+    return f"""
+    <tr data-playerid="X{rank}" data-playername="{name}" data-rank="{rank}"
+        class="player-row  ">
+        <td class="rank">{rank}</td>
+        <td class="name player-col sticky-col">
+            <a href="#"><b>{name}</b></a>{team_span}
+        </td>
+        <td><span class="{pos_class}">{pos_text}</span></td>
+    </tr>
+    """
+
+
+def _footballguys_page(*rows: str) -> str:
+    return f"<html><body><table><tbody>{''.join(rows)}</tbody></table></body></html>"
+
+
+def test_normalize_footballguys_extracts_real_ranked_rows() -> None:
+    html_text = _footballguys_page(
+        _footballguys_row(
+            rank=1, name="Jahmyr Gibbs", pos_class="pos-RB", pos_text="RB1", team="DET"
+        ),
+    )
+
+    df = rankings.normalize_footballguys(html_text, season=2026)
+
+    assert df.height == 1
+    row = df.row(0, named=True)
+    assert row["player_name"] == "Jahmyr Gibbs"
+    assert row["position"] == "RB"
+    assert row["team"] == "DET"
+    assert row["season"] == 2026
+    assert row["rank"] == 1.0
+
+
+def test_normalize_footballguys_maps_pk_and_td_to_canonical_codes() -> None:
+    html_text = _footballguys_page(
+        _footballguys_row(
+            rank=1, name="Some Kicker", pos_class="pos-PK", pos_text="PK1", team="SF"
+        ),
+        _footballguys_row(
+            rank=2, name="Houston Texans", pos_class="pos-TD", pos_text="TD1", team="HOU"
+        ),
+    )
+
+    df = rankings.normalize_footballguys(html_text, season=2026)
+
+    positions = dict(zip(df["player_name"], df["position"], strict=True))
+    assert positions["Some Kicker"] == "K"
+    assert positions["Houston Texans"] == "DST"
+
+
+def test_normalize_footballguys_derives_per_position_rank_from_overall_order() -> None:
+    """`data-rank` on the real page is an overall rank across every
+    position -- `map_ranks_to_points` needs a per-position rank instead,
+    so this re-derives it from row order (see the module's own comment)."""
+    html_text = _footballguys_page(
+        _footballguys_row(rank=1, name="RB One", pos_class="pos-RB", pos_text="RB1", team="DET"),
+        _footballguys_row(rank=2, name="WR One", pos_class="pos-WR", pos_text="WR1", team="CIN"),
+        _footballguys_row(rank=3, name="RB Two", pos_class="pos-RB", pos_text="RB2", team="ATL"),
+    )
+
+    df = rankings.normalize_footballguys(html_text, season=2026)
+
+    ranks = dict(zip(df["player_name"], df["rank"], strict=True))
+    assert ranks["RB One"] == 1.0
+    assert ranks["RB Two"] == 2.0  # second RB seen, not overall rank 3
+    assert ranks["WR One"] == 1.0
+
+
+def test_normalize_footballguys_skips_a_row_with_no_recognised_position() -> None:
+    html_text = _footballguys_page(
+        _footballguys_row(
+            rank=1, name="Mystery Player", pos_class="pos-LB", pos_text="LB1", team="BUF"
+        ),
+    )
+
+    df = rankings.normalize_footballguys(html_text, season=2026)
+
+    assert df.height == 0
+
+
+# --- fetch_draftsharks ---------------------------------------------------------
+
+
+def test_fetch_draftsharks_online_writes_raw_html_per_position_and_sidecar(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    fixture_by_pos = {pos: f"<html>{pos}</html>" for pos in rankings.DRAFTSHARKS_POSITIONS}
+    monkeypatch.setattr(rankings, "_get_draftsharks_html", lambda pos: fixture_by_pos[pos])
+    monkeypatch.setattr(rankings.time, "sleep", lambda seconds: None)
+
+    path = rankings.fetch_draftsharks(offline=False, settings=settings)
+
+    assert path.exists()
+    assert json.loads(path.read_text()) == fixture_by_pos
+    meta = json.loads(sidecar_path(path).read_text())
+    assert meta["source"] == "rankings"
+    assert meta["cache_key"] == "rankings_draftsharks"
+
+
+def test_fetch_draftsharks_offline_without_cache_raises_offline_cache_miss(
+    settings: Settings,
+) -> None:
+    with pytest.raises(OfflineCacheMiss) as exc_info:
+        rankings.fetch_draftsharks(offline=True, settings=settings)
+
+    assert "rankings" in str(exc_info.value)
+    assert "draftsharks" in str(exc_info.value)
+
+
+def test_get_draftsharks_pages_sleeps_between_requests_but_not_before_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetched: list[str] = []
+    slept: list[float] = []
+    monkeypatch.setattr(rankings, "_get_draftsharks_html", lambda pos: fetched.append(pos) or "")
+    monkeypatch.setattr(rankings.time, "sleep", lambda seconds: slept.append(seconds))
+
+    rankings._get_draftsharks_pages()
+
+    assert fetched == list(rankings.DRAFTSHARKS_POSITIONS)
+    assert len(slept) == len(rankings.DRAFTSHARKS_POSITIONS) - 1
+    assert all(s == rankings.DRAFTSHARKS_REQUEST_DELAY_SECONDS for s in slept)
+
+
+# --- normalize_draftsharks ------------------------------------------------------
+
+
+def _draftsharks_row(*, first: str, last: str, position: str, team: str) -> str:
+    return f"""
+    <tr class="player-row">
+        <td class="player-cell">
+            <player-name first-name="{first}" last-name="{last}" player-id="1" link></player-name>
+            <span class="player-details-group__team-name">{team}</span>
+            <pos-roster-spot pos-roster-spot="{position}">1</pos-roster-spot>
+        </td>
+    </tr>
+    """
+
+
+def _draftsharks_page(*rows: str) -> str:
+    return f"<html><body><table>{''.join(rows)}</table></body></html>"
+
+
+def test_normalize_draftsharks_extracts_real_ranked_rows_per_position() -> None:
+    pages = {
+        "wr": _draftsharks_page(
+            _draftsharks_row(first="Puka", last="Nacua", position="WR", team="LAR")
+        ),
+        "rb": _draftsharks_page(
+            _draftsharks_row(first="Jahmyr", last="Gibbs", position="RB", team="DET")
+        ),
+    }
+
+    df = rankings.normalize_draftsharks(pages, season=2026)
+
+    assert df.height == 2
+    names = set(df["player_name"])
+    assert names == {"Puka Nacua", "Jahmyr Gibbs"}
+    positions = dict(zip(df["player_name"], df["position"], strict=True))
+    assert positions["Puka Nacua"] == "WR"
+    assert positions["Jahmyr Gibbs"] == "RB"
+
+
+def test_normalize_draftsharks_rank_is_the_within_page_ordinal_position() -> None:
+    page_html = _draftsharks_page(
+        *(
+            _draftsharks_row(first=f"P{i}", last="Last", position="RB", team="DET")
+            for i in range(1, 4)
+        )
+    )
+
+    df = rankings.normalize_draftsharks({"rb": page_html}, season=2026)
+
+    assert df["rank"].to_list() == [1.0, 2.0, 3.0]
+
+
+def test_normalize_draftsharks_skips_a_row_with_no_player_name_element() -> None:
+    page_html = _draftsharks_page('<tr class="player-row"><td>no player-name here</td></tr>')
+
+    df = rankings.normalize_draftsharks({"wr": page_html}, season=2026)
+
+    assert df.height == 0
+
+
 # --- fetch_fantasysharks -----------------------------------------------------
 
 FANTASYSHARKS_FIXTURE_PAYLOAD = {

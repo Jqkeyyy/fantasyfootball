@@ -39,6 +39,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -456,6 +457,250 @@ def normalize_fantasypros(csv_text: str, *, season: int) -> pl.DataFrame:
         pl.col("best").alias("rank_best"),
         pl.col("worst").alias("rank_worst"),
     )
+
+
+# --- FootballGuys ---------------------------------------------------------------
+#
+# Ranks-only, same shape as FantasyPros -- a single server-rendered preseason
+# rankings page (no season/JS pagination; the full real list -- confirmed live,
+# 526 players -- is in the initial HTML via `data-rank`/`data-playername`
+# attributes on each `<tr class="player-row">`), so no per-position requests or
+# `Crawl-delay` pacing needed, unlike DraftSharks below.
+#
+# `data-rank` is the *overall* rank across every position, not a per-position
+# one -- `map_ranks_to_points`/the reference curve both key on a per-position
+# rank, so `normalize_footballguys` re-derives a per-position rank itself
+# (rows already arrive in ascending overall-rank order, so a running per
+# -position counter is equivalent to, and simpler than, a polars
+# `.rank().over("position")` pass).
+#
+# Position comes from a `<span class="pos-XX">` inside the row -- confirmed
+# live across all 526 real rows: `PK` (kicker) and `TD` ("Team Defense",
+# FootballGuys' own label for DST -- confirmed live, e.g. "Houston Texans"
+# as the `player_name` on a `pos-TD` row) are the two tokens that don't
+# already match this project's canonical codes.
+
+FOOTBALLGUYS_URL = "https://www.footballguys.com/rankings/duration/preseason"
+FOOTBALLGUYS_POSITION_MAP = {
+    "QB": "QB",
+    "RB": "RB",
+    "WR": "WR",
+    "TE": "TE",
+    "PK": "K",
+    "TD": "DST",
+}
+
+
+def _get_footballguys_html() -> str:
+    """Fetch the FootballGuys preseason rankings page. The only network call
+    this function makes."""
+    response = _get_session().get(FOOTBALLGUYS_URL, timeout=30)
+    response.raise_for_status()
+    return response.text
+
+
+def fetch_footballguys(*, offline: bool | None = None, settings: Settings | None = None) -> Path:
+    """Fetch FootballGuys' preseason rankings page to
+    data/raw/rankings/footballguys.html.
+
+    Not season-parameterised -- like FantasyPros, the upstream page is
+    always "current preseason," no season selector in the URL.
+    """
+    settings = _resolve_settings(settings)
+    return _fetch_text(
+        filename="footballguys.html",
+        call_desc=f"GET {FOOTBALLGUYS_URL}",
+        cache_key="rankings_footballguys",
+        load=_get_footballguys_html,
+        row_count=lambda text: text.count('class="player-row'),
+        artifact="footballguys",
+        params="",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def normalize_footballguys(html_text: str, *, season: int) -> pl.DataFrame:
+    """Extract every real ranked row into the canonical per-player ranking
+    schema (same shape as `normalize_fantasypros`) -- `rank` is re-derived
+    per-position from the page's own overall rank (see module comment
+    above); rows in a position not in `FOOTBALLGUYS_POSITION_MAP` (none
+    seen live, but defensive against a future new position label) are
+    skipped rather than guessed at.
+    """
+    tree = lxml.html.fromstring(html_text)
+    rows = _xpath_elements(tree, '//tr[contains(@class, "player-row") and @data-rank]')
+
+    position_counters: dict[str, int] = {}
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        pos_spans = _xpath_elements(row, './/span[starts-with(@class, "pos-")]')
+        if not pos_spans:
+            continue
+        pos_class = pos_spans[0].get("class")
+        if pos_class is None:
+            continue
+        position = FOOTBALLGUYS_POSITION_MAP.get(pos_class.removeprefix("pos-"))
+        if position is None:
+            continue
+
+        team = None
+        team_spans = _xpath_elements(row, './/span[contains(@class, "team-abbr-")]')
+        if team_spans:
+            team_class = team_spans[0].get("class")
+            match = re.search(r"team-abbr-(\w+)", team_class) if team_class else None
+            if match:
+                team = match.group(1)
+
+        position_counters[position] = position_counters.get(position, 0) + 1
+        records.append(
+            {
+                "source": "footballguys",
+                "season": season,
+                "player_name": row.get("data-playername"),
+                "position": position,
+                "team": team,
+                "rank": float(position_counters[position]),
+                "rank_sd": None,
+                "rank_best": None,
+                "rank_worst": None,
+            }
+        )
+
+    schema = {
+        "source": pl.Utf8,
+        "season": pl.Int64,
+        "player_name": pl.Utf8,
+        "position": pl.Utf8,
+        "team": pl.Utf8,
+        "rank": pl.Float64,
+        "rank_sd": pl.Float64,
+        "rank_best": pl.Float64,
+        "rank_worst": pl.Float64,
+    }
+    return pl.DataFrame(records, schema=schema)
+
+
+# --- DraftSharks -----------------------------------------------------------------
+#
+# Ranks-only, one request per position (QB/RB/WR/TE/K -- no DST page exists,
+# confirmed live, a 404; same known DST gap every other source here already
+# has). Each position's own PPR rankings page caps at exactly 25 real
+# server-rendered players -- confirmed live, both via the page's embedded
+# JSON-LD `ItemList` (a 25-item SEO snippet) and the real HTML table itself
+# (also exactly 25 `<tr class="player-row">` rows); the rest of DraftSharks'
+# own list only loads via client-side JS pagination this project's own
+# established rule (no headless browser) doesn't pursue. 25 per position
+# across 5 positions is up to 125 total ranked players -- short of any one
+# position's full depth, but real, and squarely within "even top 50-100 is
+# fine."
+#
+# `Crawl-delay: 10` in DraftSharks' own robots.txt -- respected the same way
+# FFToday's own rate limit is (see FFTODAY_REQUEST_DELAY_SECONDS above).
+# Position and team are read directly off each row's own
+# `<pos-roster-spot pos-roster-spot="...">`/team-badge markup -- confirmed
+# live, already the project's canonical position codes for every position
+# that has a page (no DST, so no token to map).
+
+DRAFTSHARKS_POSITIONS = ("qb", "rb", "wr", "te", "k")
+DRAFTSHARKS_URL_TEMPLATE = "https://www.draftsharks.com/rankings/ppr/{pos}"
+DRAFTSHARKS_REQUEST_DELAY_SECONDS = 10.0
+
+
+def _get_draftsharks_html(pos: str) -> str:
+    """Fetch one position's DraftSharks PPR rankings page. The only network
+    call this function makes."""
+    response = _get_session().get(DRAFTSHARKS_URL_TEMPLATE.format(pos=pos), timeout=30)
+    response.raise_for_status()
+    return response.text
+
+
+def _get_draftsharks_pages() -> dict[str, str]:
+    """All five position pages, with `DRAFTSHARKS_REQUEST_DELAY_SECONDS`
+    between requests per DraftSharks' own `robots.txt` `Crawl-delay`."""
+    pages: dict[str, str] = {}
+    for i, pos in enumerate(DRAFTSHARKS_POSITIONS):
+        if i > 0:
+            time.sleep(DRAFTSHARKS_REQUEST_DELAY_SECONDS)
+        pages[pos] = _get_draftsharks_html(pos)
+    return pages
+
+
+def fetch_draftsharks(*, offline: bool | None = None, settings: Settings | None = None) -> Path:
+    """Fetch DraftSharks' five position PPR rankings pages to
+    data/raw/rankings/draftsharks.json, keyed by position.
+
+    Not season-parameterised -- like FantasyPros/FootballGuys, the upstream
+    pages are always "current," no season selector in the URL.
+    """
+    settings = _resolve_settings(settings)
+    return _fetch_json(
+        filename="draftsharks.json",
+        call_desc=f"GET {DRAFTSHARKS_URL_TEMPLATE} for pos in {DRAFTSHARKS_POSITIONS}",
+        cache_key="rankings_draftsharks",
+        load=_get_draftsharks_pages,
+        row_count=lambda payload: sum(html.count('class="player-row') for html in payload.values()),
+        artifact="draftsharks",
+        params="",
+        offline=offline,
+        settings=settings,
+    )
+
+
+def normalize_draftsharks(pages: dict[str, str], *, season: int) -> pl.DataFrame:
+    """Extract every real ranked row across all five position pages into
+    the canonical per-player ranking schema. `rank` is each row's own
+    within-page ordinal position (1..25) -- already per-position, unlike
+    FootballGuys' overall rank, so no re-derivation needed here.
+    """
+    records: list[dict[str, Any]] = []
+    for pos, page_html in pages.items():
+        tree = lxml.html.fromstring(page_html)
+        rows = _xpath_elements(tree, '//tr[contains(@class, "player-row")]')
+        for rank, row in enumerate(rows, start=1):
+            name_els = _xpath_elements(row, ".//player-name")
+            if not name_els:
+                continue
+            first_name = name_els[0].get("first-name") or ""
+            last_name = name_els[0].get("last-name") or ""
+            player_name = f"{first_name} {last_name}".strip()
+            if not player_name:
+                continue
+
+            pos_els = _xpath_elements(row, ".//pos-roster-spot")
+            position = pos_els[0].get("pos-roster-spot") if pos_els else pos.upper()
+
+            team = None
+            team_els = _xpath_elements(row, './/span[contains(@class, "team-name")]')
+            if team_els:
+                team = team_els[0].text_content().strip() or None
+
+            records.append(
+                {
+                    "source": "draftsharks",
+                    "season": season,
+                    "player_name": player_name,
+                    "position": position,
+                    "team": team,
+                    "rank": float(rank),
+                    "rank_sd": None,
+                    "rank_best": None,
+                    "rank_worst": None,
+                }
+            )
+
+    schema = {
+        "source": pl.Utf8,
+        "season": pl.Int64,
+        "player_name": pl.Utf8,
+        "position": pl.Utf8,
+        "team": pl.Utf8,
+        "rank": pl.Float64,
+        "rank_sd": pl.Float64,
+        "rank_best": pl.Float64,
+        "rank_worst": pl.Float64,
+    }
+    return pl.DataFrame(records, schema=schema)
 
 
 # --- FantasySharks ------------------------------------------------------------
@@ -1342,6 +1587,9 @@ def normalize_fp_weekly(csv_text: str, *, season: int, week: int) -> pl.DataFram
 __all__ = [
     "CBS_POSITIONS",
     "CBS_URL_TEMPLATE",
+    "DRAFTSHARKS_POSITIONS",
+    "DRAFTSHARKS_REQUEST_DELAY_SECONDS",
+    "DRAFTSHARKS_URL_TEMPLATE",
     "ESPN_POSITION_MAP",
     "ESPN_STAT_ID_MAP",
     "ESPN_TEAM_MAP",
@@ -1354,7 +1602,10 @@ __all__ = [
     "FFC_URL_TEMPLATE",
     "FFTODAY_POSITIONS",
     "FFTODAY_POS_ID",
+    "FFTODAY_REQUEST_DELAY_SECONDS",
     "FFTODAY_URL_TEMPLATE",
+    "FOOTBALLGUYS_POSITION_MAP",
+    "FOOTBALLGUYS_URL",
     "FP_WEEKLY_ARCHIVE_PATH",
     "FP_WEEKLY_ARCHIVE_REPO",
     "FP_WEEKLY_COMMITS_API",
@@ -1364,18 +1615,22 @@ __all__ = [
     "UnexpectedColumnLayoutError",
     "fetch_adp",
     "fetch_cbs",
+    "fetch_draftsharks",
     "fetch_espn",
     "fetch_fantasypros",
     "fetch_fantasysharks",
     "fetch_fftoday",
+    "fetch_footballguys",
     "fetch_fp_weekly_commits",
     "fetch_fp_weekly_snapshot",
     "normalize_adp",
     "normalize_cbs",
+    "normalize_draftsharks",
     "normalize_espn",
     "normalize_fantasypros",
     "normalize_fantasysharks",
+    "normalize_fftoday",
+    "normalize_footballguys",
     "normalize_fp_weekly",
     "select_commit_before",
-    "normalize_fftoday",
 ]

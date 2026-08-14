@@ -33,6 +33,15 @@ from ffapp.league_format import parse_league_format
 # (fetched_at_utc) can be read for the export header. Mirrors
 # `board._fetch_point_sources`'s graceful degradation: a source that can't
 # be fetched just doesn't get an age row, it doesn't block the export.
+#
+# Under --no-offline this re-fetches every source a second time (the first
+# already happened inside `build_draft_board`, above) -- a pre-existing
+# inefficiency, worse now that `draftsharks` is in this dict too (its own
+# `Crawl-delay: 10` means its wrapper alone costs ~40s live); acceptable
+# for now since `ffapp draft export` is a once-per-morning command per
+# ADDENDUM-03 §E's own runbook, not something run repeatedly under a
+# draft-clock, but worth collapsing into one fetch pass if this command's
+# real-world runtime ever becomes a problem.
 _RANKINGS_SOURCE_FETCHERS: dict[str, Callable[[int, int, bool | None, Settings], Path]] = {
     "espn": lambda season, teams, offline, settings: rankings.fetch_espn(
         season, offline=offline, settings=settings
@@ -47,6 +56,12 @@ _RANKINGS_SOURCE_FETCHERS: dict[str, Callable[[int, int, bool | None, Settings],
         season, offline=offline, settings=settings
     ),
     "fantasypros": lambda season, teams, offline, settings: rankings.fetch_fantasypros(
+        offline=offline, settings=settings
+    ),
+    "footballguys": lambda season, teams, offline, settings: rankings.fetch_footballguys(
+        offline=offline, settings=settings
+    ),
+    "draftsharks": lambda season, teams, offline, settings: rankings.fetch_draftsharks(
         offline=offline, settings=settings
     ),
 }

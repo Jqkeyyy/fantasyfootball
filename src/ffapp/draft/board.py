@@ -78,9 +78,9 @@ def draft_board_csv_path(settings: Settings, *, season: int) -> Path:
 
 
 # Sources with real per-stat projections (rescaled via league scoring before
-# aggregating, SPEC §9.2). FantasyPros is handled separately below -- it's
-# ranks-only, mapped onto the point scale via the reference curve these
-# sources build.
+# aggregating, SPEC §9.2). Ranks-only sources (FantasyPros, FootballGuys,
+# DraftSharks) are handled separately below via _RANK_SOURCE_FETCHERS --
+# mapped onto the point scale via the reference curve these sources build.
 _POINT_SOURCE_FETCHERS: dict[str, Callable[[int, bool | None, Settings], pl.DataFrame]] = {
     "espn": lambda season, offline, settings: rankings.normalize_espn(
         json.loads(rankings.fetch_espn(season, offline=offline, settings=settings).read_text()),
@@ -96,6 +96,26 @@ _POINT_SOURCE_FETCHERS: dict[str, Callable[[int, bool | None, Settings], pl.Data
     ),
     "fftoday": lambda season, offline, settings: rankings.normalize_fftoday(
         json.loads(rankings.fetch_fftoday(season, offline=offline, settings=settings).read_text()),
+        season=season,
+    ),
+}
+
+# Ranks-only sources: no raw per-stat data, so no league-scoring rescale --
+# each is instead mapped onto the point scale via the reference curve the
+# point sources above build (SPEC §9.2). Each returns the same schema as
+# `normalize_fantasypros` (source/season/player_name/position/team/rank/
+# rank_sd/rank_best/rank_worst).
+_RANK_SOURCE_FETCHERS: dict[str, Callable[[int, bool | None, Settings], pl.DataFrame]] = {
+    "fantasypros": lambda season, offline, settings: rankings.normalize_fantasypros(
+        rankings.fetch_fantasypros(offline=offline, settings=settings).read_text(encoding="utf-8"),
+        season=season,
+    ),
+    "footballguys": lambda season, offline, settings: rankings.normalize_footballguys(
+        rankings.fetch_footballguys(offline=offline, settings=settings).read_text(encoding="utf-8"),
+        season=season,
+    ),
+    "draftsharks": lambda season, offline, settings: rankings.normalize_draftsharks(
+        json.loads(rankings.fetch_draftsharks(offline=offline, settings=settings).read_text()),
         season=season,
     ),
 }
@@ -161,16 +181,36 @@ def _fetch_point_sources(
 ) -> list[pl.DataFrame]:
     """Fetch every per-stat rankings source, skipping (with a logged
     warning) any that fails live or comes back empty -- a single external
-    source going down (confirmed to happen: FFToday now 403s, ESPN's bulk
-    endpoint now returns 0 rows, both broken since task 0.7's own session)
-    must not sink the whole draft board. CLAUDE.md rule 4 ("never silently
-    drop rows") is about players within a join, not about which of several
+    source going down (confirmed to happen more than once: FFToday 403s,
+    ESPN's bulk endpoint silently returning 0 rows, both fixed live in a
+    later session -- see ingest.rankings' own module comments) must not
+    sink the whole draft board. CLAUDE.md rule 4 ("never silently drop
+    rows") is about players within a join, not about which of several
     redundant consensus sources contributed -- `aggregate_projections`'s own
     `n_sources`/`coverage` columns exist precisely to represent partial
     agreement honestly, which is what happens here.
     """
     sources = []
     for name, fetch in _POINT_SOURCE_FETCHERS.items():
+        try:
+            df = fetch(season, offline, settings)
+        except Exception as exc:
+            logger.warning("skipping rankings source %r: %s", name, exc)
+            continue
+        if df.height == 0:
+            logger.warning("skipping rankings source %r: returned 0 rows", name)
+            continue
+        sources.append(df)
+    return sources
+
+
+def _fetch_rank_sources(
+    season: int, *, offline: bool | None, settings: Settings
+) -> list[pl.DataFrame]:
+    """Same graceful degradation as `_fetch_point_sources`, for the
+    ranks-only sources (FantasyPros, FootballGuys, DraftSharks) instead."""
+    sources = []
+    for name, fetch in _RANK_SOURCE_FETCHERS.items():
         try:
             df = fetch(season, offline, settings)
         except Exception as exc:
@@ -301,14 +341,11 @@ def build_draft_board(
     ]
     reference_curve = aggregate.build_reference_curve(scored_point_sources)
 
-    fantasypros_raw = rankings.fetch_fantasypros(offline=offline, settings=settings).read_text(
-        encoding="utf-8"
-    )
-    fantasypros_ranks = rankings.normalize_fantasypros(fantasypros_raw, season=season)
-    fantasypros_points = aggregate.map_ranks_to_points(fantasypros_ranks, reference_curve)
+    rank_sources = _fetch_rank_sources(season, offline=offline, settings=settings)
+    rank_points = [aggregate.map_ranks_to_points(df, reference_curve) for df in rank_sources]
 
-    n_sources = len(scored_point_sources) + 1  # +1 for FantasyPros
-    scored = [aggregate.add_join_key(df) for df in (*scored_point_sources, fantasypros_points)]
+    n_sources = len(scored_point_sources) + len(rank_points)
+    scored = [aggregate.add_join_key(df) for df in (*scored_point_sources, *rank_points)]
     projections = aggregate.aggregate_projections(scored, n_sources=n_sources)
 
     crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)

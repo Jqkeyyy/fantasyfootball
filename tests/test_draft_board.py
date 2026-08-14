@@ -191,6 +191,58 @@ def test_fetch_point_sources_returns_empty_list_if_every_source_fails(
     assert result == []
 
 
+# --- _fetch_rank_sources: graceful per-source degradation --------------------
+
+
+def test_fetch_rank_sources_skips_a_source_that_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(season, offline, settings):
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(
+        board,
+        "_RANK_SOURCE_FETCHERS",
+        {
+            "broken": boom,
+            "working": lambda season, offline, settings: _fake_source(5),
+        },
+    )
+
+    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+
+    assert len(result) == 1
+    assert result[0].height == 5
+
+
+def test_fetch_rank_sources_skips_a_source_that_returns_zero_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        board,
+        "_RANK_SOURCE_FETCHERS",
+        {
+            "empty": lambda season, offline, settings: _fake_source(0),
+            "working": lambda season, offline, settings: _fake_source(5),
+        },
+    )
+
+    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+
+    assert len(result) == 1
+
+
+def test_fetch_rank_sources_returns_empty_list_if_every_source_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(season, offline, settings):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(board, "_RANK_SOURCE_FETCHERS", {"a": boom, "b": boom})
+
+    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+
+    assert result == []
+
+
 # --- _current_git_commit -----------------------------------------------------
 
 
