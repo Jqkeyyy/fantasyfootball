@@ -8,7 +8,7 @@ Read `SPEC.md` §0 before doing anything else.
 
 ## Session start
 
-Read `HANDOFF.md` at the start of every session — it's short by design and holds current state, the next task, and anything left mid-implementation. Read `docs/JOURNAL.md` only when investigating a specific past task's evidence, an implementation decision, or a gotcha — it's long, append-only, and not meant to be read cover to cover.
+Read `HANDOFF.md` at the start of every session — it's short by design and holds current state, the next task, and anything left mid-implementation. Read `docs/JOURNAL.md` only when investigating a specific past task's evidence, an implementation decision, or a gotcha — it's long, append-only, and not meant to be read cover to cover. Read `docs/summary.md` when you want the whole project in one pass — what it is, current state, what it does today, how it's performing — without reconstructing it from `HANDOFF.md`'s pointers or `JOURNAL.md`'s task-by-task log; it's a standing narrative snapshot, not append-only, so it can go stale and should be refreshed when it does.
 
 ## Standing rules
 
