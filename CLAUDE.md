@@ -2,9 +2,9 @@
 
 ## What this project is
 
-A personal fantasy football decision-support system for one Sleeper league, built around a self-trained player projection model. Single user, local-first. `SPEC.md` is the source of truth for design; `TASKS.md` is the ordered work queue.
+A personal fantasy football decision-support system for two Sleeper leagues, built around a self-trained player projection model. Single user, local-first. `SPEC.md` is the source of truth for design; `TASKS.md` is the ordered work queue.
 
-Read `SPEC.md` §0 before doing anything else.
+Read `SPEC.md` §0 before doing anything else. Then read the addenda in order, each superseding or extending the sections it names: `SPEC-ADDENDUM-01.md` (multi-league support), `SPEC-ADDENDUM-02.md` (offline-first development), `SPEC-ADDENDUM-03.md` (phone access and draft-day operations).
 
 ## Session start
 
@@ -44,7 +44,7 @@ These are not style preferences. Violating any of them silently invalidates work
 **Testing**
 - pytest. Fixtures live in `tests/fixtures/` as small committed files.
 - No live network calls in tests, ever. Mock or fixture.
-- The six mandatory tests in SPEC §16.3 are blocking; do not mark a task complete with any of them failing.
+- The eight mandatory tests in SPEC §16.3 are blocking; do not mark a task complete with any of them failing.
 
 **Commits and reproducibility**
 - Conventional commits (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`).
@@ -72,4 +72,4 @@ Say so directly rather than complying if you notice any of the following. These 
 
 ## Current phase
 
-**Phase 2 is complete; Phase 1 has one open item.** Phase 0 (draft board) shipped long ago. Phase 1's only open item is 1.15 (conditional points model v1 — built, but doesn't beat the B2 baseline; a documented, genuine result, not a bug to silently fix — a real hyperparameter-search follow-up also confirmed the gap is architectural, not undertuned). Every Phase 2 task (2.1–2.11) is done — several were built ahead of strict order once their own prerequisites turned out not to need Sleeper/unbuilt pipelines, each confirmed with the user first, see `docs/JOURNAL.md`. Everything past this point is Phase 3, not yet started. Check `HANDOFF.md` §1 for the live, current picture; this line is a coarse pointer, not the source of truth.
+**Phase 2 is complete; Phase 0 has two new draft-blocking items; Phase 1 has one open item.** Phase 0 (draft board) shipped long ago but `SPEC-ADDENDUM-03.md` §F added two new tasks, 0.15 (mobile draft page) and 0.16 (static HTML export), both required before the Aug 22 draft and both outranking everything in Phase 3. Phase 1's only open item is 1.15 (conditional points model v1 — built, but doesn't beat the B2 baseline; a documented, genuine result, not a bug to silently fix — a real hyperparameter-search follow-up also confirmed the gap is architectural, not undertuned). Every Phase 2 task (2.1–2.11) is done — several were built ahead of strict order once their own prerequisites turned out not to need Sleeper/unbuilt pipelines, each confirmed with the user first, see `docs/JOURNAL.md`. Everything past this point is Phase 3, not yet started. Check `HANDOFF.md` §1 for the live, current picture; this line is a coarse pointer, not the source of truth.

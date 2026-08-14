@@ -1267,6 +1267,8 @@ Mandatory tests, in order of importance:
 4. `test_lineup.py` — the ILP produces known-correct lineups on hand-built fixtures, including FLEX and superflex edge cases.
 5. `test_vor.py` — replacement-level fixed point converges and gives known values for standard 12-team formats.
 6. `test_baselines.py` — baselines are implemented correctly (they are the yardstick; a buggy baseline flatters the model).
+7. `test_no_network.py` — Addendum 02 §A; every module outside `ingest/` runs with sockets monkeypatched to raise, proving no accidental network dependency leaked past the ingest layer.
+8. `test_offline_raises.py` — Addendum 02 §C.2; a cache miss under `FFAPP_OFFLINE=1` raises rather than silently returning an empty frame.
 
 Fixtures use small committed sample data under `tests/fixtures/`, never live network calls.
 
