@@ -189,6 +189,34 @@ def _canonicalize_dst_player_names(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# A source's own nickname/given-name spelling for a player normalizes to a
+# different string than the spelling every other source uses, so the two
+# never share a join_key and the same real player shows up twice on the
+# board -- same root cause as the DST spelling problem above, just for an
+# individual player instead of all 32 teams. Confirmed live: one source
+# spells Kenneth Walker III as "Ken Walker III", which strips to "ken
+# walker" -- distinct from every other source's "kenneth walker". Keyed by
+# the alias's own normalized form; add one entry per confirmed case rather
+# than attempting general nickname resolution.
+_PLAYER_NAME_ALIASES: dict[str, str] = {
+    "ken walker": "Kenneth Walker III",
+}
+
+
+def _canonicalize_aliased_player_names(df: pl.DataFrame) -> pl.DataFrame:
+    """Rewrite `player_name` to the canonical spelling for any row matching
+    `_PLAYER_NAME_ALIASES`, before `add_join_key` derives a join_key from it.
+    """
+    normalized = pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8)
+    canonical = normalized.replace_strict(_PLAYER_NAME_ALIASES, default=None, return_dtype=pl.Utf8)
+    return df.with_columns(
+        pl.when(canonical.is_not_null())
+        .then(canonical)
+        .otherwise(pl.col("player_name"))
+        .alias("player_name")
+    )
+
+
 def add_join_key(df: pl.DataFrame) -> pl.DataFrame:
     """Cross-source player-matching key: normalized name + position (see
     module docstring for why this isn't the canonical player_id crosswalk).
@@ -196,10 +224,13 @@ def add_join_key(df: pl.DataFrame) -> pl.DataFrame:
     DST rows are canonicalised first (`_canonicalize_dst_player_names`) --
     every source spells DST team names differently, and without this the
     same real team's rows from different sources would build different
-    join_keys and never aggregate together at all.
+    join_keys and never aggregate together at all. Individual-player alias
+    spellings (`_PLAYER_NAME_ALIASES`) are canonicalised the same way right
+    after.
     """
     canonicalized = _canonicalize_dst_player_names(df)
-    return canonicalized.with_columns(
+    aliased = _canonicalize_aliased_player_names(canonicalized)
+    return aliased.with_columns(
         (
             pl.col("player_name").map_elements(normalize_name, return_dtype=pl.Utf8)
             + "|"

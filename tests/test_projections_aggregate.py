@@ -289,6 +289,25 @@ def test_aggregate_projections_excludes_null_points_rows() -> None:
     assert row["n_sources"] == 1  # the null-points row doesn't count as coverage
 
 
+def test_add_join_key_merges_a_known_player_nickname_alias() -> None:
+    """Real bug: one source spells Kenneth Walker III as "Ken Walker III",
+    which normalizes to "ken walker" -- distinct from every other source's
+    "kenneth walker" -- so he showed up twice on the board, each with only
+    partial source coverage. `_PLAYER_NAME_ALIASES` rewrites the alias
+    spelling to the canonical one before the join_key is built."""
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="Ken Walker III", position="RB"),
+            _source_row(player_name="Kenneth Walker III", position="RB"),
+        ]
+    )
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["join_key"].n_unique() == 1
+    assert keyed["player_name"].to_list() == ["Kenneth Walker III", "Kenneth Walker III"]
+
+
 def test_aggregate_projections_merges_sources_that_spell_a_name_differently() -> None:
     """Real bug found via task 0.14's replay testing: one source spelling a
     player "James Cook" and another "James Cook III" both normalize to the
