@@ -44,7 +44,11 @@ from ffapp.app.draft_board_page import (
 )
 from ffapp.config import load_primary_league, load_settings
 from ffapp.draft import live
-from ffapp.draft.board import draft_board_csv_path, source_rankings_csv_path
+from ffapp.draft.board import (
+    POINT_SOURCE_NAMES,
+    draft_board_csv_path,
+    source_rankings_csv_path,
+)
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ingest import sleeper
 from ffapp.league_format import parse_league_format
@@ -133,9 +137,12 @@ with pure_rankings_tab:
         )
     else:
         st.caption(
-            "No model, no VOR -- each source's own positional rank (RB1, RB2, ...), "
-            "and a plain average/median across sources. Uses the same Position filter "
-            "as the Draft Board tab."
+            "No VOR, no tiers, no ADP -- just positional rank (RB1, RB2, ...) and a plain "
+            "average/median across sources. Uses the same Position filter as the Draft "
+            "Board tab. FantasyPros/FootballGuys/DraftSharks publish a real rank of their "
+            "own; ESPN/FantasySharks/CBS/FFToday don't -- their tabs are this league's own "
+            "scoring applied to that source's stat projections, sorted, which is a "
+            "different thing from that site's own published rankings page."
         )
         position_filtered = filter_board(source_rankings, positions=selected_positions)
         sources = source_rank_columns(source_rankings)
@@ -149,7 +156,17 @@ with pure_rankings_tab:
         for source, subtab in zip(sources, source_subtabs, strict=True):
             with subtab:
                 source_display = cap_rows(single_source_rankings(position_filtered, source))
-                st.caption(f"{source_display.height} players -- sorted by {source}'s own rank.")
+                if source in POINT_SOURCE_NAMES:
+                    st.caption(
+                        f"{source_display.height} players -- sorted by this league's own "
+                        f"scoring applied to {source}'s stat projections, NOT {source}'s own "
+                        "published rankings page."
+                    )
+                else:
+                    st.caption(
+                        f"{source_display.height} players -- sorted by {source}'s own "
+                        "published rank."
+                    )
                 st.dataframe(source_display, use_container_width=True, height=700)
 
 with live_tab:

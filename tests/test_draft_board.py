@@ -39,6 +39,15 @@ def test_source_rankings_csv_path_is_alongside_the_main_board() -> None:
     assert result == Path("data") / "outputs" / "source_rankings_2026.csv"
 
 
+# --- POINT_SOURCE_NAMES / RANK_SOURCE_NAMES -------------------------------------
+
+
+def test_point_and_rank_source_names_are_disjoint_and_cover_all_seven() -> None:
+    assert board.POINT_SOURCE_NAMES == {"espn", "fantasysharks", "cbs", "fftoday"}
+    assert board.RANK_SOURCE_NAMES == {"fantasypros", "footballguys", "draftsharks"}
+    assert board.POINT_SOURCE_NAMES.isdisjoint(board.RANK_SOURCE_NAMES)
+
+
 # --- _team_by_join_key ---------------------------------------------------------
 
 

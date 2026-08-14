@@ -141,6 +141,20 @@ _RANK_SOURCE_FETCHERS: dict[str, Callable[[int, bool | None, Settings], pl.DataF
     ),
 }
 
+# For `build_source_rankings`'s per-source tabs: a name in POINT_SOURCE_NAMES
+# has no native published rank of its own -- its `rank_<source>` column is
+# this league's own scoring applied to that source's raw stat projections,
+# then sorted (`aggregate.rank_within_position`), NOT that source's own
+# editorial ranking. Confirmed live: CBS's real "Fantasy Experts" rankings
+# page has Jahmyr Gibbs above Bijan Robinson, but CBS's *stat-projections*
+# page (the only CBS artifact this app fetches, SPEC §9.2) projects Robinson
+# for more catches/yards, which this league's real PPR scoring settings
+# legitimately rank higher -- correct math, different question than "what
+# does CBS's own rankings page say." A name in RANK_SOURCE_NAMES is a real
+# native rank, scraped as-is, no scoring model involved.
+POINT_SOURCE_NAMES = frozenset(_POINT_SOURCE_FETCHERS)
+RANK_SOURCE_NAMES = frozenset(_RANK_SOURCE_FETCHERS)
+
 
 class NoRankingsSourcesAvailableError(Exception):
     """Every per-stat rankings source failed -- there's nothing to aggregate."""
@@ -500,6 +514,8 @@ def build_source_rankings(
 
 __all__ = [
     "BOARD_COLUMNS",
+    "POINT_SOURCE_NAMES",
+    "RANK_SOURCE_NAMES",
     "NoRankingsSourcesAvailableError",
     "NotEnoughPicksError",
     "PickContext",
