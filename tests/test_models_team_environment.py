@@ -159,3 +159,17 @@ def test_team_environment_predictor_satisfies_the_harness_protocol() -> None:
 
     assert predictor.name == "team_env_plays"
     assert predictions.len() == train_rows.height
+
+
+# --- derive_attempts (task 5) ---
+
+
+def test_derive_attempts_sums_to_team_plays_exactly() -> None:
+    team_plays = pl.Series([70.0, 60.0])
+    pass_rate = pl.Series([0.6, 0.55])
+
+    pass_attempts, rush_attempts = team_environment.derive_attempts(team_plays, pass_rate)
+
+    assert pass_attempts.to_list() == pytest.approx([42.0, 33.0])
+    assert rush_attempts.to_list() == pytest.approx([28.0, 27.0])
+    assert (pass_attempts + rush_attempts).to_list() == pytest.approx(team_plays.to_list())

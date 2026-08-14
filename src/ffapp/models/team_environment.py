@@ -148,6 +148,15 @@ def predict_team_environment(model: FittedTeamEnvironmentModel, rows: pl.DataFra
     return pl.Series("prediction", predictions, dtype=pl.Float64)
 
 
+def derive_attempts(team_plays: pl.Series, pass_rate: pl.Series) -> tuple[pl.Series, pl.Series]:
+    """`pass_attempts`/`rush_attempts` are never modeled directly -- always
+    derived from the two predicted quantities, so they sum to
+    `team_plays` exactly by construction (see module docstring)."""
+    pass_attempts = (team_plays * pass_rate).rename("pass_attempts")
+    rush_attempts = (team_plays * (1 - pass_rate)).rename("rush_attempts")
+    return pass_attempts, rush_attempts
+
+
 class TeamEnvironmentPredictor:
     """A `evaluation.backtest.Predictor` wrapping
     `fit_team_environment_model`/`predict_team_environment`, exercised via
@@ -178,6 +187,7 @@ __all__ = [
     "TeamEnvironmentPredictor",
     "add_team_environment_baselines",
     "build_team_environment_table",
+    "derive_attempts",
     "fit_team_environment_model",
     "monotone_constraints",
     "predict_team_environment",
