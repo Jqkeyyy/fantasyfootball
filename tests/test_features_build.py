@@ -234,6 +234,15 @@ def test_add_as_of_utc_uses_the_earliest_kickoff_that_week() -> None:
     assert result.row(0, named=True)["as_of_utc"] == "2025-09-07T17:00:00Z"
 
 
+# --- lag_shift_join (task 2: promotion to public) ------------------------------------------
+
+
+def test_lag_shift_join_is_public() -> None:
+    """Task 2: lag_shift_join must be promoted from private _lag_shift_join to
+    public so models.team_environment can use it."""
+    assert hasattr(build, "lag_shift_join")
+
+
 # --- _lag_shift_join (task 1.9) -----------------------------------------------------------
 
 
@@ -243,7 +252,7 @@ def test_lag_shift_join_pulls_the_prior_weeks_row_onto_the_target_week() -> None
         {"player_id": ["p1", "p1"], "season": [2025, 2025], "week": [1, 2], "x": [10.0, 20.0]}
     )
 
-    result = build._lag_shift_join(grid, feature_table, "player_id", ["x"])
+    result = build.lag_shift_join(grid, feature_table, "player_id", ["x"])
 
     rows = {row["week"]: row["x"] for row in result.iter_rows(named=True)}
     assert rows[2] == pytest.approx(10.0)  # week 2's row got week 1's value

@@ -186,7 +186,7 @@ def _registered_feature_columns(registry: dict[str, FeatureSpec], source_table: 
     return [name for name, spec in registry.items() if spec.source_table == source_table]
 
 
-def _lag_shift_join(
+def lag_shift_join(
     grid: pl.DataFrame,
     feature_table: pl.DataFrame,
     group_key: str,
@@ -250,7 +250,7 @@ def build_player_week_features(
         player_week_usage, player_week_stats, scoring_settings, registry=effective_registry
     )
     usage_cols = _registered_feature_columns(effective_registry, usage.SOURCE_TABLE)
-    grid = _lag_shift_join(grid, usage_features, "player_id", usage_cols)
+    grid = lag_shift_join(grid, usage_features, "player_id", usage_cols)
 
     team_context_features = team_context.build_team_context_features(
         team_week_context,
@@ -266,7 +266,7 @@ def build_player_week_features(
     # opponent/situation, not shifted like the windowed columns.
     trailing_cols = [c for c in team_context_cols if c not in team_context.CURRENT_WEEK_COLUMNS]
     current_cols = [c for c in team_context_cols if c in team_context.CURRENT_WEEK_COLUMNS]
-    grid = _lag_shift_join(grid, team_context_features, "team", trailing_cols)
+    grid = lag_shift_join(grid, team_context_features, "team", trailing_cols)
     grid = grid.join(
         team_context_features.select("team", "season", "week", *current_cols),
         on=["team", "season", "week"],
@@ -282,4 +282,5 @@ __all__ = [
     "assert_inference_availability",
     "assert_training_lag",
     "build_player_week_features",
+    "lag_shift_join",
 ]
