@@ -59,6 +59,13 @@ def test_load_settings_defaults_draft_section_when_absent(tmp_path: Path) -> Non
 
     assert settings.draft.tier_method == "gap"
     assert settings.draft.adp_sd_fallback == pytest.approx(8.0)
+    assert settings.draft.excluded_positions == ()
+
+
+def test_load_settings_reads_draft_excluded_positions() -> None:
+    settings = load_settings(FIXTURES / "settings.yml")
+
+    assert settings.draft.excluded_positions == ("DST", "K")
 
 
 def test_load_settings_reads_seasons_train_start_and_current() -> None:

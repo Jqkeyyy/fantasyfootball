@@ -38,13 +38,15 @@ from typing import Any
 import polars as pl
 from rapidfuzz import fuzz, process
 
+from ffapp.cache.offline import OfflineCacheMiss
 from ffapp.config import REPO_ROOT, LeagueConfig, Settings
 from ffapp.draft import pick_order
 from ffapp.ids import mapping
 from ffapp.ingest import manual_rankings, nflverse, rankings, sleeper
-from ffapp.league_format import parse_league_format
+from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.projections import aggregate, games_played
 from ffapp.tools import adp as adp_tool
+from ffapp.tools import streaming as streaming_tool
 from ffapp.tools import tiers as tiers_tool
 from ffapp.tools import vor as vor_tool
 
@@ -351,6 +353,73 @@ def finalize_draft_board(
     )
 
 
+def _streaming_replacement_overrides(
+    league_format: LeagueFormat,
+    scoring_settings: dict[str, float],
+    *,
+    board_positions: set[str],
+    season: int,
+    offline: bool | None,
+    settings: Settings,
+) -> dict[str, float]:
+    """Empirical DST/K replacement level from this league's own real
+    regular-season scoring history (`tools.streaming`) -- not a numbered
+    TASKS.md task, direct request 2026-08-14 following up on task 0.9's
+    VOR. See that module's own docstring for why "the Nth-best preseason
+    total" (the standard fixed-point baseline every other position uses)
+    is the wrong replacement level for a position that's realistically
+    streamed off waivers every week, confirmed against this league's own
+    real 2021-2025 scoring (`docs/JOURNAL.md`'s 2026-08-14 entry).
+
+    Scoped to whichever of `tools.streaming.STREAMING_POSITIONS` this
+    league actually starts (CLAUDE.md rule 5 -- never hardcode league
+    format) AND are still present in `board_positions` -- if
+    `settings.draft.excluded_positions` has already dropped a position
+    from the board entirely (see `build_draft_board`), there's nothing to
+    compute a replacement level for. Falls back to no override at all
+    (the standard fixed-point baseline) if the historical raw nflverse
+    tables aren't cached locally yet -- HANDOFF.md §6's own rebuild
+    sequence, not this function's job to enforce; a draft board should
+    still build without them.
+    """
+    n_drafted_by_position = {
+        position: league_format.n_teams * league_format.starters.get(position, 0)
+        for position in streaming_tool.STREAMING_POSITIONS
+        if position in board_positions and league_format.starters.get(position, 0) > 0
+    }
+    if not n_drafted_by_position:
+        return {}
+
+    historical_seasons = list(range(2015, season))
+    try:
+        player_stats = pl.read_parquet(
+            nflverse.fetch_player_stats(historical_seasons, offline=offline, settings=settings)
+        )
+        team_stats = pl.read_parquet(
+            nflverse.fetch_team_stats(historical_seasons, offline=offline, settings=settings)
+        )
+        schedules = pl.read_parquet(
+            nflverse.fetch_schedules(historical_seasons, offline=offline, settings=settings)
+        )
+        pbp = pl.read_parquet(
+            nflverse.fetch_pbp(historical_seasons, offline=offline, settings=settings)
+        )
+    except OfflineCacheMiss:
+        logger.warning(
+            "Historical nflverse tables not cached -- DST/K VOR will use the standard "
+            "fixed-point replacement level (the Nth-best preseason total), not the "
+            "streaming-aware one. Run HANDOFF.md's data rebuild sequence to enable it."
+        )
+        return {}
+
+    scored_stats = streaming_tool.score_historical_stats(
+        player_stats, team_stats, schedules, pbp, scoring_settings
+    )
+    return streaming_tool.streaming_replacement_overrides(
+        scored_stats, n_drafted_by_position=n_drafted_by_position
+    )
+
+
 def build_draft_board(
     league: LeagueConfig,
     settings: Settings,
@@ -393,9 +462,19 @@ def build_draft_board(
     eligible_positions = {
         _POSITION_ALIASES.get(position, position)
         for position in mapping.league_relevant_positions(league)
-    }
+    } - set(settings.draft.excluded_positions)
     scoped = with_team.filter(pl.col("position").is_in(list(eligible_positions)))
-    with_vor = vor_tool.compute_vor(scoped, league_format)
+    streaming_overrides = _streaming_replacement_overrides(
+        league_format,
+        scoring_settings,
+        board_positions=eligible_positions,
+        season=season,
+        offline=offline,
+        settings=settings,
+    )
+    with_vor = vor_tool.compute_vor(
+        scoped, league_format, replacement_overrides=streaming_overrides
+    )
 
     rosters_raw: list[dict[str, Any]] = json.loads(
         sleeper.fetch_rosters(league.league_id, offline=offline, settings=settings).read_text()

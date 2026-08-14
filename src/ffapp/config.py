@@ -47,6 +47,7 @@ class CacheSettings:
 class DraftSettings:
     tier_method: str
     adp_sd_fallback: float
+    excluded_positions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,7 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
     draft = DraftSettings(
         tier_method=draft_raw.get("tier_method", "gap"),
         adp_sd_fallback=float(draft_raw.get("adp_sd_fallback", 8.0)),
+        excluded_positions=tuple(draft_raw.get("excluded_positions", [])),
     )
 
     seasons_raw = raw.get("seasons", {})

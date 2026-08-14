@@ -7,6 +7,46 @@ import pytest
 
 from ffapp.config import CacheSettings, Settings
 from ffapp.draft import board
+from ffapp.league_format import LeagueFormat
+
+# --- _streaming_replacement_overrides: board-level position exclusion -------
+
+
+def test_streaming_replacement_overrides_skips_fetch_entirely_when_positions_excluded() -> None:
+    """Once DST/K are excluded from the board itself (settings.draft.
+    excluded_positions -- direct request 2026-08-14), there's nothing to
+    compute a streaming replacement level for. This must return early
+    without ever touching real nflverse data, so it stays safe to call
+    with no cached historical tables at all."""
+    league_format = LeagueFormat(
+        n_teams=10,
+        starters={"QB": 1, "RB": 2, "WR": 2, "DST": 1, "K": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=6,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=None,
+    )
+    settings = Settings(
+        data_root=Path("data"),
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=Path("data/raw"), offline_default=True, staleness_hours={}, warn_on_stale=True
+        ),
+    )
+
+    result = board._streaming_replacement_overrides(
+        league_format,
+        {},
+        board_positions={"QB", "RB", "WR"},  # DST/K already excluded upstream
+        season=2026,
+        offline=True,
+        settings=settings,
+    )
+
+    assert result == {}
+
 
 # --- draft_board_csv_path -----------------------------------------------------
 

@@ -112,12 +112,23 @@ def replacement_level(
     *,
     points_column: str = DEFAULT_POINTS_COLUMN,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    replacement_overrides: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """SPEC §9.4's fixed-point replacement-level algorithm. Returns
     `{position: replacement_points}`, one entry per position this league
     actually starts (dedicated or flex-eligible) with a nonzero baseline --
     a position with baseline 0 (never started, not flex eligible either)
     has no meaningful replacement level and is omitted.
+
+    `replacement_overrides`, if given, replaces the computed value for any
+    position it names (silently ignoring an override for a position this
+    league doesn't actually start -- nothing to override). Built for DST/K:
+    "the Nth-best preseason total" is the wrong replacement level for a
+    position that's realistically streamed off waivers every week rather
+    than drafted for season-long value -- see `tools.streaming`'s module
+    docstring for the real historical data behind this, and why the
+    fixed-point baseline below is the right default for every other
+    position but not those two.
     """
     points_by_position = _points_by_position(projections, points_column)
     baseline = _converge_baseline(points_by_position, league_format, max_iterations)
@@ -134,6 +145,11 @@ def replacement_level(
         # deliberately small test fixture) still gets a value, from whoever
         # its worst projected player is, rather than an IndexError.
         replacement[pos] = pool[min(rank, len(pool)) - 1]
+
+    if replacement_overrides:
+        for pos, value in replacement_overrides.items():
+            if pos in replacement:
+                replacement[pos] = value
     return replacement
 
 
@@ -143,6 +159,7 @@ def compute_vor(
     *,
     points_column: str = DEFAULT_POINTS_COLUMN,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    replacement_overrides: dict[str, float] | None = None,
 ) -> pl.DataFrame:
     """SPEC §9.4 step 4: adds a `vor` column, `proj_points_adj[p] -
     replacement_points[position(p)]`.
@@ -154,7 +171,11 @@ def compute_vor(
     there but irrelevant.
     """
     replacement = replacement_level(
-        projections, league_format, points_column=points_column, max_iterations=max_iterations
+        projections,
+        league_format,
+        points_column=points_column,
+        max_iterations=max_iterations,
+        replacement_overrides=replacement_overrides,
     )
 
     present_positions = set(projections["position"].unique().to_list())

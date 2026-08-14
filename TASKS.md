@@ -219,6 +219,7 @@ Total ≈ 40–55 hours.
 - [ ] **3.4 — Season-long rankings via simulation** — SPEC §14.2. Replaces the Phase 0 static board for 2027.
 - [ ] **3.5 — Route/coverage data evaluation** — SPEC §10.5, Open Decision #4. With a full season of logged predictions, quantify what the missing charting data actually costs and decide whether to buy it.
 - [ ] **3.6 — Public-readiness audit (optional)** — SPEC §16.5. Licence re-audit, storage layer swap, multi-user `LeagueFormat` handling.
+- [ ] **3.7 — Weekly DST/K streamer tab** — not in SPEC §15's original page list; requested 2026-08-14, explicitly deferred ("not now but later"). The project owner streams both positions week to week rather than drafting for season-long value (see task 0.9's VOR follow-up, same session, for the real historical data confirming why) and wants a page/tab ranking DST and K by *that week's* projection, not a season total. `models.dst.weekly_streamer_list` (task 2.7) already produces exactly this for DST from the walk-forward predictor's own output; K has no model yet (SPEC §11.7 — deliberately minimal, implied team total/dome/opponent red-zone-to-TD rate, not built). Natural home is SPEC §15 page 5 (Waivers), which also isn't built yet as a Streamlit page (only the `tools.waivers` backend, task 2.6, exists) — likely makes sense to build together rather than as two separate pages.
 
 ---
 

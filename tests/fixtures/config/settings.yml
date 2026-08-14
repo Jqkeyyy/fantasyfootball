@@ -26,3 +26,4 @@ cache:
 draft:
   adp_sd_fallback: 6.5
   tier_method: "kmeans"
+  excluded_positions: ["DST", "K"]

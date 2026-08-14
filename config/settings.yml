@@ -33,6 +33,11 @@ simulation:
 draft:
   adp_sd_fallback: 8.0
   tier_method: "gap"
+  # Project owner streams DST/K week to week rather than drafting for
+  # season-long value (2026-08-14) -- excluded from the draft board
+  # entirely rather than just ranked low, so they don't clutter the
+  # board's default view. See tools/streaming.py and TASKS.md 3.7.
+  excluded_positions: ["DST", "K"]
 
 waivers:
   playoff_weight: 1.5

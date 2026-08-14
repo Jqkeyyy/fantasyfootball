@@ -188,6 +188,56 @@ def test_qb_baseline_shifts_dramatically_under_superflex() -> None:
     assert superflex_replacement["RB"] == pytest.approx(single_qb_replacement["RB"])
 
 
+# --- replacement_level: overrides for streamable positions (DST/K) ----------
+
+
+def test_replacement_level_override_replaces_the_computed_value() -> None:
+    projections = pl.DataFrame(_players("DST", 12, 25.0))
+    league_format = _format(n_teams=10, starters={"DST": 1})
+
+    replacement = vor.replacement_level(
+        projections, league_format, replacement_overrides={"DST": 232.2}
+    )
+
+    assert replacement["DST"] == pytest.approx(232.2)
+
+
+def test_replacement_level_override_only_touches_named_positions() -> None:
+    projections = pl.DataFrame(_players("QB", 15, 90.0) + _players("DST", 12, 25.0))
+    league_format = _format(n_teams=10, starters={"QB": 1, "DST": 1})
+
+    without_override = vor.replacement_level(projections, league_format)
+    with_override = vor.replacement_level(
+        projections, league_format, replacement_overrides={"DST": 232.2}
+    )
+
+    assert with_override["QB"] == pytest.approx(without_override["QB"])
+    assert with_override["DST"] == pytest.approx(232.2)
+
+
+def test_replacement_level_override_ignores_a_position_this_league_never_starts() -> None:
+    projections = pl.DataFrame(_players("QB", 15, 90.0))
+    league_format = _format(n_teams=10, starters={"QB": 1})
+
+    replacement = vor.replacement_level(
+        projections, league_format, replacement_overrides={"DST": 232.2}
+    )
+
+    assert "DST" not in replacement
+
+
+def test_compute_vor_applies_replacement_overrides() -> None:
+    """A streaming-derived replacement level far above the top preseason
+    DST total (the real, confirmed case -- see tools.streaming) must drive
+    every DST's VOR negative, not just shrink it."""
+    projections = pl.DataFrame(_players("DST", 12, 140.0))
+    league_format = _format(n_teams=10, starters={"DST": 1})
+
+    result = vor.compute_vor(projections, league_format, replacement_overrides={"DST": 232.2})
+
+    assert (result["vor"] < 0).all()
+
+
 # --- compute_vor --------------------------------------------------------------
 
 
