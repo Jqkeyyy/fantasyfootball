@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from ffapp.config import DEFAULT_LIGHTGBM_SETTINGS
+from ffapp.features import team_context
 from ffapp.models import team_environment
 
 
@@ -70,6 +71,48 @@ def test_build_team_environment_table_current_week_features_are_not_shifted() ->
     # internally lagged upstream (see add_opponent_pace), so it must not be
     # shifted a second time here.
     assert row["opponent_neutral_pace_ewm_8"] == pytest.approx(31.0)
+
+
+def test_build_team_environment_table_bye_week_return_has_null_trailing_features() -> None:
+    """A team coming off a bye has no row at `week - 1` -- the positional
+    shift (`.shift(1).over(["team", "season"])`) must still land on the
+    real *previous played week*'s value, not silently null just because a
+    week number was skipped. Week 3 here is KC's bye (no week-3 row at
+    all); week 4 is their next game and must pick up week 2's real trailing
+    value, not go null the way a week-arithmetic (`week - 1`) shift would."""
+    features = pl.DataFrame(
+        {
+            "team": ["KC", "KC", "KC"],
+            "season": [2025, 2025, 2025],
+            "week": [1, 2, 4],  # week 3 is a bye -- no row
+            "plays": [65, 70, 68],
+            "pass_rate": [0.60, 0.65, 0.62],
+            "implied_team_total": [24.5, 27.0, 23.0],
+            "spread": [-3.0, -2.5, -1.0],
+            "proe_ewm_5": [0.02, 0.03, 0.025],
+            "neutral_pace_ewm_8": [28.0, 27.5, 27.0],
+            "opponent_neutral_pace_ewm_8": [31.5, 31.0, 30.5],
+        }
+    )
+
+    result = team_environment.build_team_environment_table(features)
+
+    row = result.filter((pl.col("team") == "KC") & (pl.col("week") == 4)).row(0, named=True)
+    # week 2's real trailing values (the previous *played* week), not null.
+    assert row["proe_ewm_5"] == pytest.approx(0.03)
+    assert row["neutral_pace_ewm_8"] == pytest.approx(27.5)
+
+
+def test_current_feature_columns_stays_a_subset_of_team_contexts_current_week_columns() -> None:
+    """Regression test: this classification cost two fix rounds during
+    implementation (task review caught opponent_neutral_pace_ewm_8
+    misclassified as trailing, twice, before landing correctly). If
+    team_context.CURRENT_WEEK_COLUMNS is ever reclassified, this module's
+    own CURRENT_FEATURE_COLUMNS must not silently drift out of sync."""
+    assert set(team_environment.CURRENT_FEATURE_COLUMNS) <= set(team_context.CURRENT_WEEK_COLUMNS)
+    assert set(team_environment.TRAILING_FEATURE_COLUMNS).isdisjoint(
+        team_context.CURRENT_WEEK_COLUMNS
+    )
 
 
 # --- add_team_environment_baselines (task 3) ----------------------------------------

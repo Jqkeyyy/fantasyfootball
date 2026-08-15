@@ -8,11 +8,36 @@ for a week from Vegas lines, pace, and PROE.
 (`player_id`/`position`/`availability_flag`) -- the same trick
 `models.dst.build_dst_table` already uses, so the harness itself is never
 touched and nothing else that depends on it (points, dst, availability,
-quantiles) can regress.
+quantiles) can regress. Trailing features (`TRAILING_FEATURE_COLUMNS`) are
+lagged with a plain positional `.shift(1).over(["team", "season"])`, not
+`features.build.lag_shift_join`'s week-arithmetic shift (`week +
+lag_weeks`) -- matching how this same table's baselines
+(`add_team_environment_baselines`) and `features.team_context.
+add_opponent_pace`'s internal lag already work. Week-arithmetic lag leaves
+season-openers *and* bye-week returns null (no row exists at `week -
+lag_weeks`), while the baselines on those same rows stay populated under a
+positional shift -- an inconsistency inside this table's own values that a
+mixed lag strategy would otherwise introduce.
 
 `pass_attempts`/`rush_attempts` are never modeled directly -- they're
 derived (`team_plays * pass_rate` / `team_plays * (1 - pass_rate)`) so the
 two always sum to the predicted total exactly, by construction.
+
+**Monotonic constraint sign, verified rather than assumed** (same
+precedent `models.points`'s own module docstring already established --
+"SPEC lists def_adj_epa_allowed_* under 'decreasing'... confirmed
+empirically... not SPEC's own literal bullet placement"): the design doc
+states `neutral_pace_ewm_8`/`opponent_neutral_pace_ewm_8` as *increasing*
+on `team_plays`, but `neutral_pace_sec` (`interim.build.add_neutral_pace`)
+is seconds-per-play, not plays-per-second -- a *higher* value means a
+*slower* game, i.e. *fewer* plays, the opposite sign. Confirmed empirically
+against real cached 2015-2025 data: `corr(own lagged neutral_pace_ewm_8,
+plays) = -0.1291` (n=5702), `corr(opponent_neutral_pace_ewm_8, plays) =
+-0.0543` (n=5468) -- both negative, so both are registered as *decreasing*
+(`_DECREASING_FEATURES`), not increasing. `proe_ewm_5` on `pass_rate` was
+checked the same way and confirmed correctly increasing: `corr(own lagged
+proe_ewm_5, pass_rate) = +0.2524` (n=5202) -- left as-is in
+`_INCREASING_FEATURES`.
 """
 
 from __future__ import annotations
@@ -24,7 +49,6 @@ import lightgbm as lgb
 import polars as pl
 
 from ffapp.config import LightGBMSettings
-from ffapp.features.build import lag_shift_join
 from ffapp.models.baselines import pooled_rolling_mean
 
 TRAILING_FEATURE_COLUMNS = [
@@ -40,19 +64,32 @@ FEATURE_COLUMNS = TRAILING_FEATURE_COLUMNS + CURRENT_FEATURE_COLUMNS
 
 TARGET_COLUMNS = ["team_plays", "pass_rate"]
 
+# Signs verified empirically against real data, not trusted from the
+# design doc's literal wording -- see module docstring.
 _INCREASING_FEATURES = {
-    "team_plays": {"neutral_pace_ewm_8", "opponent_neutral_pace_ewm_8"},
+    "team_plays": set(),
     "pass_rate": {"proe_ewm_5"},
+}
+_DECREASING_FEATURES = {
+    "team_plays": {"neutral_pace_ewm_8", "opponent_neutral_pace_ewm_8"},
+    "pass_rate": set(),
 }
 
 
 def monotone_constraints(target_column: str) -> list[int]:
     """LightGBM's own `monotone_constraints` vector, aligned 1:1 with
     `FEATURE_COLUMNS`'s order -- `1` (increasing) for this target's own
-    `_INCREASING_FEATURES` entry, `0` (unconstrained) everywhere else.
-    Mirrors `models.points.monotone_constraints`'s own shape."""
+    `_INCREASING_FEATURES` entry, `-1` (decreasing, LightGBM's own
+    convention: the target should *decrease* as the feature increases)
+    for `_DECREASING_FEATURES`, `0` (unconstrained) everywhere else.
+    Mirrors `models.points.monotone_constraints`'s own shape. See module
+    docstring for the real correlations behind each sign."""
     increasing = _INCREASING_FEATURES[target_column]
-    return [1 if column in increasing else 0 for column in FEATURE_COLUMNS]
+    decreasing = _DECREASING_FEATURES[target_column]
+    return [
+        1 if column in increasing else -1 if column in decreasing else 0
+        for column in FEATURE_COLUMNS
+    ]
 
 
 def build_team_environment_table(team_context_features: pl.DataFrame) -> pl.DataFrame:
@@ -60,13 +97,25 @@ def build_team_environment_table(team_context_features: pl.DataFrame) -> pl.Data
     (`features.team_context.build_team_context_features`'s own output),
     reshaped for the walk-forward harness: `player_id`/`position`/
     `availability_flag` added (DST-style), `plays` renamed to
-    `team_plays`, trailing features lag-shifted one week, current-week
-    features (Vegas lines) joined directly.
+    `team_plays`, trailing features lag-shifted one week (a positional
+    `.shift(1).over(["team", "season"])`, not week-arithmetic -- see
+    module docstring), current-week features (Vegas lines) joined
+    directly.
     """
     targets = team_context_features.select(
         "team", "season", "week", pl.col("plays").alias("team_plays"), "pass_rate"
     )
-    shifted = lag_shift_join(targets, team_context_features, "team", TRAILING_FEATURE_COLUMNS)
+    sorted_features = team_context_features.sort(["team", "season", "week"]).with_columns(
+        [
+            pl.col(column).shift(1).over(["team", "season"]).alias(column)
+            for column in TRAILING_FEATURE_COLUMNS
+        ]
+    )
+    shifted = targets.join(
+        sorted_features.select("team", "season", "week", *TRAILING_FEATURE_COLUMNS),
+        on=["team", "season", "week"],
+        how="left",
+    )
     with_current = shifted.join(
         team_context_features.select("team", "season", "week", *CURRENT_FEATURE_COLUMNS),
         on=["team", "season", "week"],
