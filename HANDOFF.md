@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-15
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** pending this session's own commit of the `rz_touches` fix + corrected Stage 2 result (see below) — not yet committed as of this writing. Prior session's `05c4820` on `main` was pushed and confirmed synced with `origin`.
+**Last commit:** `12a1b1d` on `main` — this session's `rz_touches` fix + corrected Stage 2 result. Not yet pushed to `origin` as of this writing.
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. `docs/summary.md` is a third, newer reference: a standing narrative snapshot of current state and how things are going, meant to be read cover to cover rather than searched. Maintenance rules are at the bottom.
 
