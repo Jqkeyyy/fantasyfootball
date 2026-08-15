@@ -176,3 +176,132 @@ def test_build_efficiency_table_wires_shrinkage_into_all_four_outputs() -> None:
         n_touches + efficiency.TARGET_PRIOR_WEIGHT
     )
     assert wr1_week2["_shrunk_yards_per_target"] == pytest.approx(expected)
+
+
+def test_build_efficiency_table_adjusts_upward_against_a_friendlier_than_average_matchup() -> None:
+    result = _build_table()
+
+    # WR league average of def_adj_ypt_allowed_wr at any week in this
+    # fixture is (2.0 + 0.0) / 2 = 1.0. wr1's own opponent value is 2.0
+    # (above average, a friendlier matchup for the offense) -- the offset
+    # is +1.0, so expected_yards_per_target must be exactly 1.0 higher
+    # than the shrunk estimate alone.
+    wr1_week2 = result.filter((pl.col("player_id") == "wr1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    assert wr1_week2["expected_yards_per_target"] == pytest.approx(
+        wr1_week2["_shrunk_yards_per_target"] + 1.0
+    )
+
+
+def test_build_efficiency_table_adjusts_downward_against_a_tougher_than_average_matchup() -> None:
+    result = _build_table()
+
+    # wr2's own opponent value is 0.0 -- 1.0 below the same 1.0 league
+    # average -- the offset is -1.0.
+    wr2_week2 = result.filter((pl.col("player_id") == "wr2") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    assert wr2_week2["expected_yards_per_target"] == pytest.approx(
+        wr2_week2["_shrunk_yards_per_target"] - 1.0
+    )
+
+
+def test_build_efficiency_table_no_adjustment_against_average_matchup() -> None:
+    result = _build_table()
+
+    # rb1 is the only real RB in this fixture, so its own
+    # def_adj_ypt_allowed_rb_rushing value (1.0) IS the league average --
+    # the offset must be exactly 0.
+    rb1_week2 = result.filter((pl.col("player_id") == "rb1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    assert rb1_week2["expected_yards_per_carry"] == pytest.approx(
+        rb1_week2["_shrunk_yards_per_carry"]
+    )
+
+
+def test_build_efficiency_table_nulls_expected_output_for_an_ineligible_position() -> None:
+    result = _build_table()
+
+    # WR is not in RB_QB -- wr1's carry-side outputs must be null.
+    wr1_week2 = result.filter((pl.col("player_id") == "wr1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    assert wr1_week2["expected_yards_per_carry"] is None
+    assert wr1_week2["expected_td_rate_per_carry"] is None
+
+
+def test_build_efficiency_table_computes_expected_output_for_an_eligible_position() -> None:
+    result = _build_table()
+
+    rb1_week2 = result.filter((pl.col("player_id") == "rb1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    # RB is in PASS_CATCHERS_AND_RB (receives) AND RB_QB (carries) --
+    # both output families must be populated for a real RB row.
+    assert rb1_week2["expected_yards_per_target"] is not None
+    assert rb1_week2["expected_yards_per_carry"] is not None
+
+
+def test_td_rate_clamps_to_one_instead_of_exceeding_it() -> None:
+    table = pl.DataFrame(
+        {
+            "_shrunk_td_rate_per_target": [0.95],
+            "_adj_td_rate_per_target": [10.0],
+            "_league_avg_adj_td_rate_per_target": [0.0],
+        }
+    )
+
+    result = efficiency._combine_and_clamp(
+        table,
+        shrunk_col="_shrunk_td_rate_per_target",
+        adj_col="_adj_td_rate_per_target",
+        league_avg_col="_league_avg_adj_td_rate_per_target",
+        clamp=True,
+        out_col="expected_td_rate_per_target",
+    )
+
+    assert result["expected_td_rate_per_target"][0] == pytest.approx(1.0)
+
+
+def test_td_rate_clamps_to_zero_instead_of_going_negative() -> None:
+    table = pl.DataFrame(
+        {
+            "_shrunk_td_rate_per_target": [0.05],
+            "_adj_td_rate_per_target": [-10.0],
+            "_league_avg_adj_td_rate_per_target": [0.0],
+        }
+    )
+
+    result = efficiency._combine_and_clamp(
+        table,
+        shrunk_col="_shrunk_td_rate_per_target",
+        adj_col="_adj_td_rate_per_target",
+        league_avg_col="_league_avg_adj_td_rate_per_target",
+        clamp=True,
+        out_col="expected_td_rate_per_target",
+    )
+
+    assert result["expected_td_rate_per_target"][0] == pytest.approx(0.0)
+
+
+def test_yards_per_touch_is_never_clamped() -> None:
+    table = pl.DataFrame(
+        {
+            "_shrunk_yards_per_target": [5.0],
+            "_adj_yards_per_target": [10.0],
+            "_league_avg_adj_yards_per_target": [0.0],
+        }
+    )
+
+    result = efficiency._combine_and_clamp(
+        table,
+        shrunk_col="_shrunk_yards_per_target",
+        adj_col="_adj_yards_per_target",
+        league_avg_col="_league_avg_adj_yards_per_target",
+        clamp=False,
+        out_col="expected_yards_per_target",
+    )
+
+    assert result["expected_yards_per_target"][0] == pytest.approx(15.0)

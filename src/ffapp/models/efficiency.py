@@ -150,6 +150,40 @@ def build_efficiency_table(
             prior_weight=spec.prior_weight,
             out_col=f"_shrunk_{output_name}",
         )
+        table = table.with_columns(
+            _select_by_position(spec.group_column_by_position, spec.adj_prefix).alias(
+                f"_adj_{output_name}"
+            )
+        )
+        table = table.with_columns(
+            _select_group(spec.group_column_by_position).alias(f"_group_{output_name}")
+        )
+        # League-average adjustment for this output's own group, same
+        # week -- a same-week pooled mean across every eligible player's
+        # own already-real adjustment value. No shift needed: the value
+        # already reflects "as of before this week" (task 1.9's own
+        # module docstring). Null rows (an ineligible position) are
+        # skipped by .mean()'s own default null handling.
+        adj_col = f"_adj_{output_name}"
+        group_col = f"_group_{output_name}"
+        league_avg_col = f"_league_avg_adj_{output_name}"
+        table = table.with_columns(
+            pl.col(adj_col).mean().over(["season", "week", group_col]).alias(league_avg_col)
+        )
+        table = _combine_and_clamp(
+            table,
+            shrunk_col=f"_shrunk_{output_name}",
+            adj_col=f"_adj_{output_name}",
+            league_avg_col=f"_league_avg_adj_{output_name}",
+            clamp=spec.clamp,
+            out_col=f"_combined_{output_name}",
+        )
+        table = table.with_columns(
+            pl.when(pl.col("position").is_in(spec.positions))
+            .then(pl.col(f"_combined_{output_name}"))
+            .otherwise(None)
+            .alias(f"expected_{output_name}")
+        )
 
     return table
 
@@ -237,6 +271,62 @@ def _shrink(
             / (pl.col(n_touches_col) + prior_weight)
         ).alias(out_col)
     )
+
+
+def _select_by_position(group_column_by_position: dict[str, str], adj_prefix: str) -> pl.Expr:
+    """Picks the real `<adj_prefix>_<group>` column for a row's own
+    position -- e.g. a WR row reads `def_adj_ypt_allowed_wr`, an RB row
+    reads `def_adj_ypt_allowed_rb_receiving`, both already real,
+    already-mapped columns sitting in `player_week_features` (task 1.9).
+    A position not present in `group_column_by_position` (e.g. a QB row
+    for a target-side output) stays null -- correct, since that position
+    has no real matchup value for this output at all."""
+    expr = pl.lit(None, dtype=pl.Float64)
+    for position, group in group_column_by_position.items():
+        col_name = f"{adj_prefix}_{group}"
+        expr = pl.when(pl.col("position") == position).then(pl.col(col_name)).otherwise(expr)
+    return expr
+
+
+def _select_group(group_column_by_position: dict[str, str]) -> pl.Expr:
+    """Picks the group name for a row's own position, used to compute
+    per-group league averages. e.g. a WR row returns "wr", an RB row
+    returns "rb_receiving" (for target-side) or "rb_rushing" (for
+    carry-side), based on the output's own group mapping."""
+    expr = pl.lit(None, dtype=pl.Utf8)
+    for position, group in group_column_by_position.items():
+        expr = pl.when(pl.col("position") == position).then(pl.lit(group)).otherwise(expr)
+    return expr
+
+
+def _combine_and_clamp(
+    table: pl.DataFrame,
+    *,
+    shrunk_col: str,
+    adj_col: str,
+    league_avg_col: str,
+    clamp: bool,
+    out_col: str,
+) -> pl.DataFrame:
+    """Step 2 of the design doc's formula: `final = shrunk + (this_week's
+    real opponent adjustment - the league-average adjustment for that
+    same group and week)`. `adj_col`/`league_avg_col` are filled to 0.0
+    before combining -- deliberately: a missing opponent-adjustment value
+    (task 1.8's own real, rare, early-season null pattern) should degrade
+    gracefully to "no matchup adjustment applied," not null out an
+    otherwise-valid shrunk estimate entirely. `td_rate_per_*` outputs are
+    clamped to `[0, 1]` -- a real, if rare, edge case where an additive
+    offset against an outlier matchup could otherwise push a probability
+    outside its valid range. `yards_per_*` outputs are never clamped --
+    real yardage has no natural upper bound and is never negative to
+    begin with.
+    """
+    combined = pl.col(shrunk_col) + (
+        pl.col(adj_col).fill_null(0.0) - pl.col(league_avg_col).fill_null(0.0)
+    )
+    if clamp:
+        combined = combined.clip(0.0, 1.0)
+    return table.with_columns(combined.alias(out_col))
 
 
 __all__ = ["CARRY_PRIOR_WEIGHT", "TARGET_COLUMNS", "TARGET_PRIOR_WEIGHT", "build_efficiency_table"]
