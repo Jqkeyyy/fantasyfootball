@@ -48,7 +48,9 @@ player_week_usage = player_week_usage.join(_reg_weeks, on=["season", "week"], ho
 player_week_stats = player_week_stats.join(_reg_weeks, on=["season", "week"], how="inner")
 
 # --- Build Stage 3's own table. ---
-table = efficiency.build_efficiency_table(player_week_features, player_week_usage, player_week_stats)
+table = efficiency.build_efficiency_table(
+    player_week_features, player_week_usage, player_week_stats
+)
 
 # run_walk_forward_backtest needs availability_flag (task 1.9's own
 # column, not produced by build_efficiency_table) -- joined in here,
@@ -65,8 +67,17 @@ validation_seasons = [2021, 2022, 2023, 2024, 2025]
 # --- Score each output through the real walk-forward harness, once per
 # target, with all three predictors (shrunk model, trailing_raw,
 # league_mean) reading from the SAME position-eligible, real-outcome-
-# defined row set -- so every predictor for a given target is scored on
-# the identical row set from the start. ---
+# defined input table -- so every predictor for a given target is built
+# from the identical underlying rows from the start. NOTE: this does not
+# mean every predictor's final SCORED n is identical --
+# evaluation.metrics.accuracy_metrics still filters each predictor
+# independently on a null `prediction` (standard, expected behavior,
+# same precedent as Stage 1's own evaluation script), and trailing_raw
+# is null for a player's own cold-start weeks in a way the shrinkage
+# formula's degenerate case never is, so trailing_raw is scored on fewer
+# rows than shrunk_model/league_mean -- see docs/JOURNAL.md's Stage 3
+# entry for the real common-support numbers and why the headline result
+# holds either way. ---
 for target_column, eligible_positions in [
     ("yards_per_target", PASS_CATCHERS_AND_RB),
     ("td_rate_per_target", PASS_CATCHERS_AND_RB),

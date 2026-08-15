@@ -170,8 +170,11 @@ roughly zero-centered by construction, not an absolute rate on a
 ratio-safe scale. Dividing by a value that's already close to zero would
 be meaningless; adding the deviation directly is the correct operation
 for a coefficient in the same real units as the shrunk rate itself.
-`league_avg_adj_rate` (the mean of `adj_*_allowed` across every real
-defense for that position group and week) is still subtracted explicitly
+`league_avg_adj_rate` (a same-week mean of `adj_*_allowed` across every
+real eligible player row for that position group — not one vote per
+defense; a defense facing more rostered players that week is weighted
+proportionally more heavily in the average, by construction of a
+row-level `.mean()`) is still subtracted explicitly
 rather than assumed to be exactly 0 — task 1.8's own per-team shrinkage
 blend (current-season vs. prior-season ridge estimates) means the real
 stored values aren't guaranteed to sum to exactly zero every week, so
