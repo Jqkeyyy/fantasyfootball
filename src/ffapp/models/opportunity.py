@@ -86,8 +86,13 @@ def build_opportunity_table(
         pl.col("rz_targets").fill_null(0),
         pl.col("rz_carries").fill_null(0),
     )
+    with_real_outcomes = with_real_outcomes.with_columns(
+        (pl.col("rz_targets") + pl.col("rz_carries")).alias("rz_touches")
+    )
+    with_real_outcomes = with_real_outcomes.join(
+        _team_rz_touches_trailing(with_real_outcomes), on=["team", "season", "week"], how="left"
+    )
     return with_real_outcomes.with_columns(
-        (pl.col("rz_targets") + pl.col("rz_carries")).alias("rz_touches"),
         pl.when(pl.col("position").is_in(PASS_CATCHERS_AND_RB))
         .then(pl.col("target_share_ewm_3") * pl.col("predicted_pass_attempts"))
         .otherwise(None)
@@ -97,9 +102,49 @@ def build_opportunity_table(
         .otherwise(None)
         .alias("expected_carries"),
         pl.when(pl.col("position").is_in(PASS_CATCHERS_AND_RB))
-        .then(pl.col("rz_touch_share_ewm_6") * pl.col("predicted_team_plays"))
+        .then(pl.col("rz_touch_share_ewm_6") * pl.col("team_rz_touches_trailing_ewm_6"))
         .otherwise(None)
         .alias("expected_rz_touches"),
+    )
+
+
+def _team_rz_touches_trailing(table: pl.DataFrame) -> pl.DataFrame:
+    """A team's own trailing red-zone-touch volume -- `rz_touch_share`'s
+    real denominator (SPEC/`features/usage.py`: "(rz targets + rz carries)
+    / team rz touches"), which no upstream table persists on its own
+    (`interim/build.py` computes it only long enough to derive the *share*,
+    then drops it). Stage 1 doesn't predict this either -- it only models
+    `team_plays`/`pass_rate` -- so unlike the pass/rush formulas, there is
+    no Stage-1 prediction to multiply the share by. This rebuilds the real
+    team-week total directly from this table's own already-real, already-
+    filled `rz_touches` column (summed across every player row for that
+    team-week) and trails it the same way every other B2-equivalent
+    baseline in this project does (`ewm_mean(span=6)`, matching
+    `rz_touch_share_ewm_6`'s own window, `.shift(1)`'d so the target week's
+    own outcome never leaks in, within-season only per this project's
+    windowing convention). A team's first tracked week of a season has no
+    prior week to trail, so `team_rz_touches_trailing_ewm_6` is null there
+    -- the same cold-start gap every other trailing feature has.
+
+    Real judgment call, not a certainty: `player_week_features`/
+    `player_week_usage` are scoped to skill positions only (SPEC's
+    `SKILL_POSITIONS`), so a real red-zone touch by a non-skill-position
+    player (a fullback dive, a trick-play carry) is invisible here and
+    slightly undercounts the true team total `interim/build.py` itself
+    used when it computed the real share -- rare enough not to block this
+    fix, but worth knowing if the numbers still look off after this."""
+    return (
+        table.group_by(["team", "season", "week"])
+        .agg(pl.col("rz_touches").sum().alias("_team_rz_touches"))
+        .sort(["team", "season", "week"])
+        .with_columns(
+            pl.col("_team_rz_touches")
+            .ewm_mean(span=6)
+            .shift(1)
+            .over(["team", "season"])
+            .alias("team_rz_touches_trailing_ewm_6")
+        )
+        .select("team", "season", "week", "team_rz_touches_trailing_ewm_6")
     )
 
 

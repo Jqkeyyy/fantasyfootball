@@ -99,15 +99,93 @@ def test_build_opportunity_table_nulls_expected_carries_for_ineligible_position(
     assert wr["expected_carries"] is None
 
 
-def test_build_opportunity_table_computes_expected_rz_touches_for_eligible_positions() -> None:
+def test_build_opportunity_table_nulls_expected_rz_touches_for_ineligible_position() -> None:
     result = opportunity.build_opportunity_table(
         _player_week_features(), _player_week_usage(), _stage1_predictions()
     )
 
-    wr = result.filter(pl.col("player_id") == "wr1").row(0, named=True)
     qb = result.filter(pl.col("player_id") == "qb1").row(0, named=True)
-    assert wr["expected_rz_touches"] == pytest.approx(0.15 * 55.0)  # WR is in PASS_CATCHERS_AND_RB
     assert qb["expected_rz_touches"] is None  # QB is NOT in PASS_CATCHERS_AND_RB
+
+
+def _rz_touches_features_two_weeks() -> pl.DataFrame:
+    """Two real weeks for the same team (KC) -- needed to exercise
+    `team_rz_touches_trailing_ewm_6`'s own trailing behavior (null in the
+    team's first tracked week of the season, a real trailing value from
+    week 1's real team total by week 2)."""
+    return pl.DataFrame(
+        {
+            "player_id": ["wr1", "rb1", "wr1", "rb1"],
+            "season": [2025, 2025, 2025, 2025],
+            "week": [1, 1, 2, 2],
+            "team": ["KC", "KC", "KC", "KC"],
+            "position": ["WR", "RB", "WR", "RB"],
+            "target_share_ewm_3": [0.25, 0.10, 0.25, 0.10],
+            "carry_share_ewm_3": [0.02, 0.60, 0.02, 0.60],
+            "rz_touch_share_ewm_6": [0.15, 0.30, 0.20, 0.30],
+        }
+    )
+
+
+def _rz_touches_usage_two_weeks() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player_id": ["wr1", "rb1", "wr1", "rb1"],
+            "season": [2025, 2025, 2025, 2025],
+            "week": [1, 1, 2, 2],
+            "targets": [8, 3, 9, 4],
+            "carries": [1, 15, 1, 16],
+            "rz_targets": [1, 0, 1, 0],
+            "rz_carries": [0, 3, 0, 2],
+        }
+    )
+
+
+def _rz_touches_stage1_predictions_two_weeks() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "team": ["KC", "KC"],
+            "season": [2025, 2025],
+            "week": [1, 2],
+            "predicted_team_plays": [55.0, 58.0],
+            "predicted_pass_attempts": [30.0, 32.0],
+            "predicted_rush_attempts": [25.0, 26.0],
+        }
+    )
+
+
+def test_build_opportunity_table_computes_expected_rz_touches_from_team_trailing_volume() -> None:
+    result = opportunity.build_opportunity_table(
+        _rz_touches_features_two_weeks(),
+        _rz_touches_usage_two_weeks(),
+        _rz_touches_stage1_predictions_two_weeks(),
+    )
+
+    week2_wr1 = result.filter((pl.col("player_id") == "wr1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    # Team KC's real week-1 rz touches: wr1 (rz_targets=1 + rz_carries=0)
+    # + rb1 (rz_targets=0 + rz_carries=3) = 4. With a single prior week,
+    # ewm_6 of one point equals that point exactly (same precedent as the
+    # b2 baseline tests below).
+    assert week2_wr1["team_rz_touches_trailing_ewm_6"] == pytest.approx(4.0)
+    assert week2_wr1["expected_rz_touches"] == pytest.approx(0.20 * 4.0)
+
+
+def test_build_opportunity_table_nulls_expected_rz_touches_in_teams_first_tracked_week() -> None:
+    result = opportunity.build_opportunity_table(
+        _rz_touches_features_two_weeks(),
+        _rz_touches_usage_two_weeks(),
+        _rz_touches_stage1_predictions_two_weeks(),
+    )
+
+    week1_wr1 = result.filter((pl.col("player_id") == "wr1") & (pl.col("week") == 1)).row(
+        0, named=True
+    )
+    # No prior week for KC yet this season -- same cold-start null every
+    # other trailing feature in this project has.
+    assert week1_wr1["team_rz_touches_trailing_ewm_6"] is None
+    assert week1_wr1["expected_rz_touches"] is None
 
 
 def test_build_opportunity_table_derives_real_rz_touches_from_targets_and_carries() -> None:
