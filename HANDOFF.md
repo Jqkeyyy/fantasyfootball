@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-15
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** `16baffb` on `main` — Stage 3's opponent-adjustment offset removed on real evidence and the model re-evaluated: `shrunk_model` now beats `trailing_raw` on 3 of 4 outputs (unchanged) and `league_mean` on all 4 of 4 (up from 2 of 4). Not yet pushed to `origin` as of this writing.
+**Last commit:** `b364b89` on `main`, pushed to `origin` and confirmed synced (`git rev-list --left-right --count origin/main...main` → `0 0`) — Stage 3's opponent-adjustment offset removed on real evidence and the model re-evaluated: `shrunk_model` now beats `trailing_raw` on 3 of 4 outputs (unchanged) and `league_mean` on all 4 of 4 (up from 2 of 4).
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. `docs/summary.md` is a third, newer reference: a standing narrative snapshot of current state and how things are going, meant to be read cover to cover rather than searched. Maintenance rules are at the bottom.
 
