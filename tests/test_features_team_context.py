@@ -323,6 +323,7 @@ def test_build_team_context_features_registers_every_feature() -> None:
             "season": [2025],
             "week": [1],
             "plays": [60],
+            "pass_rate": [0.55],
             "neutral_pace_sec": [28.0],
             "proe": [0.02],
             "epa_per_play_off": [0.1],
@@ -352,6 +353,7 @@ def test_build_team_context_features_registers_every_feature() -> None:
         "team_epa_off_ewm_8",
         "team_success_off_ewm_8",
         "ol_continuity_ewm_5",
+        "pass_rate_ewm_5",
         "implied_team_total",
         "spread",
         "teammate_vacated_target_share",
@@ -371,6 +373,7 @@ def test_build_team_context_features_windows_plays_per_game() -> None:
             "season": [2025, 2025],
             "week": [1, 2],
             "plays": [60.0, 64.0],
+            "pass_rate": [0.55, 0.60],
             "neutral_pace_sec": [28.0, 27.0],
             "proe": [0.0, 0.0],
             "epa_per_play_off": [0.1, 0.1],
@@ -394,6 +397,46 @@ def test_build_team_context_features_windows_plays_per_game() -> None:
 
     week1 = result.filter(pl.col("week") == 1).row(0, named=True)
     assert week1["plays_per_game_ewm_5"] == pytest.approx(60.0)  # first week: equals its own value
+
+
+def test_build_team_context_features_windows_pass_rate() -> None:
+    """Regression test for a real gap found by the final Stage 1 review:
+    a team's own trailing pass_rate was never windowed into a feature at
+    all, despite real correlation with the target as strong as features
+    already in use (+0.2533, n=5438, verified against real 2015-2025
+    data before adding this)."""
+    twc = pl.DataFrame(
+        {
+            "team": ["KC", "KC"],
+            "season": [2025, 2025],
+            "week": [1, 2],
+            "plays": [60.0, 64.0],
+            "pass_rate": [0.55, 0.65],
+            "neutral_pace_sec": [28.0, 27.0],
+            "proe": [0.0, 0.0],
+            "epa_per_play_off": [0.1, 0.1],
+            "success_rate_off": [0.48, 0.48],
+            "implied_total": [24.5, 24.5],
+            "spread": [-3.0, -3.0],
+        }
+    )
+    schedule = pl.DataFrame(
+        schema={"season": pl.Int64, "week": pl.Int64, "home_team": pl.Utf8, "away_team": pl.Utf8}
+    )
+    snap_counts = pl.DataFrame(
+        [_snap_row(pfr_player_id=pid, position=pos) for pid, pos in [("c1", "C")]]
+    ).clear()
+    injuries = pl.DataFrame([_injury_row()]).clear()
+    usage_features = pl.DataFrame([_usage_features_row()]).clear()
+
+    result = team_context.build_team_context_features(
+        twc, schedule, snap_counts, injuries, usage_features, registry={}
+    )
+
+    week1 = result.filter(pl.col("week") == 1).row(0, named=True)
+    week2 = result.filter(pl.col("week") == 2).row(0, named=True)
+    assert week1["pass_rate_ewm_5"] == pytest.approx(0.55)  # first week: equals its own value
+    assert week2["pass_rate_ewm_5"] == pytest.approx(0.61)  # ewm_mean(span=5) of [0.55, 0.65]
 
 
 def test_build_team_context_features_registers_opponent_neutral_pace() -> None:

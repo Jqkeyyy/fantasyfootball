@@ -195,6 +195,7 @@ _WINDOWED_FEATURES = [
         ["ewm_8"],
     ),
     _WindowedFeature("proe", "proe", "pass rate over expectation", ["ewm_5"]),
+    _WindowedFeature("pass_rate", "pass_rate", "team's own trailing pass rate", ["ewm_5"]),
     _WindowedFeature("epa_per_play_off", "team_epa_off", "offensive quality", ["ewm_8"]),
     _WindowedFeature("success_rate_off", "team_success_off", "offensive quality", ["ewm_8"]),
     _WindowedFeature(

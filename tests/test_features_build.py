@@ -352,6 +352,7 @@ def test_build_player_week_features_lag_shifts_usage_but_not_opponent_or_situati
             "season": [2025] * len(weeks),
             "week": weeks,
             "plays": [60.0, 64.0],
+            "pass_rate": [0.55, 0.60],
             "neutral_pace_sec": [28.0] * len(weeks),
             "proe": [0.0] * len(weeks),
             "epa_per_play_off": [0.1] * len(weeks),
