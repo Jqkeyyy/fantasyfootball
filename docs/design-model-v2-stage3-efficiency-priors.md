@@ -1,6 +1,12 @@
 # Design: decomposed model v2, Stage 3 — efficiency priors
 
-**Status:** proposed, approved in brainstorming 2026-08-15, not yet implemented.
+**Status:** implemented, evaluated, and merged to `main` (2026-08-15). **Step 2
+(opponent-adjustment offset, below) was removed the same day** on real
+evidence from a paired-bootstrap ablation against real 2021-2025 data — see
+the note directly after Step 2's own description, and `docs/JOURNAL.md`'s
+Stage 3 entries for the full numbers. The description of Step 2 is kept
+below, not deleted, since it documents what was tried and why, and remains
+the starting point for any future rework.
 **Relates to:** SPEC.md §11.4 ("v2: decomposed pipeline"), TASKS.md 3.1,
 `docs/design-model-v2-stage1-team-environment.md` (Stage 1, complete, merged
 to `main`), `docs/design-model-v2-stage2-opportunity.md` (Stage 2, complete,
@@ -195,6 +201,48 @@ season-long population value. Mixing a weekly-changing signal into a
 long-run prior is a category mismatch — keeping them as two separate
 steps, each doing one clear job, avoids that.
 
+**Step 2 removed, 2026-08-15 — real evidence, not a design preference.**
+The final whole-branch review ran a paired-bootstrap ablation comparing
+`expected_*` (shrinkage + this offset) against the shrinkage step alone,
+on real 2021-2025 data, and found the offset measurably HURT
+`yards_per_carry` (RB and QB, both CIs excluding zero) and
+`yards_per_target` (RB and WR, both CIs excluding zero), and was
+statistically indistinguishable from zero everywhere else, including TE
+(target-side). A first pass of this ablation ran against a commit that
+still had a real null-handling bug in this same combine step (a missing
+`adj_col` value degraded to a spurious non-zero offset instead of exactly
+0.0) — the project owner correctly asked whether the harm finding and the
+bug could be the same thing before trusting it, and they were not: the
+bug was fixed, the ablation was re-run on the fixed code with a
+per-position breakdown, and the harm on RB/WR yards and QB carries held.
+TE's own point estimate (+0.017 mean absolute-error increase) sat between
+RB's (+0.019) and WR's (+0.014), both confirmed harmful, with a wider CI
+that reflects TE's smaller sample, not a smaller real effect — keeping
+the offset for TE alone would have been selecting on noise, so it was
+removed for every position, not carved into a position-specific
+exception. `models/efficiency.py`'s `expected_<output>` is now exactly
+the shrunk estimate from Step 1, with no further combination step and no
+clamping (a convex combination of two already-bounded values, provably
+never needs clamping — see the module's own current docstring).
+
+**This is a finding about the specific additive functional form used
+here, not a finding that opponent adjustment is worthless.** QB carries
+showed the single largest harm (+0.075, the biggest effect measured
+anywhere in this ablation) at exactly the position SPEC §10.4 itself
+predicts matchup should matter most for rushing — evidence against this
+formula, not against the underlying effect. The prime suspect for a
+future rework: this design applied the offset identically to QB and RB
+rushing via the same additive term, when a QB's own rushing matchup
+(spy usage, containment schemes) is plausibly a different signal than an
+RB's, and task 1.8's own already-shrunk defensive estimate was applied
+at full weight in Stage 3's own combine step, with no further
+discounting specific to how much real signal a given position's
+opponent-adjustment differential actually carries. A multiplicative
+form, a QB-specific term, or an explicit further shrinkage of the offset
+itself are all real options for later — not attempted here, since this
+task's job was evaluating the design as specified, not redesigning it
+unilaterally.
+
 Position eligibility for each output is inherited directly from
 `features.usage`'s own established lists (`PASS_CATCHERS_AND_RB`,
 `RB_QB`), same precedent Stage 2 already set — not re-derived here.
@@ -251,18 +299,16 @@ fit):
 
 - `build_efficiency_table(player_week_features, player_week_usage,
   player_week_stats) -> pl.DataFrame` — no `defense_position_allowed`
-  parameter needed (see above: the opponent-adjustment columns Stage 3
-  needs already exist, pre-mapped, in `player_week_features`). Joins the
-  real per-touch outcome counts (from `player_week_usage`/
-  `player_week_stats`), computes the trailing yards/touch cumulative sums
-  per player and per position, selects the position-appropriate
-  `def_adj_ypt_allowed_<group>`/
-  `def_adj_td_rate_allowed_<group>` column already sitting in
-  `player_week_features`, and applies both formula steps to produce
+  parameter needed. Joins the real per-touch outcome counts (from
+  `player_week_usage`/`player_week_stats`), computes the trailing
+  yards/touch cumulative sums per player and per position, and applies
+  Step 1 (shrinkage only, Step 2 removed) to produce
   `expected_yards_per_target`, `expected_td_rate_per_target`,
   `expected_yards_per_carry`, `expected_td_rate_per_carry` plus the real
   outcome columns and both baseline columns (`*_trailing_raw`,
-  `*_league_mean`) needed for evaluation.
+  `*_league_mean`) needed for evaluation. `player_week_features` no
+  longer needs its `def_adj_*_<group>` columns selected at all, now that
+  Step 2 is gone.
 
 New scratch script `notebooks/evaluate_efficiency_v2_stage3.py`, mirroring
 `evaluate_opportunity_v2_stage2.py`'s shape: loads real data, builds the
@@ -285,11 +331,10 @@ TDD as usual:
    a touch count equal to the prior weight → exactly the midpoint between
    `player_trailing_rate` and `positional_mean`; a very large touch count
    → close to `player_trailing_rate`).
-2. The opponent-adjustment offset — a fixture confirming the shrunk rate
-   is adjusted upward against a friendlier-than-average matchup (a
-   positive `adj_ypt_allowed` deviation) and downward against a tougher
-   one (a negative deviation), and left unchanged (`+ 0.0`) against an
-   exactly-average one.
+2. ~~The opponent-adjustment offset~~ — removed 2026-08-15 along with
+   Step 2 itself; see the note above. `expected_<output>` is tested
+   directly against `_shrunk_<output>` instead (exact equality, no
+   further combination).
 3. Position eligibility — a fixture confirming a QB row's
    `expected_yards_per_target`/`expected_td_rate_per_target` are null
    (QBs aren't in `PASS_CATCHERS_AND_RB`) while their carry-side outputs
@@ -299,10 +344,9 @@ TDD as usual:
    ratios (a 1-target 40-yard week, or a 1-target-volume player, must not
    carry equal weight to a 10-target 40-yard week or a 10-target-volume
    player).
-5. TD-rate clamping — a fixture forcing `final_rate` below 0 or above 1
-   via an extreme offset, confirming it clamps rather than emitting an
-   invalid probability; a same-shaped case for `yards_per_*` confirming
-   no clamping is applied there.
+5. ~~TD-rate clamping~~ — removed along with Step 2; no longer needed
+   (see the module's own current docstring for why a convex combination
+   of two already-bounded values can't leave `[0, 1]`).
 6. A real walk-forward-adjacent verification run against real 2021-2025
    REG-season data, reported honestly per the Evaluation section above.
 

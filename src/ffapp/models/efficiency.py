@@ -2,18 +2,31 @@
 numbered TASKS.md task -- see docs/design-model-v2-stage3-efficiency-priors.md
 for the full design). Predicts a player's own expected yards and
 touchdown rate per touch, split by touch type (target vs. carry), as an
-Empirical Bayes shrinkage estimate (SPEC's own literal RULE) plus an
-additive opponent-adjustment offset -- no trained model, per that same
-RULE, continuing Stage 1/2's own precedent.
+Empirical Bayes shrinkage estimate (SPEC's own literal RULE) -- no
+trained model, continuing Stage 1/2's own precedent.
 
-Unlike Stage 2, this stage does not depend on Stage 1's or Stage 2's own
-output at all -- SPEC's own input list for Stage 3 names only "player
-efficiency history" and "opponent adjusted rates," both already real,
-already-available columns: `player_week_usage`/`player_week_stats` for
-the first, and `player_week_features`'s own `def_adj_*_<group>` columns
-(already mapped onto each player's own position by task 1.9's
-`features.opponent.add_opponent_features`, already lag-safe) for the
-second.
+**No opponent-adjustment offset.** SPEC §11.4's own Stage 3 input list
+names "opponent adjusted rates" alongside "player efficiency history,"
+and an earlier version of this module applied one -- a same-week
+additive offset built from `player_week_features`'s `def_adj_*_<group>`
+columns (task 1.9's own already-lag-safe opponent-adjustment mapping).
+It was removed 2026-08-15 on real evidence, not a design preference: a
+paired-bootstrap ablation against real 2021-2025 data (see
+`docs/JOURNAL.md`'s Stage 3 entries for the full numbers) showed the
+offset measurably HURT `yards_per_carry` (RB and QB) and
+`yards_per_target` (RB and WR) -- CIs excluding zero, i.e. a real,
+not-noise effect -- and was statistically indistinguishable from zero
+for every other position/output combination, including TE (whose own
+point estimate sat between RB's and WR's, both confirmed harmful, with
+no evidence its wider CI reflected a different underlying effect rather
+than a smaller sample). Keeping the offset for TE alone would have been
+selecting on noise. This is a finding about the specific additive
+functional form this stage used -- treating a QB's own rushing matchup
+identically to an RB's, on top of an already-shrunk task 1.8 estimate --
+not a finding that opponent adjustment itself is worthless; a future
+rework (a multiplicative form, a QB-specific term, or further shrinking
+the adjustment itself rather than applying task 1.8's own estimate at
+full weight) is a real option, not something this removal forecloses.
 """
 
 from __future__ import annotations
@@ -30,8 +43,6 @@ TARGET_COLUMNS = ["yards_per_target", "td_rate_per_target", "yards_per_carry", "
 TARGET_PRIOR_WEIGHT = 50.0
 CARRY_PRIOR_WEIGHT = 80.0
 
-_ALL_GROUPS = ["wr", "te", "rb_receiving", "rb_rushing", "qb_rushing"]
-
 
 @dataclass(frozen=True)
 class _OutputSpec:
@@ -45,10 +56,7 @@ class _OutputSpec:
     numerator: str
     denominator: str
     positions: list[str]
-    group_column_by_position: dict[str, str]
     prior_weight: float
-    adj_prefix: str
-    clamp: bool
 
 
 _OUTPUT_SPECS: dict[str, _OutputSpec] = {
@@ -56,37 +64,25 @@ _OUTPUT_SPECS: dict[str, _OutputSpec] = {
         numerator="receiving_yards",
         denominator="targets",
         positions=PASS_CATCHERS_AND_RB,
-        group_column_by_position={"WR": "wr", "TE": "te", "RB": "rb_receiving"},
         prior_weight=TARGET_PRIOR_WEIGHT,
-        adj_prefix="def_adj_ypt_allowed",
-        clamp=False,
     ),
     "td_rate_per_target": _OutputSpec(
         numerator="receiving_tds",
         denominator="targets",
         positions=PASS_CATCHERS_AND_RB,
-        group_column_by_position={"WR": "wr", "TE": "te", "RB": "rb_receiving"},
         prior_weight=TARGET_PRIOR_WEIGHT,
-        adj_prefix="def_adj_td_rate_allowed",
-        clamp=True,
     ),
     "yards_per_carry": _OutputSpec(
         numerator="rushing_yards",
         denominator="carries",
         positions=RB_QB,
-        group_column_by_position={"RB": "rb_rushing", "QB": "qb_rushing"},
         prior_weight=CARRY_PRIOR_WEIGHT,
-        adj_prefix="def_adj_ypt_allowed",
-        clamp=False,
     ),
     "td_rate_per_carry": _OutputSpec(
         numerator="rushing_tds",
         denominator="carries",
         positions=RB_QB,
-        group_column_by_position={"RB": "rb_rushing", "QB": "qb_rushing"},
         prior_weight=CARRY_PRIOR_WEIGHT,
-        adj_prefix="def_adj_td_rate_allowed",
-        clamp=True,
     ),
 }
 
@@ -107,12 +103,7 @@ def build_efficiency_table(
     way) and required so a missing join row can't poison a later
     `cum_sum()` with an unintended null.
     """
-    adj_columns = [f"def_adj_ypt_allowed_{g}" for g in _ALL_GROUPS] + [
-        f"def_adj_td_rate_allowed_{g}" for g in _ALL_GROUPS
-    ]
-    features = player_week_features.select(
-        "player_id", "season", "week", "team", "position", *adj_columns
-    )
+    features = player_week_features.select("player_id", "season", "week", "team", "position")
     with_usage = features.join(
         player_week_usage.select("player_id", "season", "week", "targets", "carries"),
         on=["player_id", "season", "week"],
@@ -150,37 +141,17 @@ def build_efficiency_table(
             prior_weight=spec.prior_weight,
             out_col=f"_shrunk_{output_name}",
         )
-        table = table.with_columns(
-            _select_by_position(spec.group_column_by_position, spec.adj_prefix).alias(
-                f"_adj_{output_name}"
-            )
-        )
-        table = table.with_columns(
-            _select_group(spec.group_column_by_position).alias(f"_group_{output_name}")
-        )
-        # League-average adjustment for this output's own group, same
-        # week -- a same-week pooled mean across every eligible player's
-        # own already-real adjustment value. No shift needed: the value
-        # already reflects "as of before this week" (task 1.9's own
-        # module docstring). Null rows (an ineligible position) are
-        # skipped by .mean()'s own default null handling.
-        adj_col = f"_adj_{output_name}"
-        group_col = f"_group_{output_name}"
-        league_avg_col = f"_league_avg_adj_{output_name}"
-        table = table.with_columns(
-            pl.col(adj_col).mean().over(["season", "week", group_col]).alias(league_avg_col)
-        )
-        table = _combine_and_clamp(
-            table,
-            shrunk_col=f"_shrunk_{output_name}",
-            adj_col=f"_adj_{output_name}",
-            league_avg_col=f"_league_avg_adj_{output_name}",
-            clamp=spec.clamp,
-            out_col=f"_combined_{output_name}",
-        )
+        # expected_<output> is exactly the shrunk estimate, gated by
+        # position eligibility -- no further combination step. No
+        # clamping either: a touchdown is scored on a touch, so a real
+        # per-week td_rate is always in [0, 1], and _shrunk_<output> is a
+        # weighted average of two quantities (trailing_raw, league_mean)
+        # already bounded in [0, 1] for the two td_rate outputs -- a
+        # convex combination of two in-range values can't leave that
+        # range, so there is nothing left to clamp.
         table = table.with_columns(
             pl.when(pl.col("position").is_in(spec.positions))
-            .then(pl.col(f"_combined_{output_name}"))
+            .then(pl.col(f"_shrunk_{output_name}"))
             .otherwise(None)
             .alias(f"expected_{output_name}")
         )
@@ -282,69 +253,6 @@ def _shrink(
             / (pl.col(n_touches_col) + prior_weight)
         ).alias(out_col)
     )
-
-
-def _select_by_position(group_column_by_position: dict[str, str], adj_prefix: str) -> pl.Expr:
-    """Picks the real `<adj_prefix>_<group>` column for a row's own
-    position -- e.g. a WR row reads `def_adj_ypt_allowed_wr`, an RB row
-    reads `def_adj_ypt_allowed_rb_receiving`, both already real,
-    already-mapped columns sitting in `player_week_features` (task 1.9).
-    A position not present in `group_column_by_position` (e.g. a QB row
-    for a target-side output) stays null -- correct, since that position
-    has no real matchup value for this output at all."""
-    expr = pl.lit(None, dtype=pl.Float64)
-    for position, group in group_column_by_position.items():
-        col_name = f"{adj_prefix}_{group}"
-        expr = pl.when(pl.col("position") == position).then(pl.col(col_name)).otherwise(expr)
-    return expr
-
-
-def _select_group(group_column_by_position: dict[str, str]) -> pl.Expr:
-    """Picks the group name for a row's own position, used to compute
-    per-group league averages. e.g. a WR row returns "wr", an RB row
-    returns "rb_receiving" (for target-side) or "rb_rushing" (for
-    carry-side), based on the output's own group mapping."""
-    expr = pl.lit(None, dtype=pl.Utf8)
-    for position, group in group_column_by_position.items():
-        expr = pl.when(pl.col("position") == position).then(pl.lit(group)).otherwise(expr)
-    return expr
-
-
-def _combine_and_clamp(
-    table: pl.DataFrame,
-    *,
-    shrunk_col: str,
-    adj_col: str,
-    league_avg_col: str,
-    clamp: bool,
-    out_col: str,
-) -> pl.DataFrame:
-    """Step 2 of the design doc's formula: `final = shrunk + (this_week's
-    real opponent adjustment - the league-average adjustment for that
-    same group and week)`. A missing opponent-adjustment value (task
-    1.8's own real, rare, early-season null pattern) degrades gracefully
-    to an offset of exactly 0.0 -- "no matchup adjustment applied" --
-    rather than being treated as a real adjustment of 0, which would
-    otherwise combine with a real, non-zero league average to produce a
-    spurious non-zero offset in the wrong direction. When `adj_col` IS
-    real but `league_avg_col` happens to be null too (a much rarer
-    combination), `league_avg_col` is filled to 0.0 so the offset still
-    degrades to "no adjustment" instead of nulling out an otherwise-valid
-    shrunk estimate entirely. `td_rate_per_*` outputs are clamped to
-    `[0, 1]` -- a real, if rare, edge case where an additive offset
-    against an outlier matchup could otherwise push a probability outside
-    its valid range. `yards_per_*` outputs are never clamped -- real
-    yardage has no natural upper bound and is never negative to begin
-    with.
-    """
-    combined = pl.col(shrunk_col) + (
-        pl.when(pl.col(adj_col).is_null())
-        .then(0.0)
-        .otherwise(pl.col(adj_col) - pl.col(league_avg_col).fill_null(0.0))
-    )
-    if clamp:
-        combined = combined.clip(0.0, 1.0)
-    return table.with_columns(combined.alias(out_col))
 
 
 __all__ = ["CARRY_PRIOR_WEIGHT", "TARGET_COLUMNS", "TARGET_PRIOR_WEIGHT", "build_efficiency_table"]
