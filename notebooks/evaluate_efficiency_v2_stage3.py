@@ -4,11 +4,15 @@ priors) against 2021-2025 data. Scratch, per CLAUDE.md's notebooks/
 convention -- not imported by anything under src/.
 
 Unlike Stage 2, this stage doesn't depend on Stage 1's or Stage 2's own
-predictions -- SPEC's own Stage 3 input list names only "player
-efficiency history" and "opponent adjusted rates," both already real,
-already-available columns (models.efficiency.build_efficiency_table's
-own job) -- so this script does not re-run any other stage's model
-first.
+predictions -- so this script does not re-run any other stage's model
+first. `shrunk_model` is now pure Empirical Bayes shrinkage only (SPEC's
+own literal RULE) -- the opponent-adjustment offset this stage
+originally also applied was removed 2026-08-15 on real evidence (a
+paired-bootstrap ablation showed it measurably hurt several
+position/output combinations and helped none; see
+docs/design-model-v2-stage3-efficiency-priors.md and docs/JOURNAL.md's
+Stage 3 entries for the full account), so this re-run is the simplified
+model's own real result, not the original design's.
 
 Routes every predictor (the shrunk model AND both baselines) through
 evaluation.backtest.run_walk_forward_backtest +
