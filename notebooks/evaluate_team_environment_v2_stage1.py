@@ -22,6 +22,19 @@ usage_features = pl.read_parquet(usage_features_path).select(
     "player_id", "season", "week", "team", "target_share_ewm_3", "carry_share_ewm_3"
 )
 
+# Real regular season only, upstream of everything else: nflverse numbers
+# real postseason weeks 19-22 (WC/DIV/CON/SB), and team_week_context carries
+# real rows for them too -- no fantasy league plays through them, so they
+# must not leak into training or validation. `schedule.season_type` is the
+# real source of this ("REG"/"POST" etc, `tools.sos` already established
+# this exact scoping convention for the same reason). `team_week_context`
+# itself has no `season_type` column, so it's scoped by joining against
+# `schedule`'s own real (season, week) pairs rather than hardcoding a week
+# cutoff (CLAUDE.md rule 5).
+schedule = schedule.filter(pl.col("season_type") == "REG")
+_reg_weeks = schedule.select("season", "week").unique()
+team_week_context = team_week_context.join(_reg_weeks, on=["season", "week"], how="inner")
+
 team_context_features = team_context.build_team_context_features(
     team_week_context, schedule, snap_counts, injuries, usage_features
 )
@@ -55,4 +68,7 @@ for target_column, baseline_league_col, baseline_b2_col in [
     print(f"\n=== {target_column} ===")
     for result in accuracy_metrics(predictions):
         if result.scope == "all" and result.position is None:
-            print(f"{result.predictor}: {result.metric}={result.value:.4f}")
+            print(
+                f"{result.predictor}: {result.metric}={result.value:.4f} "
+                f"(n={result.n_obs}, ci=[{result.ci_low:.4f}, {result.ci_high:.4f}])"
+            )

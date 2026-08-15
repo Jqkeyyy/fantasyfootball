@@ -142,7 +142,7 @@ def test_add_b0_is_null_with_no_prior_season_and_no_current_season_trailing_data
 
 
 def test_add_availability_base_rate_pools_across_all_players_at_the_position() -> None:
-    """Same shape as B0 (`_positional_rolling_rate`), applied to
+    """Same shape as B0 (`pooled_rolling_mean`), applied to
     `availability_flag` instead of `target`."""
     df = pl.DataFrame(
         [
