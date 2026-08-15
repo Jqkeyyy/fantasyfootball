@@ -122,11 +122,14 @@ stage1_predictions = stage1_predictions.with_columns(
     predicted_rush_attempts.alias("predicted_rush_attempts"),
 )
 
-# --- Build Stage 2's own table and baselines. ---
+# --- Build Stage 2's own table, baselines, and the equal-weight blend
+# probe (see models/opportunity.py::add_opportunity_blend's own docstring
+# for the hypothesis this tests). ---
 table = opportunity.build_opportunity_table(
     player_week_features, player_week_usage, stage1_predictions
 )
 table = opportunity.add_opportunity_baselines(table)
+table = opportunity.add_opportunity_blend(table)
 
 # `run_walk_forward_backtest` needs `availability_flag` (task 1.9's own
 # column, not produced by `build_opportunity_table`) -- joined in here
@@ -162,11 +165,13 @@ for target_column, composition_column, eligible_positions in [
         pl.col(composition_column).alias("_opportunity_composition"),
         pl.col(f"{target_column}_b2_ewm_4").alias("_trailing_raw"),
         pl.col(f"{target_column}_league_mean").alias("_league_mean"),
+        pl.col(f"{target_column}_blend").alias("_blend"),
     )
     predictors = [
         BaselinePredictor(name="opportunity_composition", column="_opportunity_composition"),
         BaselinePredictor(name="trailing_raw", column="_trailing_raw"),
         BaselinePredictor(name="league_mean", column="_league_mean"),
+        BaselinePredictor(name="blend", column="_blend"),
     ]
     predictions = run_walk_forward_backtest(
         scoped,

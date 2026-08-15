@@ -289,3 +289,49 @@ def test_add_opportunity_baselines_league_mean_pools_across_players_at_the_posit
     )
     # week 2's pooled mean is week 1's real values across BOTH WRs: (6+8)/2 = 7
     assert week2_wrA["targets_league_mean"] == pytest.approx(7.0)
+
+
+def _blend_fixture_table() -> pl.DataFrame:
+    """Hand-built rows shaped like the chained
+    `build_opportunity_table` -> `add_opportunity_baselines` output --
+    only the columns `add_opportunity_blend` actually reads. wr1 has a
+    null `carries_b2_ewm_4` (a player's own first tracked week); wr2 has
+    a null `expected_targets` (an ineligible position) -- both exercise
+    the null-propagation requirement, not just the happy path."""
+    return pl.DataFrame(
+        {
+            "player_id": ["wr1", "wr2"],
+            "expected_targets": [6.0, None],
+            "targets_b2_ewm_4": [8.0, 5.0],
+            "expected_carries": [2.0, 3.0],
+            "carries_b2_ewm_4": [None, 4.0],
+            "expected_rz_touches": [1.0, 0.5],
+            "rz_touches_b2_ewm_4": [1.5, 0.5],
+        }
+    )
+
+
+def test_add_opportunity_blend_averages_composition_and_trailing_raw() -> None:
+    result = opportunity.add_opportunity_blend(_blend_fixture_table())
+
+    wr1 = result.filter(pl.col("player_id") == "wr1").row(0, named=True)
+    assert wr1["targets_blend"] == pytest.approx((6.0 + 8.0) / 2)
+    assert wr1["rz_touches_blend"] == pytest.approx((1.0 + 1.5) / 2)
+
+
+def test_add_opportunity_blend_is_null_when_composition_is_null() -> None:
+    result = opportunity.add_opportunity_blend(_blend_fixture_table())
+
+    wr2 = result.filter(pl.col("player_id") == "wr2").row(0, named=True)
+    # wr2's expected_targets is null -- the blend must not silently fall
+    # back to just targets_b2_ewm_4.
+    assert wr2["targets_blend"] is None
+
+
+def test_add_opportunity_blend_is_null_when_trailing_raw_is_null() -> None:
+    result = opportunity.add_opportunity_blend(_blend_fixture_table())
+
+    wr1 = result.filter(pl.col("player_id") == "wr1").row(0, named=True)
+    # wr1's carries_b2_ewm_4 is null -- the blend must not silently fall
+    # back to just expected_carries.
+    assert wr1["carries_blend"] is None

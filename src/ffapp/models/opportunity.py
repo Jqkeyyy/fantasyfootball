@@ -37,6 +37,12 @@ from ffapp.models.baselines import pooled_rolling_mean
 
 TARGET_COLUMNS = ["targets", "carries", "rz_touches"]
 
+_COMPOSITION_COLUMNS = {
+    "targets": "expected_targets",
+    "carries": "expected_carries",
+    "rz_touches": "expected_rz_touches",
+}
+
 
 def build_opportunity_table(
     player_week_features: pl.DataFrame,
@@ -184,8 +190,42 @@ def add_opportunity_baselines(table: pl.DataFrame) -> pl.DataFrame:
     return with_b2
 
 
+def add_opportunity_blend(table: pl.DataFrame) -> pl.DataFrame:
+    """A third predictor per target: a straight, equal-weight average of
+    the arithmetic composition (`expected_*`) and the trailing-raw B2
+    baseline (`*_b2_ewm_4`) -- the real bar the composition alone lost to
+    on all three outputs (see docs/JOURNAL.md's Stage 2 entries). Not a
+    trained blend (no fit weight, no second model) -- a cheap first probe
+    of a specific hypothesis: the composition isn't losing because Stage
+    1's team-volume signal is worthless, it's losing because multiplying
+    two independently-noisy estimates together (a trailing share and
+    Stage 1's own team-volume prediction, which itself doesn't beat
+    `league_mean`) stacks more variance than a single already-integrated
+    trailing average removes. If that's right, averaging the two -- not
+    replacing one with the other -- should do better than either alone.
+
+    Precondition: `table` must already have both `build_opportunity_table`'s
+    `expected_*` columns and `add_opportunity_baselines`'s `*_b2_ewm_4`
+    columns -- i.e. this runs after both, chained.
+
+    Null, not a silent fallback to whichever input exists, when either
+    side is missing (composition null for an ineligible position or a
+    cold-start week; b2 null for a player's own first tracked week) -- a
+    fair like-for-like blend needs both real inputs, not a value that's
+    secretly just one of them relabelled."""
+    return table.with_columns(
+        [
+            ((pl.col(composition_column) + pl.col(f"{target_column}_b2_ewm_4")) / 2).alias(
+                f"{target_column}_blend"
+            )
+            for target_column, composition_column in _COMPOSITION_COLUMNS.items()
+        ]
+    )
+
+
 __all__ = [
     "TARGET_COLUMNS",
     "add_opportunity_baselines",
+    "add_opportunity_blend",
     "build_opportunity_table",
 ]
