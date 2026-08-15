@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-14
 **Last machine:** `Maybe` (Windows).
-**Last commit:** `6e1d2c0` on local `main` — this session's own work (DST/K streaming-aware VOR + board exclusion, `ffapp ingest rankings`, model v2 Stage 1's six-task plan + its final-review fix round, model v2 Stage 2's five-task plan + its own final-review fix round) is all committed and merged to local `main`, working tree clean. **Not pushed to `origin`** — local `main` is 33 commits ahead of `origin/main`, 0 behind (confirmed via `git rev-list --left-right --count origin/main...main` at session close, not assumed). Push is the human's call, same as every session before this one; verify with `git status`/`git log origin/main` rather than trusting this line.
+**Last commit:** `f0822c9` on `main`, pushed to `origin` — this session's own work (DST/K streaming-aware VOR + board exclusion, `ffapp ingest rankings`, model v2 Stage 1's six-task plan + its final-review fix round, model v2 Stage 2's five-task plan + its own final-review fix round, this close-out doc pass) is all committed, merged to `main`, and confirmed on `origin` (`git rev-list --left-right --count origin/main...main` → `0 0` after push, not assumed). Working tree clean.
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. `docs/summary.md` is a third, newer reference: a standing narrative snapshot of current state and how things are going, meant to be read cover to cover rather than searched. Maintenance rules are at the bottom.
 
