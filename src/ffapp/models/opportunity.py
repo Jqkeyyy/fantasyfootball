@@ -33,6 +33,7 @@ from __future__ import annotations
 import polars as pl
 
 from ffapp.features.usage import PASS_CATCHERS_AND_RB, RB_QB
+from ffapp.models.baselines import pooled_rolling_mean
 
 TARGET_COLUMNS = ["targets", "carries", "rz_touches"]
 
@@ -90,4 +91,37 @@ def build_opportunity_table(
     )
 
 
-__all__ = ["TARGET_COLUMNS", "build_opportunity_table"]
+def add_opportunity_baselines(table: pl.DataFrame) -> pl.DataFrame:
+    """Two baselines per target, following this project's established B0/B2
+    pattern (SPEC §12.3) at player grain:
+
+    - `*_league_mean` (B0-equivalent, sanity floor): every player pooled by
+      `position`, via `models.baselines.pooled_rolling_mean` -- a position-
+      blind pool (RB and WR carries averaged together) would be meaningless,
+      unlike Stage 1's single "TEAM_ENV" pool.
+    - `*_b2_ewm_4` (the real bar): this player's own trailing `ewm_4` of the
+      real raw count, `.shift(1)`'d so the target week's own outcome never
+      leaks in -- same shape as every other B2 in this project (see
+      `models.dst.add_dst_b2_ewm_4`, `models.team_environment
+      .add_team_environment_baselines`).
+    """
+    with_league_means = table
+    for target_column in TARGET_COLUMNS:
+        with_league_means = pooled_rolling_mean(
+            with_league_means, "position", target_column, f"{target_column}_league_mean"
+        )
+
+    sorted_table = with_league_means.sort(["player_id", "season", "week"])
+    with_b2 = sorted_table
+    for target_column in TARGET_COLUMNS:
+        with_b2 = with_b2.with_columns(
+            pl.col(target_column)
+            .ewm_mean(span=4)
+            .shift(1)
+            .over(["player_id", "season"])
+            .alias(f"{target_column}_b2_ewm_4")
+        )
+    return with_b2
+
+
+__all__ = ["TARGET_COLUMNS", "add_opportunity_baselines", "build_opportunity_table"]

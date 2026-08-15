@@ -127,3 +127,51 @@ def test_build_opportunity_table_carries_real_target_counts_unmodified() -> None
     wr = result.filter(pl.col("player_id") == "wr1").row(0, named=True)
     assert wr["targets"] == 8
     assert wr["carries"] == 1
+
+
+def _baseline_fixture_table() -> pl.DataFrame:
+    """Two WRs, two weeks each -- enough to exercise both the pooled
+    league-mean (two players at the same position, same week) and the
+    per-player trailing ewm_4 (two real weeks for the same player, so the
+    shift is provably not leaking week 2's own outcome)."""
+    return pl.DataFrame(
+        {
+            "player_id": ["wrA", "wrA", "wrB", "wrB"],
+            "season": [2025, 2025, 2025, 2025],
+            "week": [1, 2, 1, 2],
+            "position": ["WR", "WR", "WR", "WR"],
+            "targets": [6, 10, 8, 9],
+            "carries": [0, 0, 0, 0],
+            "rz_touches": [1, 2, 0, 1],
+        }
+    )
+
+
+def test_add_opportunity_baselines_adds_all_six_columns() -> None:
+    result = opportunity.add_opportunity_baselines(_baseline_fixture_table())
+
+    for target_column in opportunity.TARGET_COLUMNS:
+        assert f"{target_column}_league_mean" in result.columns
+        assert f"{target_column}_b2_ewm_4" in result.columns
+
+
+def test_add_opportunity_baselines_b2_never_leaks_the_target_week() -> None:
+    result = opportunity.add_opportunity_baselines(_baseline_fixture_table())
+
+    week2 = result.filter((pl.col("player_id") == "wrA") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    # week 2's b2 baseline must be built only from week 1's real outcome (6),
+    # never week 2's own (10) -- with a single prior week, ewm_4 of one
+    # point equals that point exactly.
+    assert week2["targets_b2_ewm_4"] == pytest.approx(6.0)
+
+
+def test_add_opportunity_baselines_league_mean_pools_across_players_at_the_position() -> None:
+    result = opportunity.add_opportunity_baselines(_baseline_fixture_table())
+
+    week2_wrA = result.filter((pl.col("player_id") == "wrA") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    # week 2's pooled mean is week 1's real values across BOTH WRs: (6+8)/2 = 7
+    assert week2_wrA["targets_league_mean"] == pytest.approx(7.0)
