@@ -175,3 +175,35 @@ def test_add_opportunity_baselines_league_mean_pools_across_players_at_the_posit
     )
     # week 2's pooled mean is week 1's real values across BOTH WRs: (6+8)/2 = 7
     assert week2_wrA["targets_league_mean"] == pytest.approx(7.0)
+
+
+def test_to_predictions_frame_reshapes_to_one_row_per_predictor() -> None:
+    table = pl.DataFrame(
+        {
+            "player_id": ["wr1"],
+            "season": [2025],
+            "week": [1],
+            "position": ["WR"],
+            "team": ["KC"],
+            "targets": [8],
+            "expected_targets": [7.5],
+            "targets_b2_ewm_4": [6.0],
+            "targets_league_mean": [7.0],
+        }
+    )
+
+    result = opportunity.to_predictions_frame(
+        table,
+        real_column="targets",
+        composition_column="expected_targets",
+        trailing_raw_column="targets_b2_ewm_4",
+        league_mean_column="targets_league_mean",
+    )
+
+    assert result.height == 3  # one row per predictor
+    by_predictor = {row["predictor"]: row for row in result.to_dicts()}
+    assert by_predictor["opportunity_composition"]["prediction"] == pytest.approx(7.5)
+    assert by_predictor["trailing_raw"]["prediction"] == pytest.approx(6.0)
+    assert by_predictor["league_mean"]["prediction"] == pytest.approx(7.0)
+    for row in result.to_dicts():
+        assert row["target"] == 8  # the real outcome, same on every predictor's own row

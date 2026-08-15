@@ -124,4 +124,47 @@ def add_opportunity_baselines(table: pl.DataFrame) -> pl.DataFrame:
     return with_b2
 
 
-__all__ = ["TARGET_COLUMNS", "add_opportunity_baselines", "build_opportunity_table"]
+def to_predictions_frame(
+    table: pl.DataFrame,
+    *,
+    real_column: str,
+    composition_column: str,
+    trailing_raw_column: str,
+    league_mean_column: str,
+) -> pl.DataFrame:
+    """Reshapes one opportunity output's wide columns into the long
+    `player_id`/`season`/`week`/`position`/`team`/`predictor`/`prediction`/
+    `target` shape `evaluation.metrics.accuracy_metrics` expects, so Stage
+    2's evaluation reuses the exact same accuracy/CI reporting every other
+    model in this project already uses (SPEC §12.5), rather than a second,
+    hand-rolled MAE calculation.
+    """
+    base = table.select(
+        "player_id",
+        "season",
+        "week",
+        "position",
+        "team",
+        pl.col(real_column).alias("target"),
+    )
+    frames = []
+    for predictor_name, column in [
+        ("opportunity_composition", composition_column),
+        ("trailing_raw", trailing_raw_column),
+        ("league_mean", league_mean_column),
+    ]:
+        frames.append(
+            base.with_columns(
+                pl.lit(predictor_name).alias("predictor"),
+                table[column].alias("prediction"),
+            )
+        )
+    return pl.concat(frames, how="vertical_relaxed")
+
+
+__all__ = [
+    "TARGET_COLUMNS",
+    "add_opportunity_baselines",
+    "build_opportunity_table",
+    "to_predictions_frame",
+]
