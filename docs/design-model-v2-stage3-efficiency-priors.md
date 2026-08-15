@@ -92,23 +92,57 @@ shrunk_rate = (n_touches × player_trailing_rate + prior_weight × positional_me
               / (n_touches + prior_weight)
 ```
 
-- `player_trailing_rate` is itself a ratio of two exponentially-weighted
-  trailing sums (`ewm_mean(yards).shift(1) / ewm_mean(touches).shift(1)`,
-  same window shape and no-leakage discipline every other trailing
-  feature in this project already uses), not a mean of weekly ratios —
-  a mean-of-ratios would implicitly equal-weight a 1-target week and a
-  10-target week, which is wrong.
-- `n_touches` is that same trailing window's real touch count (the
-  `ewm_mean(touches).shift(1)` value above, not a raw all-time count) —
-  consistent with `player_trailing_rate` using the identical window, and
-  it means a player's shrinkage weight naturally decays with the same
-  recency bias as their own rate estimate.
-- A player with 0 trailing touches of that type gets exactly
-  `positional_mean` — the shrinkage formula's own degenerate case, not a
-  special-cased fallback.
-- `positional_mean`: `models.baselines.pooled_rolling_mean`, already
-  built and reusable directly, same B0-equivalent pattern Stage 1/2 both
-  already use.
+- `player_trailing_rate` is a ratio of two real **cumulative sums**,
+  season-to-date through week W-1, never week W's own outcome:
+  `cum_sum(yards).shift(1).over([player_id, season]) /
+  cum_sum(touches).shift(1).over([player_id, season])` — the identical
+  `cum_sum().shift(1).over([player_id, season])` shape
+  `models.baselines.add_b1_season_to_date_mean` already uses, just kept
+  as a real sum instead of divided by week-count. **Not** a mean of
+  weekly ratios (a 1-target 40-yard week must not carry equal weight to
+  a 10-target 40-yard week) and **not** an EWM — refined during plan-
+  writing from this design's own first draft (which specified an EWM
+  ratio): an EWM of touches gives a *per-game rate* (e.g. "8 targets/game"),
+  not a real cumulative count on the same scale as SPEC's own "~50 targets"
+  prior weight, so it can't be compared against `prior_weight` meaningfully
+  without an invented rescaling factor. A real cumulative sum needs none.
+  Resets each season, no prior-season carryover — see below for why that's
+  the right call here, unlike `positional_mean`.
+- `n_touches` is that same cumulative sum's own denominator —
+  `cum_sum(touches).shift(1).over([player_id, season])` — a real touch
+  count directly comparable to SPEC's `~50`/`~80` prior weight, no
+  rescaling needed.
+- A player with 0 trailing touches of that type this season — every
+  player's own week 1, and any player who simply hasn't touched the ball
+  yet — gets exactly `positional_mean`, the shrinkage formula's own
+  degenerate case, not a special-cased fallback. **Deliberately no
+  prior-season carryover for `player_trailing_rate`/`n_touches`**, unlike
+  `positional_mean` below: a whole position going null in week 1 would be
+  a real problem (breaks the shrinkage formula for every player at that
+  position), but one player's own history resetting to "shrink hard
+  toward the positional mean until this season's own sample rebuilds" is
+  exactly the intended behavior, not a gap to patch — and it's exactly
+  the degenerate case already in this design's own testing plan.
+- `positional_mean` is **not** a single call to `pooled_rolling_mean` on
+  a precomputed per-row rate column — that would suffer the identical
+  mean-of-ratios problem `player_trailing_rate` above avoids, just pooled
+  across players instead of across weeks. Instead:
+  `pooled_rolling_mean(table, "position", numerator_col, ...)` and
+  `pooled_rolling_mean(table, "position", denominator_col, ...)` — two
+  separate calls to the existing function (already built, already tested,
+  reused directly, not modified), one for the raw numerator (e.g. real
+  weekly `receiving_yards`) and one for the raw denominator (real weekly
+  `targets`) — then `positional_mean = pooled_numerator_mean /
+  pooled_denominator_mean`. Both pooled calls share the same real
+  `n` (players × weeks pooled) by construction, so dividing the two
+  means is mathematically identical to dividing the two underlying pooled
+  sums directly — a correct ratio-of-sums, not a mean-of-ratios, achieved
+  with zero new pooling logic. `pooled_rolling_mean`'s own prior-season
+  fallback (already built in) is the right behavior here, unlike at
+  player grain — an entire position having no real current-season data
+  yet (true only in each dataset's very first season) should fall back to
+  last season's real position-wide rate, not go null for every player at
+  that position simultaneously.
 
 **Step 2 — opponent-adjustment offset**, applied *after* shrinkage, not
 blended into the prior. This week's specific opponent's real
@@ -217,8 +251,9 @@ fit):
   parameter needed (see above: the opponent-adjustment columns Stage 3
   needs already exist, pre-mapped, in `player_week_features`). Joins the
   real per-touch outcome counts (from `player_week_usage`/
-  `player_week_stats`), computes the trailing yards/touch ewm sums per
-  player, selects the position-appropriate `def_adj_ypt_allowed_<group>`/
+  `player_week_stats`), computes the trailing yards/touch cumulative sums
+  per player and per position, selects the position-appropriate
+  `def_adj_ypt_allowed_<group>`/
   `def_adj_td_rate_allowed_<group>` column already sitting in
   `player_week_features`, and applies both formula steps to produce
   `expected_yards_per_target`, `expected_td_rate_per_target`,
@@ -256,9 +291,11 @@ TDD as usual:
    `expected_yards_per_target`/`expected_td_rate_per_target` are null
    (QBs aren't in `PASS_CATCHERS_AND_RB`) while their carry-side outputs
    are populated, and the mirror case for a WR.
-4. `player_trailing_rate`'s own ewm-ratio construction — a fixture
-   proving it is not a mean of weekly ratios (a 1-target 40-yard week
-   must not carry equal weight to a 10-target 40-yard week).
+4. `player_trailing_rate`'s and `positional_mean`'s own ratio-of-sums
+   construction — a fixture proving neither is a mean of weekly/per-player
+   ratios (a 1-target 40-yard week, or a 1-target-volume player, must not
+   carry equal weight to a 10-target 40-yard week or a 10-target-volume
+   player).
 5. TD-rate clamping — a fixture forcing `final_rate` below 0 or above 1
    via an extreme offset, confirming it clamps rather than emitting an
    invalid probability; a same-shaped case for `yards_per_*` confirming
