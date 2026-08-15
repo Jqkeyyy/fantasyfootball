@@ -42,9 +42,9 @@ SOURCE_TABLE = "player_week_usage"
 
 _ALL_OFFENSE = ["QB", "RB", "WR", "TE"]
 _PASS_CATCHERS = ["WR", "TE"]
-_PASS_CATCHERS_AND_RB = ["WR", "TE", "RB"]
+PASS_CATCHERS_AND_RB = ["WR", "TE", "RB"]
 _RB_ONLY = ["RB"]
-_RB_QB = ["RB", "QB"]
+RB_QB = ["RB", "QB"]
 _QB_ONLY = ["QB"]
 
 SNAP_PCT_CHANGE_THRESHOLD = 0.15
@@ -130,7 +130,7 @@ _WINDOWED_FEATURES = [
         "target_share",
         "target_share",
         "targets / team pass attempts",
-        _PASS_CATCHERS_AND_RB,
+        PASS_CATCHERS_AND_RB,
         ["ewm_3", "ewm_8", "season_to_date"],
     ),
     _WindowedFeature(
@@ -144,18 +144,18 @@ _WINDOWED_FEATURES = [
         "wopr",
         "wopr",
         "1.5*target_share + 0.7*air_yards_share",
-        _PASS_CATCHERS_AND_RB,
+        PASS_CATCHERS_AND_RB,
         ["ewm_4"],
     ),
     _WindowedFeature("adot", "adot", "air yards / targets", _PASS_CATCHERS, ["ewm_8"]),
     _WindowedFeature(
-        "carry_share", "carry_share", "carries / team rush attempts", _RB_QB, ["ewm_3", "ewm_8"]
+        "carry_share", "carry_share", "carries / team rush attempts", RB_QB, ["ewm_3", "ewm_8"]
     ),
     _WindowedFeature(
         "rz_touch_share",
         "rz_touch_share",
         "(rz targets + rz carries) / team rz touches",
-        _PASS_CATCHERS_AND_RB,
+        PASS_CATCHERS_AND_RB,
         ["ewm_6"],
     ),
     _WindowedFeature(
@@ -383,6 +383,8 @@ def build_usage_features(
 
 
 __all__ = [
+    "PASS_CATCHERS_AND_RB",
+    "RB_QB",
     "SNAP_PCT_CHANGE_THRESHOLD",
     "SOURCE_TABLE",
     "add_actual_points",

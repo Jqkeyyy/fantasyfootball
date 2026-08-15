@@ -7,6 +7,14 @@ from ffapp.features.registry import FeatureSpec
 SCORING = {"rec": 1.0}
 
 
+# --- public constants ---------------------------------------------------------------
+
+
+def test_pass_catchers_and_rb_and_rb_qb_are_public_and_correct() -> None:
+    assert usage.PASS_CATCHERS_AND_RB == ["WR", "TE", "RB"]
+    assert usage.RB_QB == ["RB", "QB"]
+
+
 # --- generic windowing primitives ---------------------------------------------------
 
 
