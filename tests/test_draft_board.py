@@ -359,7 +359,7 @@ def test_finalize_draft_board_carries_is_keeper_through_and_never_excludes_a_kee
     assert non_keeper_rows["is_keeper"].to_list() == [False, False]
 
 
-# --- _fetch_point_sources: graceful per-source degradation ------------------
+# --- fetch_point_sources: graceful per-source degradation ------------------
 
 
 def _fake_source(height: int) -> pl.DataFrame:
@@ -379,7 +379,7 @@ def test_fetch_point_sources_skips_a_source_that_raises(monkeypatch: pytest.Monk
         },
     )
 
-    result = board._fetch_point_sources(2026, offline=True, settings=None)
+    result = board.fetch_point_sources(2026, offline=True, settings=None)
 
     assert len(result) == 1
     assert result[0].height == 5
@@ -397,7 +397,7 @@ def test_fetch_point_sources_skips_a_source_that_returns_zero_rows(
         },
     )
 
-    result = board._fetch_point_sources(2026, offline=True, settings=None)
+    result = board.fetch_point_sources(2026, offline=True, settings=None)
 
     assert len(result) == 1
 
@@ -410,12 +410,12 @@ def test_fetch_point_sources_returns_empty_list_if_every_source_fails(
 
     monkeypatch.setattr(board, "_POINT_SOURCE_FETCHERS", {"a": boom, "b": boom})
 
-    result = board._fetch_point_sources(2026, offline=True, settings=None)
+    result = board.fetch_point_sources(2026, offline=True, settings=None)
 
     assert result == []
 
 
-# --- _fetch_rank_sources: graceful per-source degradation --------------------
+# --- fetch_rank_sources: graceful per-source degradation --------------------
 
 
 def test_fetch_rank_sources_skips_a_source_that_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -431,7 +431,7 @@ def test_fetch_rank_sources_skips_a_source_that_raises(monkeypatch: pytest.Monke
         },
     )
 
-    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+    result = board.fetch_rank_sources(2026, offline=True, settings=None)
 
     assert len(result) == 1
     assert result[0].height == 5
@@ -449,7 +449,7 @@ def test_fetch_rank_sources_skips_a_source_that_returns_zero_rows(
         },
     )
 
-    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+    result = board.fetch_rank_sources(2026, offline=True, settings=None)
 
     assert len(result) == 1
 
@@ -462,7 +462,7 @@ def test_fetch_rank_sources_returns_empty_list_if_every_source_fails(
 
     monkeypatch.setattr(board, "_RANK_SOURCE_FETCHERS", {"a": boom, "b": boom})
 
-    result = board._fetch_rank_sources(2026, offline=True, settings=None)
+    result = board.fetch_rank_sources(2026, offline=True, settings=None)
 
     assert result == []
 

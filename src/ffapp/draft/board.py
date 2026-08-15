@@ -210,7 +210,7 @@ def resolve_pick_context(
     return PickContext(my_roster_id=my_roster_id, my_slot=my_slot, my_picks=my_picks)
 
 
-def _fetch_point_sources(
+def fetch_point_sources(
     season: int, *, offline: bool | None, settings: Settings
 ) -> list[pl.DataFrame]:
     """Fetch every per-stat rankings source, skipping (with a logged
@@ -223,6 +223,11 @@ def _fetch_point_sources(
     redundant consensus sources contributed -- `aggregate_projections`'s own
     `n_sources`/`coverage` columns exist precisely to represent partial
     agreement honestly, which is what happens here.
+
+    Public (not `_`-prefixed): `ffapp ingest rankings` (a second real
+    caller, refreshing every source's raw cache ahead of assembling a board
+    from it, SPEC-ADDENDUM-03.md §E's "morning of" runbook step) needs this
+    exact same per-source graceful degradation, not a second copy of it.
     """
     sources = []
     for name, fetch in _POINT_SOURCE_FETCHERS.items():
@@ -238,10 +243,10 @@ def _fetch_point_sources(
     return sources
 
 
-def _fetch_rank_sources(
+def fetch_rank_sources(
     season: int, *, offline: bool | None, settings: Settings
 ) -> list[pl.DataFrame]:
-    """Same graceful degradation as `_fetch_point_sources`, for the
+    """Same graceful degradation as `fetch_point_sources`, for the
     ranks-only sources (FantasyPros, FootballGuys, DraftSharks) instead."""
     sources = []
     for name, fetch in _RANK_SOURCE_FETCHERS.items():
@@ -432,7 +437,7 @@ def build_draft_board(
     scoring_settings = league.league_cache["scoring_settings"]
     assert league.league_id is not None
 
-    point_sources = _fetch_point_sources(season, offline=offline, settings=settings)
+    point_sources = fetch_point_sources(season, offline=offline, settings=settings)
     if not point_sources:
         raise NoRankingsSourcesAvailableError(
             "Every per-stat rankings source failed or returned no data -- nothing to build "
@@ -443,7 +448,7 @@ def build_draft_board(
     ]
     reference_curve = aggregate.build_reference_curve(scored_point_sources)
 
-    rank_sources = _fetch_rank_sources(season, offline=offline, settings=settings)
+    rank_sources = fetch_rank_sources(season, offline=offline, settings=settings)
     rank_points = [aggregate.map_ranks_to_points(df, reference_curve) for df in rank_sources]
 
     n_sources = len(scored_point_sources) + len(rank_points)
@@ -669,7 +674,7 @@ def _resolve_cbs_manual_names(
 
 
 def _fetch_manual_rankings_sources() -> list[pl.DataFrame]:
-    """Same graceful per-source degradation as `_fetch_point_sources` --
+    """Same graceful per-source degradation as `fetch_point_sources` --
     a missing or malformed manual-ranking file (not yet uploaded, or
     uploaded with an unexpected layout) must not sink the whole "no model"
     board.
@@ -761,6 +766,8 @@ __all__ = [
     "build_draft_board",
     "build_source_rankings",
     "draft_board_csv_path",
+    "fetch_point_sources",
+    "fetch_rank_sources",
     "finalize_draft_board",
     "resolve_pick_context",
     "source_rankings_csv_path",

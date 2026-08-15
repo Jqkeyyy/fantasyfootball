@@ -31,7 +31,7 @@ from ffapp.league_format import parse_league_format
 # Raw-fetch-only wrappers for the sources `draft.board` already aggregates --
 # used here only to recover each source's own cached Path, so its sidecar
 # (fetched_at_utc) can be read for the export header. Mirrors
-# `board._fetch_point_sources`'s graceful degradation: a source that can't
+# `board.fetch_point_sources`'s graceful degradation: a source that can't
 # be fetched just doesn't get an age row, it doesn't block the export.
 #
 # Under --no-offline this re-fetches every source a second time (the first

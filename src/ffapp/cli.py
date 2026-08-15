@@ -16,6 +16,7 @@ from ffapp.evaluation import backtest
 from ffapp.evaluation import metrics as evaluation_metrics
 from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
+from ffapp.ingest import rankings
 from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.models import availability, baselines, points, predict
 from ffapp.scoring import golden
@@ -91,6 +92,61 @@ def ingest_sleeper(
         f"Discovered {len(discovered)} league(s). Set is_primary: true by hand on the "
         "one you want commands to default to."
     )
+
+
+@ingest_app.command("rankings")
+def ingest_rankings(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to the league's own configured season."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Refresh every rankings/ADP source's raw cache (SPEC-ADDENDUM-03.md
+    §E's "morning of" runbook step: `ffapp ingest rankings --no-offline`).
+    Fetches every per-stat source, every ranks-only source, and ADP, with
+    the same per-source graceful degradation `ffapp draft board` already
+    uses -- one source failing doesn't block the others. Doesn't assemble
+    a board itself; run `ffapp draft board` after this to build one from
+    the freshly-refreshed cache.
+    """
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    resolved_season = season if season is not None else league_config.season
+    league_format = parse_league_format(league_config)
+
+    point_sources = draft_board.fetch_point_sources(
+        resolved_season, offline=offline, settings=settings
+    )
+    n_point_sources = len(draft_board.POINT_SOURCE_NAMES)
+    typer.echo(f"Point sources: {len(point_sources)}/{n_point_sources} refreshed")
+
+    rank_sources = draft_board.fetch_rank_sources(
+        resolved_season, offline=offline, settings=settings
+    )
+    n_rank_sources = len(draft_board.RANK_SOURCE_NAMES)
+    typer.echo(f"Rank sources: {len(rank_sources)}/{n_rank_sources} refreshed")
+
+    try:
+        rankings.fetch_adp(
+            resolved_season, teams=league_format.n_teams, offline=offline, settings=settings
+        )
+        typer.echo("ADP: refreshed")
+    except Exception as exc:
+        typer.echo(f"ADP: failed to refresh ({exc})", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not point_sources:
+        typer.echo(
+            "Every per-stat rankings source failed -- ffapp draft board will not be able "
+            "to build a board from this cache.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 @cache_app.command("warm")
