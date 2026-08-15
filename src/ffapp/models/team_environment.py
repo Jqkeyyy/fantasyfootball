@@ -38,6 +38,16 @@ plays) = -0.1291` (n=5702), `corr(opponent_neutral_pace_ewm_8, plays) =
 checked the same way and confirmed correctly increasing: `corr(own lagged
 proe_ewm_5, pass_rate) = +0.2524` (n=5202) -- left as-is in
 `_INCREASING_FEATURES`.
+
+**Own-trailing-target features** (`plays_per_game_ewm_5` on `team_plays`,
+`pass_rate_ewm_5` on `pass_rate`): a real gap found by the final Stage 1
+review -- the original feature set never gave the model a team's own
+recent value of the thing it's predicting, despite both already existing
+in `features.team_context` and correlating with the target as strongly as
+features already in use. Checked the same way, before adding either:
+`corr(own lagged plays_per_game_ewm_5, plays) = +0.1288` (n=5438),
+`corr(own lagged pass_rate_ewm_5, pass_rate) = +0.2533` (n=5438) -- both
+positive, both registered as *increasing*.
 """
 
 from __future__ import annotations
@@ -54,6 +64,8 @@ from ffapp.models.baselines import pooled_rolling_mean
 TRAILING_FEATURE_COLUMNS = [
     "proe_ewm_5",
     "neutral_pace_ewm_8",
+    "plays_per_game_ewm_5",
+    "pass_rate_ewm_5",
 ]
 CURRENT_FEATURE_COLUMNS = [
     "implied_team_total",
@@ -67,8 +79,8 @@ TARGET_COLUMNS = ["team_plays", "pass_rate"]
 # Signs verified empirically against real data, not trusted from the
 # design doc's literal wording -- see module docstring.
 _INCREASING_FEATURES = {
-    "team_plays": set(),
-    "pass_rate": {"proe_ewm_5"},
+    "team_plays": {"plays_per_game_ewm_5"},
+    "pass_rate": {"proe_ewm_5", "pass_rate_ewm_5"},
 }
 _DECREASING_FEATURES = {
     "team_plays": {"neutral_pace_ewm_8", "opponent_neutral_pace_ewm_8"},

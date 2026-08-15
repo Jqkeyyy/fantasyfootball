@@ -24,6 +24,8 @@ def _team_context_features() -> pl.DataFrame:
             "proe_ewm_5": [0.02, 0.03, -0.01, -0.02],
             "neutral_pace_ewm_8": [28.0, 27.5, 31.5, 31.0],
             "opponent_neutral_pace_ewm_8": [31.5, 31.0, 28.0, 27.5],
+            "plays_per_game_ewm_5": [64.0, 65.0, 59.0, 59.5],
+            "pass_rate_ewm_5": [0.58, 0.60, 0.53, 0.54],
         }
     )
 
@@ -51,6 +53,8 @@ def test_build_team_environment_table_lag_shifts_trailing_features_by_one_week()
     row = result.filter((pl.col("team") == "KC") & (pl.col("week") == 2)).row(0, named=True)
     assert row["proe_ewm_5"] == pytest.approx(0.02)  # week 1's value, not week 2's 0.03
     assert row["neutral_pace_ewm_8"] == pytest.approx(28.0)  # week 1's value
+    assert row["plays_per_game_ewm_5"] == pytest.approx(64.0)  # week 1's value, not week 2's 65.0
+    assert row["pass_rate_ewm_5"] == pytest.approx(0.58)  # week 1's value, not week 2's 0.60
 
 
 def test_build_team_environment_table_first_week_has_null_trailing_features() -> None:
@@ -92,6 +96,8 @@ def test_build_team_environment_table_bye_week_return_has_null_trailing_features
             "proe_ewm_5": [0.02, 0.03, 0.025],
             "neutral_pace_ewm_8": [28.0, 27.5, 27.0],
             "opponent_neutral_pace_ewm_8": [31.5, 31.0, 30.5],
+            "plays_per_game_ewm_5": [64.0, 65.0, 66.0],
+            "pass_rate_ewm_5": [0.58, 0.60, 0.61],
         }
     )
 
@@ -101,6 +107,8 @@ def test_build_team_environment_table_bye_week_return_has_null_trailing_features
     # week 2's real trailing values (the previous *played* week), not null.
     assert row["proe_ewm_5"] == pytest.approx(0.03)
     assert row["neutral_pace_ewm_8"] == pytest.approx(27.5)
+    assert row["plays_per_game_ewm_5"] == pytest.approx(65.0)
+    assert row["pass_rate_ewm_5"] == pytest.approx(0.60)
 
 
 def test_current_feature_columns_stays_a_subset_of_team_contexts_current_week_columns() -> None:
@@ -113,6 +121,56 @@ def test_current_feature_columns_stays_a_subset_of_team_contexts_current_week_co
     assert set(team_environment.TRAILING_FEATURE_COLUMNS).isdisjoint(
         team_context.CURRENT_WEEK_COLUMNS
     )
+
+
+# --- monotone_constraints -----------------------------------------------------------
+# Closes a real coverage gap flagged by the final Stage 1 review: `points.py`'s own
+# monotone_constraints has a direct value-level test (test_models_points.py); this
+# module's didn't, and its own sign was wrong once already (see module docstring).
+
+
+def test_monotone_constraints_marks_pace_features_as_decreasing_for_team_plays() -> None:
+    constraints = team_environment.monotone_constraints("team_plays")
+    by_column = dict(zip(team_environment.FEATURE_COLUMNS, constraints, strict=True))
+
+    assert by_column["neutral_pace_ewm_8"] == -1
+    assert by_column["opponent_neutral_pace_ewm_8"] == -1
+
+
+def test_monotone_constraints_marks_own_trailing_features_as_increasing() -> None:
+    team_plays_constraints = dict(
+        zip(
+            team_environment.FEATURE_COLUMNS,
+            team_environment.monotone_constraints("team_plays"),
+            strict=True,
+        )
+    )
+    pass_rate_constraints = dict(
+        zip(
+            team_environment.FEATURE_COLUMNS,
+            team_environment.monotone_constraints("pass_rate"),
+            strict=True,
+        )
+    )
+
+    assert team_plays_constraints["plays_per_game_ewm_5"] == 1
+    assert pass_rate_constraints["pass_rate_ewm_5"] == 1
+    assert pass_rate_constraints["proe_ewm_5"] == 1
+
+
+def test_monotone_constraints_leaves_current_week_features_unconstrained() -> None:
+    constraints = team_environment.monotone_constraints("team_plays")
+    by_column = dict(zip(team_environment.FEATURE_COLUMNS, constraints, strict=True))
+
+    assert by_column["implied_team_total"] == 0
+    assert by_column["spread"] == 0
+
+
+def test_monotone_constraints_length_matches_feature_columns() -> None:
+    for target_column in team_environment.TARGET_COLUMNS:
+        assert len(team_environment.monotone_constraints(target_column)) == len(
+            team_environment.FEATURE_COLUMNS
+        )
 
 
 # --- add_team_environment_baselines (task 3) ----------------------------------------
@@ -162,6 +220,8 @@ def _training_rows() -> pl.DataFrame:
                 "proe_ewm_5": 0.01 * i,
                 "neutral_pace_ewm_8": 28.0 - i * 0.1,
                 "opponent_neutral_pace_ewm_8": 29.0 + i * 0.1,
+                "plays_per_game_ewm_5": 60.0 + i * 0.5,
+                "pass_rate_ewm_5": 0.5 + (i % 5) * 0.015,
             }
         )
     return pl.DataFrame(rows)
