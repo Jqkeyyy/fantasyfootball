@@ -192,6 +192,17 @@ def _add_raw_ingredients(table: pl.DataFrame, output_name: str, spec: _OutputSpe
     numerator = spec.numerator
     denominator = spec.denominator
 
+    # Defensive: `cum_sum().shift(1).over(["player_id", "season"])` below
+    # depends on row order within each player/season group. This function
+    # is called four times per table (once per output), each call ending
+    # in two `pooled_rolling_mean` joins (`how="left"`), and polars does
+    # not guarantee a left join preserves left-side row order. The caller
+    # (`build_efficiency_table`) already sorts once before the first
+    # call, but this function's own correctness should not depend on an
+    # unguaranteed ordering surviving three prior calls' worth of joins --
+    # sort again here so this function is correct standalone.
+    table = table.sort(["player_id", "season", "week"])
+
     # Real outcome (this stage's own evaluation target): that week's own
     # real per-touch rate. Undefined -- not zero -- for a player-week
     # with no real touches of that type, same "never fabricate a value
@@ -310,19 +321,26 @@ def _combine_and_clamp(
 ) -> pl.DataFrame:
     """Step 2 of the design doc's formula: `final = shrunk + (this_week's
     real opponent adjustment - the league-average adjustment for that
-    same group and week)`. `adj_col`/`league_avg_col` are filled to 0.0
-    before combining -- deliberately: a missing opponent-adjustment value
-    (task 1.8's own real, rare, early-season null pattern) should degrade
-    gracefully to "no matchup adjustment applied," not null out an
-    otherwise-valid shrunk estimate entirely. `td_rate_per_*` outputs are
-    clamped to `[0, 1]` -- a real, if rare, edge case where an additive
-    offset against an outlier matchup could otherwise push a probability
-    outside its valid range. `yards_per_*` outputs are never clamped --
-    real yardage has no natural upper bound and is never negative to
-    begin with.
+    same group and week)`. A missing opponent-adjustment value (task
+    1.8's own real, rare, early-season null pattern) degrades gracefully
+    to an offset of exactly 0.0 -- "no matchup adjustment applied" --
+    rather than being treated as a real adjustment of 0, which would
+    otherwise combine with a real, non-zero league average to produce a
+    spurious non-zero offset in the wrong direction. When `adj_col` IS
+    real but `league_avg_col` happens to be null too (a much rarer
+    combination), `league_avg_col` is filled to 0.0 so the offset still
+    degrades to "no adjustment" instead of nulling out an otherwise-valid
+    shrunk estimate entirely. `td_rate_per_*` outputs are clamped to
+    `[0, 1]` -- a real, if rare, edge case where an additive offset
+    against an outlier matchup could otherwise push a probability outside
+    its valid range. `yards_per_*` outputs are never clamped -- real
+    yardage has no natural upper bound and is never negative to begin
+    with.
     """
     combined = pl.col(shrunk_col) + (
-        pl.col(adj_col).fill_null(0.0) - pl.col(league_avg_col).fill_null(0.0)
+        pl.when(pl.col(adj_col).is_null())
+        .then(0.0)
+        .otherwise(pl.col(adj_col) - pl.col(league_avg_col).fill_null(0.0))
     )
     if clamp:
         combined = combined.clip(0.0, 1.0)

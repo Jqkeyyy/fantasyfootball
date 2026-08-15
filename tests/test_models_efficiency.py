@@ -305,3 +305,37 @@ def test_yards_per_touch_is_never_clamped() -> None:
     )
 
     assert result["expected_yards_per_target"][0] == pytest.approx(15.0)
+
+
+def test_null_adjustment_degrades_to_zero_offset_even_with_real_league_average() -> None:
+    """Regression test for the null-adjustment fill asymmetry: a missing
+    `adj_col` value must produce an offset of exactly 0.0 (i.e. combined
+    == shrunk), even when `league_avg_col` is a real, non-zero value --
+    the normal real-world case, since a group's league average is usually
+    still computable from other rows even when one specific matchup value
+    is missing. Before the fix, this incorrectly computed
+    `0 - league_avg`, a spurious negative offset rather than "no
+    adjustment"."""
+    table = pl.DataFrame(
+        {
+            "_shrunk_yards_per_target": [8.0],
+            "_adj_yards_per_target": [None],
+            "_league_avg_adj_yards_per_target": [3.5],
+        },
+        schema={
+            "_shrunk_yards_per_target": pl.Float64,
+            "_adj_yards_per_target": pl.Float64,
+            "_league_avg_adj_yards_per_target": pl.Float64,
+        },
+    )
+
+    result = efficiency._combine_and_clamp(
+        table,
+        shrunk_col="_shrunk_yards_per_target",
+        adj_col="_adj_yards_per_target",
+        league_avg_col="_league_avg_adj_yards_per_target",
+        clamp=False,
+        out_col="expected_yards_per_target",
+    )
+
+    assert result["expected_yards_per_target"][0] == pytest.approx(8.0)
