@@ -142,6 +142,14 @@ def build_efficiency_table(
 
     for output_name, spec in _OUTPUT_SPECS.items():
         table = _add_raw_ingredients(table, output_name, spec)
+        table = _shrink(
+            table,
+            f"_n_touches_{output_name}",
+            f"trailing_raw_{output_name}",
+            f"league_mean_{output_name}",
+            prior_weight=spec.prior_weight,
+            out_col=f"_shrunk_{output_name}",
+        )
 
     return table
 
@@ -197,6 +205,36 @@ def _add_raw_ingredients(table: pl.DataFrame, output_name: str, spec: _OutputSpe
     )
 
     return table
+
+
+def _shrink(
+    table: pl.DataFrame,
+    n_touches_col: str,
+    trailing_col: str,
+    league_mean_col: str,
+    *,
+    prior_weight: float,
+    out_col: str,
+) -> pl.DataFrame:
+    """SPEC's own literal RULE: `shrunk = (n*trailing + prior_weight*mean)
+    / (n + prior_weight)`. `trailing_col.fill_null(0.0)` is safe here even
+    though a null trailing rate is a real "no data yet" case, not a real
+    0 -- it is always multiplied by `n_touches`, which is genuinely 0 in
+    exactly the same rows where `trailing_col` is null, so the term
+    contributes 0 to the sum regardless of what placeholder value fills
+    the null. `league_mean_col` is deliberately NOT filled -- if the
+    positional mean itself is null (the very first tracked season, no
+    prior-season fallback available either), the whole shrunk estimate
+    must stay null too, not silently substitute 0 for a real population
+    mean.
+    """
+    return table.with_columns(
+        (
+            (pl.col(n_touches_col) * pl.col(trailing_col).fill_null(0.0)
+             + prior_weight * pl.col(league_mean_col))
+            / (pl.col(n_touches_col) + prior_weight)
+        ).alias(out_col)
+    )
 
 
 __all__ = ["CARRY_PRIOR_WEIGHT", "TARGET_COLUMNS", "TARGET_PRIOR_WEIGHT", "build_efficiency_table"]

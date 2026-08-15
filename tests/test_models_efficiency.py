@@ -129,3 +129,50 @@ def test_build_efficiency_table_league_mean_is_a_ratio_of_pooled_sums_not_a_mean
     assert wr1_week2["league_mean_yards_per_target"] == pytest.approx(expected)
     naive_wrong_value = (100 / 8 + 60 / 6) / 2
     assert wr1_week2["league_mean_yards_per_target"] != pytest.approx(naive_wrong_value)
+
+
+def test_shrink_with_zero_touches_returns_exactly_the_positional_mean() -> None:
+    table = pl.DataFrame({"n_touches": [0], "trailing_raw": [None], "league_mean": [8.0]})
+
+    result = efficiency._shrink(
+        table, "n_touches", "trailing_raw", "league_mean", prior_weight=50.0, out_col="shrunk"
+    )
+
+    assert result["shrunk"][0] == pytest.approx(8.0)
+
+
+def test_shrink_with_touches_equal_to_prior_weight_returns_the_exact_midpoint() -> None:
+    table = pl.DataFrame({"n_touches": [50], "trailing_raw": [12.0], "league_mean": [8.0]})
+
+    result = efficiency._shrink(
+        table, "n_touches", "trailing_raw", "league_mean", prior_weight=50.0, out_col="shrunk"
+    )
+
+    # (50*12 + 50*8) / (50+50) = 10.0 -- the exact midpoint between the
+    # two inputs when n_touches equals the prior weight.
+    assert result["shrunk"][0] == pytest.approx(10.0)
+
+
+def test_shrink_with_a_very_large_touch_count_lands_close_to_the_players_own_rate() -> None:
+    table = pl.DataFrame({"n_touches": [10_000], "trailing_raw": [12.0], "league_mean": [8.0]})
+
+    result = efficiency._shrink(
+        table, "n_touches", "trailing_raw", "league_mean", prior_weight=50.0, out_col="shrunk"
+    )
+
+    assert result["shrunk"][0] == pytest.approx(12.0, abs=0.05)
+
+
+def test_build_efficiency_table_wires_shrinkage_into_all_four_outputs() -> None:
+    result = _build_table()
+
+    wr1_week2 = result.filter((pl.col("player_id") == "wr1") & (pl.col("week") == 2)).row(
+        0, named=True
+    )
+    trailing = wr1_week2["trailing_raw_yards_per_target"]
+    league_mean = wr1_week2["league_mean_yards_per_target"]
+    n_touches = wr1_week2["_n_touches_yards_per_target"]
+    expected = (n_touches * trailing + efficiency.TARGET_PRIOR_WEIGHT * league_mean) / (
+        n_touches + efficiency.TARGET_PRIOR_WEIGHT
+    )
+    assert wr1_week2["_shrunk_yards_per_target"] == pytest.approx(expected)
