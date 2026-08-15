@@ -230,8 +230,10 @@ def _shrink(
     """
     return table.with_columns(
         (
-            (pl.col(n_touches_col) * pl.col(trailing_col).fill_null(0.0)
-             + prior_weight * pl.col(league_mean_col))
+            (
+                pl.col(n_touches_col) * pl.col(trailing_col).fill_null(0.0)
+                + prior_weight * pl.col(league_mean_col)
+            )
             / (pl.col(n_touches_col) + prior_weight)
         ).alias(out_col)
     )
