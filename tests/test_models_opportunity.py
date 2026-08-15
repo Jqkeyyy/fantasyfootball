@@ -129,6 +129,44 @@ def test_build_opportunity_table_carries_real_target_counts_unmodified() -> None
     assert wr["carries"] == 1
 
 
+def test_build_opportunity_table_fills_missing_usage_match_with_zero_not_null() -> None:
+    """SPEC §11.1: a real active-roster player-week with no recorded stat
+    line (DNP/inactive -- no matching row in player_week_usage at all) must
+    resolve to real 0 usage, not a dropped/null row -- the same
+    survivorship-bias rule `features/build.py::_add_target_and_availability`
+    already applies to `target`/`availability_flag`. `wr2` here has a
+    `player_week_features` row but no `player_week_usage` row at all (not
+    even a zero-stat row) -- the left join alone would otherwise leave
+    `targets`/`carries`/`rz_targets`/`rz_carries`/`rz_touches` null."""
+    features = pl.concat(
+        [
+            _player_week_features(),
+            pl.DataFrame(
+                {
+                    "player_id": ["wr2"],
+                    "season": [2025],
+                    "week": [1],
+                    "team": ["KC"],
+                    "position": ["WR"],
+                    "target_share_ewm_3": [0.05],
+                    "carry_share_ewm_3": [0.0],
+                    "rz_touch_share_ewm_6": [0.02],
+                }
+            ),
+        ],
+        how="vertical_relaxed",
+    )
+
+    result = opportunity.build_opportunity_table(
+        features, _player_week_usage(), _stage1_predictions()
+    )
+
+    wr2 = result.filter(pl.col("player_id") == "wr2").row(0, named=True)
+    assert wr2["targets"] == 0
+    assert wr2["carries"] == 0
+    assert wr2["rz_touches"] == 0
+
+
 def _baseline_fixture_table() -> pl.DataFrame:
     """Two WRs, two weeks each -- enough to exercise both the pooled
     league-mean (two players at the same position, same week) and the
@@ -158,9 +196,7 @@ def test_add_opportunity_baselines_adds_all_six_columns() -> None:
 def test_add_opportunity_baselines_b2_never_leaks_the_target_week() -> None:
     result = opportunity.add_opportunity_baselines(_baseline_fixture_table())
 
-    week2 = result.filter((pl.col("player_id") == "wrA") & (pl.col("week") == 2)).row(
-        0, named=True
-    )
+    week2 = result.filter((pl.col("player_id") == "wrA") & (pl.col("week") == 2)).row(0, named=True)
     # week 2's b2 baseline must be built only from week 1's real outcome (6),
     # never week 2's own (10) -- with a single prior week, ewm_4 of one
     # point equals that point exactly.
@@ -175,35 +211,3 @@ def test_add_opportunity_baselines_league_mean_pools_across_players_at_the_posit
     )
     # week 2's pooled mean is week 1's real values across BOTH WRs: (6+8)/2 = 7
     assert week2_wrA["targets_league_mean"] == pytest.approx(7.0)
-
-
-def test_to_predictions_frame_reshapes_to_one_row_per_predictor() -> None:
-    table = pl.DataFrame(
-        {
-            "player_id": ["wr1"],
-            "season": [2025],
-            "week": [1],
-            "position": ["WR"],
-            "team": ["KC"],
-            "targets": [8],
-            "expected_targets": [7.5],
-            "targets_b2_ewm_4": [6.0],
-            "targets_league_mean": [7.0],
-        }
-    )
-
-    result = opportunity.to_predictions_frame(
-        table,
-        real_column="targets",
-        composition_column="expected_targets",
-        trailing_raw_column="targets_b2_ewm_4",
-        league_mean_column="targets_league_mean",
-    )
-
-    assert result.height == 3  # one row per predictor
-    by_predictor = {row["predictor"]: row for row in result.to_dicts()}
-    assert by_predictor["opportunity_composition"]["prediction"] == pytest.approx(7.5)
-    assert by_predictor["trailing_raw"]["prediction"] == pytest.approx(6.0)
-    assert by_predictor["league_mean"]["prediction"] == pytest.approx(7.0)
-    for row in result.to_dicts():
-        assert row["target"] == 8  # the real outcome, same on every predictor's own row

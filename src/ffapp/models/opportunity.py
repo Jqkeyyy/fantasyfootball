@@ -74,6 +74,18 @@ def build_opportunity_table(
         on=["player_id", "season", "week"],
         how="left",
     )
+    # SPEC §11.1: a real active-roster player-week with no recorded stat
+    # line (DNP/inactive -- no match in player_week_usage) is 0 real usage,
+    # not a dropped/null row -- the same survivorship-bias rule
+    # `features/build.py::_add_target_and_availability` already applies to
+    # `target`/`availability_flag` (fill to 0/False, never drop), applied
+    # here to the real usage counts this stage's outcomes are built from.
+    with_real_outcomes = with_real_outcomes.with_columns(
+        pl.col("targets").fill_null(0),
+        pl.col("carries").fill_null(0),
+        pl.col("rz_targets").fill_null(0),
+        pl.col("rz_carries").fill_null(0),
+    )
     return with_real_outcomes.with_columns(
         (pl.col("rz_targets") + pl.col("rz_carries")).alias("rz_touches"),
         pl.when(pl.col("position").is_in(PASS_CATCHERS_AND_RB))
@@ -93,7 +105,10 @@ def build_opportunity_table(
 
 def add_opportunity_baselines(table: pl.DataFrame) -> pl.DataFrame:
     """Two baselines per target, following this project's established B0/B2
-    pattern (SPEC §12.3) at player grain:
+    pattern (SPEC §12.3) at player grain. Precondition: `table` must already
+    have `TARGET_COLUMNS` (`targets`, `carries`, `rz_touches`) as real,
+    non-null columns -- i.e. it must be `build_opportunity_table`'s own
+    output (which derives `rz_touches` itself), not a raw usage table.
 
     - `*_league_mean` (B0-equivalent, sanity floor): every player pooled by
       `position`, via `models.baselines.pooled_rolling_mean` -- a position-
@@ -124,47 +139,8 @@ def add_opportunity_baselines(table: pl.DataFrame) -> pl.DataFrame:
     return with_b2
 
 
-def to_predictions_frame(
-    table: pl.DataFrame,
-    *,
-    real_column: str,
-    composition_column: str,
-    trailing_raw_column: str,
-    league_mean_column: str,
-) -> pl.DataFrame:
-    """Reshapes one opportunity output's wide columns into the long
-    `player_id`/`season`/`week`/`position`/`team`/`predictor`/`prediction`/
-    `target` shape `evaluation.metrics.accuracy_metrics` expects, so Stage
-    2's evaluation reuses the exact same accuracy/CI reporting every other
-    model in this project already uses (SPEC §12.5), rather than a second,
-    hand-rolled MAE calculation.
-    """
-    base = table.select(
-        "player_id",
-        "season",
-        "week",
-        "position",
-        "team",
-        pl.col(real_column).alias("target"),
-    )
-    frames = []
-    for predictor_name, column in [
-        ("opportunity_composition", composition_column),
-        ("trailing_raw", trailing_raw_column),
-        ("league_mean", league_mean_column),
-    ]:
-        frames.append(
-            base.with_columns(
-                pl.lit(predictor_name).alias("predictor"),
-                table[column].alias("prediction"),
-            )
-        )
-    return pl.concat(frames, how="vertical_relaxed")
-
-
 __all__ = [
     "TARGET_COLUMNS",
     "add_opportunity_baselines",
     "build_opportunity_table",
-    "to_predictions_frame",
 ]
