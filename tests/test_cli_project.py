@@ -13,7 +13,14 @@ import pytest
 from typer.testing import CliRunner
 
 import ffapp.cli as cli
-from ffapp.config import CacheSettings, LightGBMSettings, ModelSettings, SeasonsSettings, Settings
+from ffapp.config import (
+    CacheSettings,
+    LeagueConfig,
+    LightGBMSettings,
+    ModelSettings,
+    SeasonsSettings,
+    Settings,
+)
 from ffapp.models import points
 
 runner = CliRunner()
@@ -243,3 +250,119 @@ def test_project_exits_with_a_clear_error_when_the_b3_archive_is_missing(
 
     assert result.exit_code == 1
     assert "b3_predictions.parquet" in result.output
+
+
+# --- project --from-week/--through-week/--league (task 1.21 CLI wiring) -----------
+
+
+_ROS_LEAGUE = LeagueConfig(
+    slug="ros-test-league",
+    display_name="ROS Test League",
+    is_primary=True,
+    league_id="1",
+    season=2020,
+    league_cache={"scoring_settings": {"pass_yd": 0.04}},
+    overrides={},
+)
+
+
+def _write_ros_interim_tables(settings: Settings) -> None:
+    interim_dir = settings.data_root / "interim"
+    interim_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        schema={"season": pl.Int64, "week": pl.Int64, "gameday": pl.Utf8, "home_team": pl.Utf8}
+    ).write_parquet(interim_dir / "schedule.parquet")
+    pl.DataFrame(
+        schema={"position_group": pl.Utf8, "season": pl.Int64, "week": pl.Int64, "team": pl.Utf8}
+    ).write_parquet(interim_dir / "defense_position_allowed.parquet")
+    pl.DataFrame(
+        schema={"player_id": pl.Utf8, "season": pl.Int64, "week": pl.Int64, "b3_points": pl.Float64}
+    ).write_parquet(interim_dir / "b3_predictions.parquet")
+
+
+def test_project_command_accepts_from_week_through_week_and_league(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """A smoke test at the CLI-wiring level (mirrors this file's existing
+    `project_command` tests' own style) -- proves the new flags parse and
+    route to `models.predict_ros.project_week_range`, not that the real
+    math is correct (already proven in tests/test_models_predict_ros.py).
+    """
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    monkeypatch.setattr(cli, "load_league", lambda slug: _ROS_LEAGUE)
+    monkeypatch.setattr(cli, "load_primary_league", lambda: _ROS_LEAGUE)
+    monkeypatch.setattr(
+        cli.nflverse, "fetch_player_ids", lambda **kwargs: tmp_path / "crosswalk.csv"
+    )
+    monkeypatch.setattr(cli.sleeper, "fetch_players", lambda **kwargs: tmp_path / "sleeper.json")
+    monkeypatch.setattr(
+        cli.mapping, "build_players_dim", lambda *args, **kwargs: pl.DataFrame({"player_id": []})
+    )
+    monkeypatch.setattr(
+        cli.ros_consensus, "fetch_season_consensus", lambda *args, **kwargs: {}
+    )
+    _write_ros_interim_tables(fixture_settings)
+
+    calls: dict[str, object] = {}
+
+    def fake_project_week_range(*args: object, **kwargs: object) -> pl.DataFrame:
+        calls["args"] = args
+        return pl.DataFrame(
+            {
+                "player_id": ["p1"],
+                "season": [2020],
+                "week": [8],
+                "position": ["RB"],
+                "team": ["AAA"],
+                "opponent_team": [None],
+                "mean": [12.0],
+                "q10": [8.0],
+                "q25": [10.0],
+                "q50": [12.0],
+                "q75": [14.0],
+                "q90": [16.0],
+                "is_current_week": [True],
+                "as_of_utc": ["2020-10-01T00:00:00+00:00"],
+            }
+        )
+
+    monkeypatch.setattr(cli.predict_ros, "project_week_range", fake_project_week_range)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "project",
+            "--season",
+            "2020",
+            "--week",
+            "8",
+            "--from-week",
+            "8",
+            "--through-week",
+            "10",
+            "--league",
+            "ros-test-league",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "args" in calls
+    output_path = (
+        fixture_settings.data_root / "outputs" / "ros-test-league" / "projections_ros.parquet"
+    )
+    assert output_path.exists()
+    written = pl.read_parquet(output_path)
+    assert written["player_id"].to_list() == ["p1"]
+
+
+def test_project_command_requires_both_from_week_and_through_week(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+
+    result = runner.invoke(
+        cli.app, ["project", "--season", "2020", "--week", "8", "--from-week", "8"]
+    )
+
+    assert result.exit_code == 1
+    assert "--from-week and --through-week must be given together" in result.output

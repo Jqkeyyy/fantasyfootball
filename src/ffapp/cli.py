@@ -1,13 +1,22 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import typer
 
 from ffapp import __version__
 from ffapp.cache import registry as cache_registry
 from ffapp.cache.offline import is_offline
-from ffapp.config import Settings, load_all_leagues, load_league, load_primary_league, load_settings
+from ffapp.config import (
+    Settings,
+    load_all_leagues,
+    load_league,
+    load_primary_league,
+    load_ros_calibration,
+    load_settings,
+)
 from ffapp.draft import board as draft_board
 from ffapp.draft import export as draft_export
 from ffapp.draft import replay as draft_replay
@@ -18,9 +27,10 @@ from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
 from ffapp.ingest import nflverse, rankings, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
-from ffapp.models import availability, baselines, points, predict
+from ffapp.models import availability, baselines, points, predict, predict_ros, ros_consensus
 from ffapp.scoring import golden
-from ffapp.tools import prediction_log
+from ffapp.sim import injury
+from ffapp.tools import prediction_log, ros_aggregate, ros_rankings, sos, waivers
 
 load_env()
 
@@ -659,6 +669,15 @@ def project_command(
     offline: bool | None = typer.Option(
         None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
     ),
+    from_week: int | None = typer.Option(
+        None, "--from-week", help="Start of the ROS horizon (defaults to --week)."
+    ),
+    through_week: int | None = typer.Option(
+        None, "--through-week", help="End of the ROS horizon (inclusive)."
+    ),
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
 ) -> None:
     """Real weekly projections (SPEC §6.2, §11.8; task 1.18): fit
     availability + quantiles, plus whichever conditional-mean source
@@ -698,6 +717,96 @@ def project_command(
         )
         raise typer.Exit(code=1)
     features = pl.read_parquet(features_path)
+
+    if from_week is not None or through_week is not None:
+        if from_week is None or through_week is None:
+            typer.echo("--from-week and --through-week must be given together.", err=True)
+            raise typer.Exit(code=1)
+        league_config = load_league(league) if league is not None else load_primary_league()
+        scoring_settings = league_config.league_cache["scoring_settings"]
+        schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
+        dpa = pl.read_parquet(settings.data_root / "interim" / "defense_position_allowed.parquet")
+
+        crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
+        sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
+        players_dim_ros = mapping.build_players_dim(
+            crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
+        )
+        # No join_key pre-processing needed here -- project_week_range (Task 8)
+        # already calls mapping.dedupe_to_one_row_per_name_position internally
+        # on whatever players_dim it receives, and fetch_season_consensus's own
+        # fetchers (via prediction_log._resolve_to_player_id) do the same. The
+        # raw build_players_dim output is exactly what every downstream
+        # consumer expects -- confirmed by reading both call chains directly.
+
+        b3_historical_path_ros = settings.data_root / "interim" / "b3_predictions.parquet"
+        if not b3_historical_path_ros.exists():
+            typer.echo(f"Missing {b3_historical_path_ros}. See HANDOFF.md.", err=True)
+            raise typer.Exit(code=1)
+        b3_historical_ros = pl.read_parquet(b3_historical_path_ros)
+
+        now_ros = datetime.now(UTC)
+        season_points = ros_consensus.fetch_season_consensus(
+            resolved_season,
+            scoring_settings,
+            players_dim_ros,
+            offline=offline,
+            settings=settings,
+            now=now_ros,
+        )
+        log_dir = settings.data_root / "outputs" / league_config.slug / "prediction_log"
+        trend_by_source: dict[str, str] = {}
+        fetches_path = log_dir / "source_fetches.parquet"
+        if fetches_path.exists():
+            trend_df = prediction_log.check_sources(
+                league_slug=league_config.slug, settings=settings
+            )
+            trend_by_source = {
+                row["source"]: row["season_trend"]
+                for row in trend_df.iter_rows(named=True)
+                if row["season_trend"] is not None
+            }
+        actuals_to_date = (
+            features.filter((pl.col("season") == resolved_season) & (pl.col("week") < from_week))
+            .group_by("player_id")
+            .agg(pl.col("target").sum().alias("actual_points_to_date"))
+        )
+
+        result = predict_ros.project_week_range(
+            features,
+            schedule,
+            dpa,
+            resolved_season,
+            from_week,
+            through_week,
+            league_config.slug,
+            scoring_settings,
+            players_dim_ros,
+            b3_historical_ros,
+            actuals_to_date,
+            season_points,
+            trend_by_source,
+            settings.model.quantiles,
+            now_ros,
+            train_start=settings.seasons.train_start,
+            min_train_rows=settings.model.min_train_rows,
+            lightgbm_params=settings.model.lightgbm,
+            code_version=evaluation_report.current_git_commit(),
+            offline=offline,
+            settings=settings,
+        )
+        if result.is_empty():
+            typer.echo("No ROS projections generated -- see HANDOFF.md.", err=True)
+            raise typer.Exit(code=1)
+        output_path_ros = (
+            settings.data_root / "outputs" / league_config.slug / "projections_ros.parquet"
+        )
+        combined_ros = predict.write_projections(result, output_path_ros)
+        typer.echo(
+            f"Wrote {result.height} ROS projections to {output_path_ros} "
+            f"({combined_ros.height} total rows)."
+        )
+        return
 
     players_dim = None
     b3_historical = None
@@ -749,6 +858,161 @@ def project_command(
         f"Wrote {result.height} projections for season {resolved_season} week {week} "
         f"to {output_path} ({combined.height} total rows)."
     )
+
+
+rankings_app = typer.Typer(name="rankings", help="Rest-of-season and other rankings views.")
+app.add_typer(rankings_app, name="rankings")
+
+
+@rankings_app.command("ros")
+def rankings_ros_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to settings.seasons.current."
+    ),
+) -> None:
+    """Rest-of-season VOR board (`SPEC-ADDENDUM-04.md` §D.3-§D.5; task
+    1.21) over the CURRENT free-agent pool, with rank-change since the
+    prior real run. Requires `projections_ros.parquet` to already exist
+    for this league (`ffapp project --from-week --through-week --league`)."""
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    resolved_season = season if season is not None else settings.seasons.current
+    league_format = parse_league_format(league_config)
+
+    ros_path = settings.data_root / "outputs" / league_config.slug / "projections_ros.parquet"
+    if not ros_path.exists():
+        typer.echo(
+            f"Missing {ros_path}. Run `ffapp project --from-week --through-week "
+            f"--league {league_config.slug}` first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    projections_ros = pl.read_parquet(ros_path).filter(pl.col("season") == resolved_season)
+
+    crosswalk_path = nflverse.fetch_player_ids(offline=True, settings=settings)
+    sleeper_players_path = sleeper.fetch_players(offline=True, settings=settings)
+    players_dim = mapping.build_players_dim(
+        crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
+    )
+
+    if league_config.league_id is None:
+        typer.echo(
+            f"League {league_config.slug} has no real sleeper.league_id configured.", err=True
+        )
+        raise typer.Exit(code=1)
+    rosters = json.loads(
+        sleeper.fetch_rosters(league_config.league_id, offline=True, settings=settings).read_text()
+    )
+    rostered_ids = waivers.rostered_sleeper_ids(rosters)
+    # league_relevant_positions takes the real LeagueConfig (needs .league_cache/
+    # .overrides), not LeagueFormat -- confirmed against its real signature. The
+    # existing `mapping` import (ffapp.ids.mapping) is this file's own established
+    # alias for that module (see ids_check's own use of
+    # mapping.league_relevant_positions) -- no separate "ids_mapping" alias exists
+    # here, so this reuses the one already in scope rather than adding a duplicate.
+    eligible_positions = mapping.league_relevant_positions(league_config)
+
+    if projections_ros.filter(pl.col("is_current_week")).is_empty():
+        typer.echo(
+            f"{ros_path} has no real current-week row -- was it built for this season?", err=True
+        )
+        raise typer.Exit(code=1)
+    anchor_week = int(projections_ros.filter(pl.col("is_current_week"))["week"].min())  # type: ignore[arg-type]
+
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    features = pl.read_parquet(features_path)
+    before_anchor = (pl.col("season") < resolved_season) | (
+        (pl.col("season") == resolved_season) & (pl.col("week") < anchor_week)
+    )
+    anchor_row = (pl.col("season") == resolved_season) & (pl.col("week") == anchor_week)
+    train_rows = features.filter(before_anchor)
+    target_rows = features.filter(anchor_row)
+
+    availability_model = availability.fit_availability_model(
+        train_rows, lightgbm_params=settings.model.lightgbm
+    )
+    p_active_series = availability.predict_p_active(availability_model, target_rows)
+    p_active_now = dict(
+        zip(target_rows["player_id"].to_list(), p_active_series.to_list(), strict=True)
+    )
+
+    # rosters/snap_counts have no data/interim/ counterpart -- sim.injury's own
+    # build_hazard_features reads the RAW nflverse tables directly (confirmed
+    # against sim/injury.py's own module docstring and docs/JOURNAL.md's task
+    # 2.3 entry). schedule/injuries genuinely do have real interim tables.
+    train_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
+    rosters_table = pl.read_parquet(
+        nflverse.fetch_rosters(train_season_range, offline=True, settings=settings)
+    )
+    schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
+    injuries = pl.read_parquet(settings.data_root / "interim" / "injuries.parquet")
+    snap_counts = pl.read_parquet(
+        nflverse.fetch_snap_counts(train_season_range, offline=True, settings=settings)
+    )
+    # `fetch_player_ids` returns a Path to the raw CSV (`data/raw/nflverse/player_ids.csv`),
+    # not parquet -- `mapping.load_crosswalk_base` is the same already-tested loader
+    # `mapping.build_players_dim` itself calls internally, reused here rather than
+    # re-parsing the CSV a second way.
+    crosswalk = mapping.load_crosswalk_base(crosswalk_path)
+    hazard_grid = injury.build_hazard_features(
+        rosters_table, schedule, injuries, snap_counts, crosswalk
+    )
+    hazard_train = hazard_grid.filter(before_anchor)
+    hazard_target = hazard_grid.filter(anchor_row)
+    hazard_model = injury.fit_hazard_model(hazard_train)
+    p_miss_series = injury.predict_p_miss(hazard_model, hazard_target)
+    p_miss_now = dict(
+        zip(hazard_target["player_id"].to_list(), p_miss_series.to_list(), strict=True)
+    )
+
+    position_by_player = dict(
+        zip(
+            projections_ros["player_id"].to_list(),
+            projections_ros["position"].to_list(),
+            strict=False,
+        )
+    )
+
+    calibration = load_ros_calibration()
+    playoff_week_list = sos.playoff_weeks(
+        schedule, season=resolved_season, playoff_week_start=league_format.playoff_week_start
+    )
+    aggregated = ros_aggregate.aggregate_ros(
+        projections_ros,
+        p_active_now,
+        p_miss_now,
+        position_by_player,
+        calibration,
+        playoff_weeks=playoff_week_list,
+        ros_sims=settings.ros.ros_sims,
+        default_recovery_prob=settings.ros.default_recovery_prob,
+        correlation=settings.simulation.correlation,
+        rng=np.random.default_rng(),
+    )
+    board = ros_rankings.build_ros_board(
+        aggregated, players_dim, rostered_ids, eligible_positions, league_format
+    )
+
+    out_dir = settings.data_root / "outputs" / league_config.slug / "rankings_ros"
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = out_dir / timestamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    latest_path = out_dir / "latest.parquet"
+    previous_board = pl.read_parquet(latest_path) if latest_path.exists() else None
+    with_rank_change = board.join(
+        ros_rankings.rank_change(board, previous_board), on="player_id", how="left"
+    )
+
+    board_path = run_dir / "board.parquet"
+    with_rank_change.write_parquet(board_path)
+    with_rank_change.write_parquet(latest_path)
+    typer.echo(
+        f"Wrote {with_rank_change.height} ROS ranked players to {board_path} (and latest.parquet)."
+    )
+    typer.echo(with_rank_change.head(20).to_pandas().to_string(index=False))
 
 
 def _resolve_league_slug(league: str | None) -> tuple[str, dict[str, float]]:
