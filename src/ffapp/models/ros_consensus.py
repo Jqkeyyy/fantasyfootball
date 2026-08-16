@@ -53,17 +53,12 @@ def fetch_season_consensus(
     unchanged job, not this module's.
     """
     point_results: dict[str, pl.DataFrame] = {}
-    for name in POINT_SOURCES:
-        result = fetch_point_source(
-            name, season, scoring_settings, players_dim, offline=offline, settings=settings, now=now
-        )
-        point_results[name] = result.points
-
     real_ranked = []
     for name in POINT_SOURCES:
         result = fetch_point_source(
             name, season, scoring_settings, players_dim, offline=offline, settings=settings, now=now
         )
+        point_results[name] = result.points
         if result.ranked is not None and result.ranked.height > 0:
             real_ranked.append(result.ranked)
     reference_curve = (
