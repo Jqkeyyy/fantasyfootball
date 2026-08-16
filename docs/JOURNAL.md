@@ -589,3 +589,51 @@ Places where the spec/addenda were silent, ambiguous, or (in one case) internall
 - **`nflverse`'s raw `team_stats`/`player_stats` tables carry real NFL postseason rows (`season_type == "POST"`, weeks 19-22) alongside the regular season, and `scoring.stats.build_dst_stat_frame`/`build_player_stat_frame` don't filter them out on their own.** No fantasy league here plays through the postseason (`tools.sos` already established this exact `REG`-only scoping precedent) — any new code building a real historical points table from these two tables directly (rather than via an already-`REG`-scoped interim table) needs its own `season_type == "REG"` filter before joining, or postseason games quietly inflate season totals. Confirmed live: an early, unfiltered version of `tools.streaming`'s DST/K streaming-replacement check overstated both positions' real streaming totals by including 4 extra playoff weeks' worth of points.
 - **A `Write` call on a file that already exists but was never `Read` this session can silently clobber it without the tool's own "must Read first" safety check firing** — confirmed live: creating `tests/test_features_build.py` for task 1.9's new tests overwrote task 1.5's own pre-existing 7 tests (`LeakageError`/`assert_training_lag`/`assert_inference_availability`, committed in `13fe0f6`) without any warning, because that specific file had never been `Read` earlier in *this* session even though it existed in git history. Caught immediately by the resulting `ImportError` (the new file imported `LeakageError` from the wrong module) rather than silently losing the old tests — recovered the original content via `git show 13fe0f6:tests/test_features_build.py` and merged both sets of tests into one file. **Worth remembering: before using `Write` on any path that might already exist and hasn't been `Read` this session, check `git log --oneline -- <path>` first, especially for a filename that's a natural, obvious choice for new work in an area another task already touched (`build.py`/`test_..._build.py` is exactly this kind of collision-prone name).**
 - **A commit can land real, substantial work under an accidental one-character commit message (`"g"`), with no corresponding `TASKS.md`/`HANDOFF.md` update, if a session ends abruptly mid-commit.** Found at the start of a later session on a different machine: `git log` showed the tip commit's message was just `"g"`, and diffing it revealed it wired `lineup_regret` into `evaluation/metrics.py` (task 1.13's deferred piece) and extended the `evaluate` CLI with real fitted-model wiring (most of task 1.17) — genuine, tested, passing work, just never reflected in either tracking doc. Caught by the human noticing the doc/reality mismatch and asking directly, not detected automatically. **Worth checking `git log -1`'s actual commit message and diff against what `TASKS.md`/`HANDOFF.md` claim is the current state at the start of any session that resumes someone else's (or a crashed prior) work, rather than trusting the docs' own narrative at face value.**
+
+## 2026-08-16 (later) — SPEC-ADDENDUM-04.md §D.1 amended: horizon split for the ROS pipeline
+
+§D.1 as written assumes per-week projections are obtainable for every future week. They
+aren't: FantasyPros' weekly archive (`ingest.rankings.FP_WEEKLY_ARCHIVE_PATH`,
+`fp_latest_weekly.csv`) publishes only the *current* week's consensus — there is no
+future-week weekly file to fetch, live or historical. Verified by re-reading
+`normalize_fp_weekly`/`fetch_fp_weekly_snapshot`: every real row this project has ever
+pulled from that archive is tagged with the (season, week) it was *selected for* by
+`select_commit_before`, not a week the source itself published multiple horizons for.
+
+Implementation decision, made before building task 1.21: split the ROS horizon into two
+regimes rather than trying to force weekly consensus onto weeks it was never published for.
+
+- **Current week** (the anchor week the pipeline is run for): unchanged. Real weekly
+  `consensus_b3` (`models.baselines.fetch_b3_for_week`) plus the already-shipped
+  calibrated empirical spread (`models.baselines.empirical_error_quantiles`). No change to
+  `models/predict.py::project_week`.
+- **Future weeks** (anchor+1 through the horizon's `through_week`): the six season-long
+  preseason-style sources (ESPN/CBS/FantasySharks/FFToday/FootballGuys/DraftSharks — the
+  same seven-minus-FantasyPros set `tools.prediction_log` already fetches weekly and
+  correctly separates from the one real weekly source) are re-fetched *live, this week*,
+  resolved to a real remaining-season value per `check_sources`' own already-shipped
+  full-season-vs-ROS trend detection (declining materially => already a forward signal;
+  flat/insufficient data => full-season, subtract real actuals-to-date — the safer default
+  either way, logged per source), then aggregated via the same trimmed-mean
+  `projections.aggregate.aggregate_projections` the draft board already uses. This one
+  number is the real *level* for a player's entire remaining season.
+- **Shape:** the season-long level is allocated across the player's own real remaining
+  weeks (byes excluded entirely) proportional to each week's real opponent matchup quality
+  (`defense_position_allowed`'s own already-validated, already-walk-forward-safe
+  `adj_epa_allowed`, task 1.8), frozen at whatever is known as of the anchor week — never a
+  future week's own rating, which doesn't exist yet regardless. Availability/injury is
+  deliberately NOT baked into the shape (that would double-count against the aggregation
+  stage's own `p_play[w]` multiplier) — the shape answers "if this player plays a full
+  week w, how much of their remaining-season value lands in that week," not "will they
+  play."
+- **ROS aggregate:** Monte Carlo over the future-week distributions (empirical-error-
+  quantile spread recentered on each week's shaped mean, same already-validated mechanism
+  `consensus_b3` uses for the current week) plus the current week's own real distribution,
+  combined with within-player week-to-week correlation (new, `sim/persistence.py`) and
+  task 2.2's existing cross-player correlation, gated by task 2.3/2.4's persistent-duration
+  injury sampling.
+
+"Consensus supplies the level; the pipeline supplies the shape" is the one-line summary.
+This is a real, load-bearing implementation decision, not an incidental default — it
+determines what "future week projection" even means in this pipeline, since no source
+publishes one directly. Full task breakdown: `docs/superpowers/plans/2026-08-16-ros-rankings-pipeline.md`.
