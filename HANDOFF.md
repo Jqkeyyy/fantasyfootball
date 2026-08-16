@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-15
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** (pending — this session's Stage 4 investigation writeup, about to be committed and pushed) on `main` — previous confirmed-synced commit was `3e49573` (`SPEC-ADDENDUM-04.md` added, tasks 1.20-1.22 queued). Model v2 Stage 4 (Monte Carlo recombination) was investigated this session — real design work, a real calibration test built and run against v1's own 2.1pp bar, a real failure found and partially diagnosed — then deliberately parked as offseason work. No Stage 4 code was ever added to `src/`. Full account in `docs/JOURNAL.md`'s newest entry; §3 below has the parked state and next step.
+**Last commit:** `e6d5614` on `main`, pushed to `origin` and confirmed synced (`git rev-list --left-right --count origin/main...main` → `0 0`). Model v2 Stage 4 (Monte Carlo recombination) was investigated this session — real design work, a real calibration test built and run against v1's own 2.1pp bar, a real failure found and partially diagnosed — then deliberately parked as offseason work. No Stage 4 code was ever added to `src/`. Full account in `docs/JOURNAL.md`'s newest entry; §3 below has the parked state and next step.
 
 This file is **state and pointers**, not design or history. `SPEC.md` and the addenda hold the design. Per-task evidence, implementation decisions, and gotchas live in `docs/JOURNAL.md` — read that when investigating a specific past task or bug, not every session. `docs/summary.md` is a third, newer reference: a standing narrative snapshot of current state and how things are going, meant to be read cover to cover rather than searched. Maintenance rules are at the bottom.
 
