@@ -78,8 +78,11 @@ def test_allocate_season_consensus_handles_flat_ratings_evenly() -> None:
         }
     )
     result = ros_shape.allocate_season_consensus(
-        season_consensus_ros_points=30.0, position="WR", team="KC",
-        weeks_with_opponents=weeks_with_opponents, frozen_ratings_by_group={"WR": frozen_ratings},
+        season_consensus_ros_points=30.0,
+        position="WR",
+        team="KC",
+        weeks_with_opponents=weeks_with_opponents,
+        frozen_ratings_by_group={"WR": frozen_ratings},
     )
     for value in result["mean"].to_list():
         assert value == pytest.approx(10.0)
