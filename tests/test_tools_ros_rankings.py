@@ -102,3 +102,81 @@ def test_rank_change_null_for_a_new_player() -> None:
     result = ros_rankings.rank_change(current, previous)
     new_row = result.filter(pl.col("player_id") == "p2").row(0, named=True)
     assert new_row["rank_change"] is None
+
+
+def test_current_free_agent_projections_preserves_all_ros_points_table_columns() -> None:
+    """Real production `ros_points_table` (tools.ros_aggregate.aggregate_ros's
+    own output) carries far more than just `ros_points` -- p10/p50/p90,
+    expected_games, playoff_weeks_value are all real columns a caller
+    downstream (the ROS Rankings Streamlit page) needs. The join+select
+    here must never silently drop them -- a real bug found this way once
+    already (SPEC-ADDENDUM-04.md §D.5's own literal UI requirement)."""
+    ros_points = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "ros_points": [80.0, 60.0],
+            "ros_p10": [50.0, 40.0],
+            "ros_p50": [80.0, 60.0],
+            "ros_p90": [110.0, 80.0],
+            "expected_games": [7.5, 6.2],
+            "playoff_weeks_value": [20.0, 15.0],
+        }
+    )
+    players_dim = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "sleeper_id": ["s1", "s2"],
+            "position": ["RB", "WR"],
+            "active": [True, True],
+            "team": ["KC", "BUF"],
+        }
+    )
+    result = ros_rankings.current_free_agent_projections(
+        ros_points, players_dim, rostered_ids=set(), eligible_positions={"RB", "WR"}
+    )
+    for column in ("ros_p10", "ros_p50", "ros_p90", "expected_games", "playoff_weeks_value"):
+        assert column in result.columns, f"{column} was dropped"
+    p1_row = result.filter(pl.col("player_id") == "p1").row(0, named=True)
+    assert p1_row["ros_p10"] == 50.0
+    assert p1_row["expected_games"] == 7.5
+    assert p1_row["playoff_weeks_value"] == 20.0
+
+
+def test_build_ros_board_preserves_all_ros_points_table_columns() -> None:
+    """Same real gap, one layer up -- build_ros_board's own final output
+    (what actually gets written to rankings_ros/latest.parquet) must also
+    carry these columns through compute_vor unchanged."""
+    ros_points = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2", "p3", "p4"],
+            "ros_points": [80.0, 60.0, 40.0, 20.0],
+            "ros_p10": [50.0, 40.0, 25.0, 10.0],
+            "ros_p50": [80.0, 60.0, 40.0, 20.0],
+            "ros_p90": [110.0, 80.0, 55.0, 30.0],
+            "expected_games": [7.5, 6.2, 5.0, 3.0],
+            "playoff_weeks_value": [20.0, 15.0, 10.0, 5.0],
+        }
+    )
+    players_dim = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2", "p3", "p4"],
+            "sleeper_id": ["s1", "s2", "s3", "s4"],
+            "position": ["RB", "RB", "WR", "WR"],
+            "active": [True, True, True, True],
+            "team": ["KC", "KC", "BUF", "BUF"],
+        }
+    )
+    fmt = LeagueFormat(
+        n_teams=1,
+        starters={"RB": 1, "WR": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=0,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    board = ros_rankings.build_ros_board(ros_points, players_dim, set(), {"RB", "WR"}, fmt)
+    columns = ("ros_p10", "ros_p50", "ros_p90", "expected_games", "playoff_weeks_value", "vor_ros")
+    for column in columns:
+        assert column in board.columns, f"{column} was dropped"

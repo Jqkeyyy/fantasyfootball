@@ -22,14 +22,16 @@ def current_free_agent_projections(
     rostered_ids: set[str],
     eligible_positions: set[str],
 ) -> pl.DataFrame:
-    """`ros_points_table` (`player_id, ros_points`, `tools.ros_aggregate
-    .aggregate_ros`'s own output) scoped to real current free agents --
-    `tools.waivers.free_agent_pool`'s own already-shipped scoping,
-    joined onto the real ROS points."""
+    """`ros_points_table` (`tools.ros_aggregate.aggregate_ros`'s own
+    output -- `player_id, ros_points`, and today `ros_p10, ros_p50,
+    ros_p90, expected_games, playoff_weeks_value`) scoped to real current
+    free agents -- `tools.waivers.free_agent_pool`'s own already-shipped
+    scoping, joined onto the real ROS points. Preserves every real column
+    `ros_points_table` carries, not just a hardcoded subset."""
     pool = free_agent_pool(players_dim, rostered_ids, eligible_positions)
-    return pool.join(ros_points_table, on="player_id", how="inner").select(
-        "player_id", "position", "ros_points"
-    )
+    joined = pool.join(ros_points_table, on="player_id", how="inner")
+    extra_columns = [c for c in ros_points_table.columns if c != "player_id"]
+    return joined.select("player_id", "position", *extra_columns)
 
 
 def build_ros_board(
