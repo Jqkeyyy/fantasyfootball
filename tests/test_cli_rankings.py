@@ -95,6 +95,8 @@ def _write_features(settings: Settings) -> None:
             "player_id": ["p2", "p3", "p2", "p3"],
             "season": [2020, 2020, 2020, 2020],
             "week": [8, 8, 7, 7],
+            "position": ["RB", "WR", "RB", "WR"],
+            "availability_flag": [True, True, True, True],
         }
     ).write_parquet(features_dir / "player_week_features.parquet")
 
@@ -120,6 +122,7 @@ def _players_dim() -> pl.DataFrame:
             "position": ["RB", "RB", "WR"],
             "active": [True, True, True],
             "team": ["KC", "KC", "KC"],
+            "full_name": ["Player One", "Player Two", "Player Three"],
         }
     )
 
@@ -185,6 +188,8 @@ def _apply_common_mocks(
             "player_id": ["p2", "p3", "p2", "p3"],
             "season": [2020, 2020, 2020, 2020],
             "week": [8, 8, 7, 7],
+            "position": ["RB", "WR", "RB", "WR"],
+            "missed": [False, False, False, False],
         }
     )
     monkeypatch.setattr(cli.injury, "build_hazard_features", lambda *args, **kwargs: hazard_grid)
@@ -234,6 +239,71 @@ def test_rankings_ros_writes_board_and_latest_parquet(
     assert board["rank_change"].is_null().all()
     # p1 is rostered (see rosters.json) -- must never appear on the free-agent board.
     assert "p1" not in board["player_id"].to_list()
+
+
+def test_rankings_ros_threads_offline_flag_through_fetches(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """Fix 4 (final review fix wave): unlike `project_command`'s own real
+    `--offline/--no-offline` flag, this command used to hardcode
+    `offline=True` for every real fetch, with no CLI override. Confirms
+    the new flag reaches at least one real fetch call, not that it's
+    silently dropped."""
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+
+    inner_fetch_player_ids = cli.nflverse.fetch_player_ids
+    captured_offline: list[object] = []
+
+    def _spy_fetch_player_ids(**kwargs: object) -> Path:
+        captured_offline.append(kwargs.get("offline"))
+        return inner_fetch_player_ids(**kwargs)
+
+    monkeypatch.setattr(cli.nflverse, "fetch_player_ids", _spy_fetch_player_ids)
+
+    result = runner.invoke(
+        cli.app, ["rankings", "ros", "--league", "ros-rank-league", "--no-offline"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured_offline == [False]
+
+
+def test_rankings_ros_passes_positional_fallback_rates_to_aggregate_ros(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """Fix 1 wiring (final review fix wave): `default_p_active_by_position`/
+    `default_p_miss_by_position` -- real positional base rates computed
+    from `train_rows`/`hazard_train` -- must actually reach
+    `aggregate_ros`, not just exist unused."""
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+
+    captured_kwargs: dict[str, object] = {}
+
+    def _spy_aggregate_ros(*args: object, **kwargs: object) -> pl.DataFrame:
+        captured_kwargs.update(kwargs)
+        return pl.DataFrame({"player_id": ["p2", "p3"], "ros_points": [120.0, 90.0]})
+
+    monkeypatch.setattr(cli.ros_aggregate, "aggregate_ros", _spy_aggregate_ros)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 0, result.output
+    assert captured_kwargs.get("default_p_active_by_position") == {"RB": 1.0, "WR": 1.0}
+    assert captured_kwargs.get("default_p_miss_by_position") == {"RB": 0.0, "WR": 0.0}
+
+
+def test_rankings_ros_logs_missing_anchor_week_availability_coverage(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """Fix 1's visibility requirement: the real coverage gap (C1's own
+    48%-of-board measurement) must never be silently invisible again --
+    a real, visible log line reporting the real count."""
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 0, result.output
+    assert "had no anchor-week availability data; using positional base rates." in result.output
 
 
 def test_rankings_ros_exits_nonzero_when_projections_ros_is_missing(

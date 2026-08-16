@@ -670,7 +670,14 @@ def project_command(
         None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
     ),
     from_week: int | None = typer.Option(
-        None, "--from-week", help="Start of the ROS horizon (defaults to --week)."
+        None,
+        "--from-week",
+        help=(
+            "Start of the ROS horizon. Must be given together with "
+            "--through-week (range mode) -- it does NOT default to --week; "
+            "--week is still required by this command but is ignored in "
+            "range mode."
+        ),
     ),
     through_week: int | None = typer.Option(
         None, "--through-week", help="End of the ROS horizon (inclusive)."
@@ -758,13 +765,19 @@ def project_command(
         trend_by_source: dict[str, str] = {}
         fetches_path = log_dir / "source_fetches.parquet"
         if fetches_path.exists():
-            trend_df = prediction_log.check_sources(
-                league_slug=league_config.slug, settings=settings
-            )
+            # Fix 5/M1 (final review fix wave): `check_sources` unconditionally
+            # rewrites the real, git-tracked `config/source_refresh_status.yml`
+            # as a side effect -- unwanted here, since this is a read-mostly
+            # ranking command, not the dedicated `ffapp log check-sources`
+            # command. `season_source_trend` (promoted public in Task 6
+            # specifically so a caller could read trend information WITHOUT
+            # that side effect) returns the exact same real per-source trend
+            # rows `check_sources` itself reads internally -- reused directly.
+            trend_df = prediction_log.season_source_trend(log_dir)
             trend_by_source = {
-                row["source"]: row["season_trend"]
+                row["source"]: row["trend"]
                 for row in trend_df.iter_rows(named=True)
-                if row["season_trend"] is not None
+                if row["trend"] is not None
             }
         actuals_to_date = (
             features.filter((pl.col("season") == resolved_season) & (pl.col("week") < from_week))
@@ -872,11 +885,22 @@ def rankings_ros_command(
     season: int | None = typer.Option(
         None, "--season", help="Defaults to settings.seasons.current."
     ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
 ) -> None:
     """Rest-of-season VOR board (`SPEC-ADDENDUM-04.md` §D.3-§D.5; task
     1.21) over the CURRENT free-agent pool, with rank-change since the
     prior real run. Requires `projections_ros.parquet` to already exist
-    for this league (`ffapp project --from-week --through-week --league`)."""
+    for this league (`ffapp project --from-week --through-week --league`).
+
+    Fix 4 (final review fix wave): unlike `project_command`'s own real
+    `--offline/--no-offline` flag, this command used to hardcode
+    `offline=True` for every real fetch below, silently weakening
+    §D.3's "replacement level over the CURRENT free-agent pool"
+    requirement to "whatever roster snapshot happens to be cached," with
+    no way to force a fresh fetch from the CLI. Threaded through every
+    real fetch call this command makes."""
     settings = load_settings()
     league_config = load_league(league) if league is not None else load_primary_league()
     resolved_season = season if season is not None else settings.seasons.current
@@ -892,8 +916,8 @@ def rankings_ros_command(
         raise typer.Exit(code=1)
     projections_ros = pl.read_parquet(ros_path).filter(pl.col("season") == resolved_season)
 
-    crosswalk_path = nflverse.fetch_player_ids(offline=True, settings=settings)
-    sleeper_players_path = sleeper.fetch_players(offline=True, settings=settings)
+    crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
+    sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
     players_dim = mapping.build_players_dim(
         crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
     )
@@ -904,7 +928,9 @@ def rankings_ros_command(
         )
         raise typer.Exit(code=1)
     rosters = json.loads(
-        sleeper.fetch_rosters(league_config.league_id, offline=True, settings=settings).read_text()
+        sleeper.fetch_rosters(
+            league_config.league_id, offline=offline, settings=settings
+        ).read_text()
     )
     rostered_ids = waivers.rostered_sleeper_ids(rosters)
     # league_relevant_positions takes the real LeagueConfig (needs .league_cache/
@@ -954,14 +980,14 @@ def rankings_ros_command(
     # "gsis_id" the first time this command was run against real 2025 data.
     train_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
     rosters_table = pl.read_parquet(
-        nflverse.fetch_rosters(train_season_range, offline=True, settings=settings)
+        nflverse.fetch_rosters(train_season_range, offline=offline, settings=settings)
     )
     schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
     injuries = pl.read_parquet(
-        nflverse.fetch_injuries(train_season_range, offline=True, settings=settings)
+        nflverse.fetch_injuries(train_season_range, offline=offline, settings=settings)
     )
     snap_counts = pl.read_parquet(
-        nflverse.fetch_snap_counts(train_season_range, offline=True, settings=settings)
+        nflverse.fetch_snap_counts(train_season_range, offline=offline, settings=settings)
     )
     # `fetch_player_ids` returns a Path to the raw CSV (`data/raw/nflverse/player_ids.csv`),
     # not parquet -- `mapping.load_crosswalk_base` is the same already-tested loader
@@ -977,6 +1003,25 @@ def rankings_ros_command(
     p_miss_series = injury.predict_p_miss(hazard_model, hazard_target)
     p_miss_now = dict(
         zip(hazard_target["player_id"].to_list(), p_miss_series.to_list(), strict=True)
+    )
+
+    # Fix 1 (final review fix wave, the most severe finding): real positional
+    # fallback rates for any real ranked player with no anchor-week
+    # `p_active_now`/`p_miss_now` entry at all -- `aggregate_ros` no longer
+    # silently defaults such a player to "definitely healthy" (see that
+    # function's own docstring/comments). Computed from the exact same
+    # `train_rows`/`hazard_train` frames already built above for the model
+    # fits, not a separate query.
+    default_p_active_by_position = baselines.positional_availability_base_rate(train_rows)
+    default_p_miss_by_position = injury.positional_base_rate(hazard_train)
+
+    board_player_ids = set(projections_ros["player_id"].unique().to_list())
+    n_missing_availability = sum(
+        1 for pid in board_player_ids if pid not in p_active_now or pid not in p_miss_now
+    )
+    typer.echo(
+        f"{n_missing_availability} of {len(board_player_ids)} ranked players had no "
+        "anchor-week availability data; using positional base rates."
     )
 
     position_by_player = dict(
@@ -1002,6 +1047,8 @@ def rankings_ros_command(
         default_recovery_prob=settings.ros.default_recovery_prob,
         correlation=settings.simulation.correlation,
         rng=np.random.default_rng(),
+        default_p_active_by_position=default_p_active_by_position,
+        default_p_miss_by_position=default_p_miss_by_position,
     )
     board = ros_rankings.build_ros_board(
         aggregated, players_dim, rostered_ids, eligible_positions, league_format

@@ -131,6 +131,24 @@ def add_availability_base_rate(player_week_features: pl.DataFrame) -> pl.DataFra
     )
 
 
+def positional_availability_base_rate(train_rows: pl.DataFrame) -> dict[str, float]:
+    """The active-rate counterpart to `sim.injury.positional_base_rate`'s
+    own exact structure (a plain marginal rate, no covariates, no
+    trailing/rolling window) -- deliberately NOT `add_availability_base_rate`
+    (that function is walk-forward and per-row-shaped, the wrong output
+    shape for this use). This is the real positional fallback
+    `tools.ros_aggregate.aggregate_ros` uses for `p_active` when a player
+    has no per-player anchor-week `p_active_now` entry at all (final fix
+    wave, Fix 1) -- the same "honest positional base rate, never a
+    fabricated 1.0" convention `positional_base_rate` already established
+    on the hazard side."""
+    return dict(
+        train_rows.group_by("position")
+        .agg(pl.col("availability_flag").cast(pl.Float64).mean().alias("rate"))
+        .iter_rows()
+    )
+
+
 def add_b3_fp_weekly_consensus(fp_weekly: pl.DataFrame, players_dim: pl.DataFrame) -> pl.DataFrame:
     """B3: "public consensus weekly projections" -- SPEC calls this "the
     bar for should I use my model at all." Resolves
@@ -270,4 +288,5 @@ __all__ = [
     "empirical_error_quantiles",
     "fetch_b3_for_week",
     "pooled_rolling_mean",
+    "positional_availability_base_rate",
 ]

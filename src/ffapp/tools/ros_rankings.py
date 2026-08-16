@@ -27,11 +27,20 @@ def current_free_agent_projections(
     ros_p90, expected_games, playoff_weeks_value`) scoped to real current
     free agents -- `tools.waivers.free_agent_pool`'s own already-shipped
     scoping, joined onto the real ROS points. Preserves every real column
-    `ros_points_table` carries, not just a hardcoded subset."""
+    `ros_points_table` carries, not just a hardcoded subset.
+
+    Also carries `players_dim`'s own real `full_name`, renamed
+    `player_name` (Fix 2, final review fix wave -- matches
+    `app.weekly_rankings_page`'s own real display convention). Without
+    it, the shipped board/Streamlit page has no way to identify who any
+    row actually is -- a real bug found live against the actual shipped
+    `rankings_ros/latest.parquet`."""
     pool = free_agent_pool(players_dim, rostered_ids, eligible_positions)
-    joined = pool.join(ros_points_table, on="player_id", how="inner")
+    joined = pool.join(ros_points_table, on="player_id", how="inner").rename(
+        {"full_name": "player_name"}
+    )
     extra_columns = [c for c in ros_points_table.columns if c != "player_id"]
-    return joined.select("player_id", "position", *extra_columns)
+    return joined.select("player_id", "player_name", "position", *extra_columns)
 
 
 def build_ros_board(

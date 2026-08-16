@@ -100,6 +100,56 @@ def _projections_ros_with_null_week() -> pl.DataFrame:
     )
 
 
+def _projections_ros_with_null_quantile_but_real_mean() -> pl.DataFrame:
+    """Regression fixture for Fix 3 (final review fix wave):
+    `models.baselines.apply_empirical_error_quantiles` can return a null
+    quantile for a position/tau whose empirical error bucket is empty,
+    even when `mean` itself is real and non-null. The pre-fix guard
+    (`mean.is_not_null()` only) let such a row through `week_rows`,
+    which would have put a `None` into `PlayerMarginal.quantile_values`
+    and propagated into a NaN through the copula machinery -- the same
+    severity-1 "NaN sorts to rank 1" bug class the null-mean guard above
+    already fixed, through the one door that guard left open. Week 6
+    here has a real `mean` but a null `q50`."""
+    rows = []
+    for week, mean in [(5, 15.0), (6, 12.0), (7, 18.0)]:
+        rows.append(
+            {
+                "player_id": "p1",
+                "season": 2026,
+                "week": week,
+                "position": "RB",
+                "team": "KC",
+                "opponent_team": "DEN",
+                "mean": mean,
+                "q10": mean - 6,
+                "q25": mean - 3,
+                "q50": None if week == 6 else mean,
+                "q75": mean + 3,
+                "q90": mean + 6,
+                "is_current_week": week == 5,
+            }
+        )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "player_id": pl.String,
+            "season": pl.Int64,
+            "week": pl.Int64,
+            "position": pl.String,
+            "team": pl.String,
+            "opponent_team": pl.String,
+            "mean": pl.Float64,
+            "q10": pl.Float64,
+            "q25": pl.Float64,
+            "q50": pl.Float64,
+            "q75": pl.Float64,
+            "q90": pl.Float64,
+            "is_current_week": pl.Boolean,
+        },
+    )
+
+
 def _single_week_row(week: int, mean: float, *, is_current: bool) -> pl.DataFrame:
     return pl.DataFrame(
         [
@@ -337,3 +387,95 @@ def test_aggregate_ros_null_week_excluded_from_points_and_expected_games() -> No
     # is excluded from expected_games, not just from points.
     assert row["expected_games"] < fully_populated.row(0, named=True)["expected_games"]
     assert fully_populated.row(0, named=True)["expected_games"] == pytest.approx(3.0, rel=0.02)
+
+
+def test_aggregate_ros_excludes_row_with_real_mean_but_null_quantile() -> None:
+    """Fix 3 (final review fix wave): a real `mean` with a null `q50`
+    (or any other quantile column) must be excluded from that week's own
+    marginals/totals -- the same treatment a null-`mean` row already
+    gets -- not silently passed through to produce a NaN downstream."""
+    result = ros_aggregate.aggregate_ros(
+        _projections_ros_with_null_quantile_but_real_mean(),
+        p_active_now={"p1": 1.0},
+        p_miss_now={"p1": 0.0},
+        position_by_player={"p1": "RB"},
+        calibration=RosCalibration(
+            within_player_week_correlation={"RB": 0.3}, recovery_prob={"RB": 0.5}
+        ),
+        playoff_weeks=[],
+        ros_sims=5000,
+        default_recovery_prob=0.5,
+        correlation=DEFAULT_CORRELATION_SETTINGS,
+        rng=np.random.default_rng(12),
+    )
+    row = result.row(0, named=True)
+    assert not np.isnan(row["ros_points"])
+    # Only weeks 5 and 7 (15 + 18 = 33) contribute -- week 6's null q50
+    # excludes it, same as a null mean would.
+    assert row["ros_points"] == pytest.approx(33.0, rel=0.05)
+    assert row["expected_games"] == pytest.approx(2.0, rel=0.05)
+
+
+# --- default_p_active_by_position / default_p_miss_by_position (Fix 1) --------------------
+
+
+def test_aggregate_ros_missing_player_uses_positional_fallback_not_optimistic_default() -> None:
+    """Fix 1 (final review fix wave, the most severe finding): a player
+    entirely missing from both `p_active_now`/`p_miss_now` -- a real,
+    common case for any player thin on recent anchor-week data -- must
+    use the real positional base rate passed via
+    `default_p_active_by_position`/`default_p_miss_by_position`, not the
+    old silent 1.0/0.0 ("definitely healthy") defaults. Isolates the
+    `p_active` effect with a future (non-anchor) week and a `p_miss=0.0`
+    fallback so the hazard-persistence mask doesn't also fire."""
+    result = ros_aggregate.aggregate_ros(
+        _single_week_row(week=6, mean=12.0, is_current=False),
+        p_active_now={},
+        p_miss_now={},
+        position_by_player={"p1": "RB"},
+        calibration=RosCalibration(
+            within_player_week_correlation={"RB": 0.3}, recovery_prob={"RB": 0.5}
+        ),
+        playoff_weeks=[],
+        ros_sims=5000,
+        default_recovery_prob=0.5,
+        correlation=DEFAULT_CORRELATION_SETTINGS,
+        rng=np.random.default_rng(13),
+        default_p_active_by_position={"RB": 0.5},
+        default_p_miss_by_position={"RB": 0.0},
+    )
+    row = result.row(0, named=True)
+    # 0.5 * 12 = 6.0 (positional fallback applied), not 1.0 * 12 = 12.0
+    # (the old optimistic-default bug).
+    assert row["ros_points"] == pytest.approx(6.0, rel=0.05)
+    assert row["expected_games"] == pytest.approx(0.5, rel=0.05)
+
+
+def test_aggregate_ros_missing_player_with_no_fallback_is_honestly_excluded() -> None:
+    """Fix 1's second half: no per-player data AND no positional fallback
+    for that position either -- a genuine "we know nothing" case. Must
+    NOT fabricate a value (the old bug: p_active silently defaulted to
+    1.0) -- the player is honestly excluded (zero points, zero
+    expected_games), reusing the same `has_projection`-style masking a
+    null-mean week already gets, rather than a second invented policy."""
+    result = ros_aggregate.aggregate_ros(
+        _projections_ros(),
+        p_active_now={},
+        p_miss_now={},
+        position_by_player={"p1": "RB"},
+        calibration=RosCalibration(
+            within_player_week_correlation={"RB": 0.3}, recovery_prob={"RB": 0.5}
+        ),
+        playoff_weeks=[],
+        ros_sims=5000,
+        default_recovery_prob=0.5,
+        correlation=DEFAULT_CORRELATION_SETTINGS,
+        rng=np.random.default_rng(14),
+        default_p_active_by_position={},  # no fallback for RB either
+        default_p_miss_by_position={},
+    )
+    row = result.row(0, named=True)
+    assert row["ros_points"] == pytest.approx(0.0, abs=1e-9)
+    assert row["expected_games"] == pytest.approx(0.0, abs=1e-9)
+    assert row["ros_p10"] == pytest.approx(0.0, abs=1e-9)
+    assert row["ros_p90"] == pytest.approx(0.0, abs=1e-9)

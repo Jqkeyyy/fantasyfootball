@@ -170,6 +170,37 @@ def test_add_availability_base_rate_is_null_with_no_trailing_data() -> None:
     assert result.row(0, named=True)["availability_base_rate"] is None
 
 
+# --- positional_availability_base_rate (final fix wave, Fix 1) -----------------------------
+
+
+def test_positional_availability_base_rate_computes_the_real_per_position_marginal() -> None:
+    """Mirrors `sim.injury.positional_base_rate`'s own test style
+    (`tests/test_sim_injury.py::test_positional_base_rate_and_predict_positional_base_rate`)
+    for the equivalent active-rate counterpart -- a plain marginal rate,
+    no covariates, no trailing/rolling window (unlike
+    `add_availability_base_rate`, which is walk-forward and per-row)."""
+    train = pl.DataFrame(
+        [
+            _row(player_id="p1", position="RB", availability_flag=True),
+            _row(player_id="p2", position="RB", availability_flag=False),
+            _row(player_id="p3", position="WR", availability_flag=True),
+            _row(player_id="p4", position="WR", availability_flag=True),
+        ]
+    )
+
+    rates = baselines.positional_availability_base_rate(train)
+
+    assert rates == pytest.approx({"RB": 0.5, "WR": 1.0})
+
+
+def test_positional_availability_base_rate_returns_a_plain_dict_str_float() -> None:
+    train = pl.DataFrame([_row(player_id="p1", position="QB", availability_flag=True)])
+
+    rates = baselines.positional_availability_base_rate(train)
+
+    assert rates == {"QB": 1.0}
+
+
 # --- add_b3_fp_weekly_consensus ---------------------------------------------------------
 
 

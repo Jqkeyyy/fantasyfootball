@@ -28,12 +28,37 @@ def test_current_free_agent_projections_excludes_rostered_players() -> None:
             "position": ["RB", "WR"],
             "active": [True, True],
             "team": ["KC", "BUF"],
+            "full_name": ["Player One", "Player Two"],
         }
     )
     result = ros_rankings.current_free_agent_projections(
         ros_points, players_dim, rostered_ids={"s1"}, eligible_positions={"RB", "WR"}
     )
     assert result["player_id"].to_list() == ["p2"]
+
+
+def test_current_free_agent_projections_carries_player_name() -> None:
+    """Fix 2 (final review fix wave): the real shipped board had no way
+    to identify who any row actually was -- `full_name` (renamed
+    `player_name`, matching `weekly_rankings_page.py`'s own real display
+    convention) must survive the join+select, not be silently dropped."""
+    ros_points = pl.DataFrame({"player_id": ["p1", "p2"], "ros_points": [80.0, 60.0]})
+    players_dim = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "sleeper_id": ["s1", "s2"],
+            "position": ["RB", "WR"],
+            "active": [True, True],
+            "team": ["KC", "BUF"],
+            "full_name": ["Player One", "Player Two"],
+        }
+    )
+    result = ros_rankings.current_free_agent_projections(
+        ros_points, players_dim, rostered_ids=set(), eligible_positions={"RB", "WR"}
+    )
+    assert "player_name" in result.columns
+    by_id = dict(zip(result["player_id"].to_list(), result["player_name"].to_list(), strict=True))
+    assert by_id == {"p1": "Player One", "p2": "Player Two"}
 
 
 def test_build_ros_board_adds_vor_ros_and_differs_by_league_format() -> None:
@@ -57,6 +82,7 @@ def test_build_ros_board_adds_vor_ros_and_differs_by_league_format() -> None:
             "position": ["RB"] * n_per_position + ["WR"] * n_per_position,
             "active": [True] * (2 * n_per_position),
             "team": ["KC"] * (2 * n_per_position),
+            "full_name": [f"Player {i}" for i in range(1, 2 * n_per_position + 1)],
         }
     )
     fmt_10team = _league_format()
@@ -129,6 +155,7 @@ def test_current_free_agent_projections_preserves_all_ros_points_table_columns()
             "position": ["RB", "WR"],
             "active": [True, True],
             "team": ["KC", "BUF"],
+            "full_name": ["Player One", "Player Two"],
         }
     )
     result = ros_rankings.current_free_agent_projections(
@@ -164,6 +191,7 @@ def test_build_ros_board_preserves_all_ros_points_table_columns() -> None:
             "position": ["RB", "RB", "WR", "WR"],
             "active": [True, True, True, True],
             "team": ["KC", "KC", "BUF", "BUF"],
+            "full_name": ["Player One", "Player Two", "Player Three", "Player Four"],
         }
     )
     fmt = LeagueFormat(

@@ -27,6 +27,17 @@ from `models.ros_shape`, which never bakes in availability (Task 7), so
 `available` mask (from `p_miss_now` via `simulate_availability`) is a
 genuinely different signal (multi-week persistence, no B3 equivalent)
 and is applied to every week including the current one, unchanged.
+
+**Every column this function emits is a per-player marginal** (`ros_points`,
+`ros_p10`/`ros_p50`/`ros_p90`, `expected_games`, `playoff_weeks_value` --
+each summed/quantiled independently over `player_index`, never over a
+joint cross-player draw). `sim.week`'s copula machinery
+(`sim.persistence.simulate_week_with_common_factor`, reused here for the
+within-player week-to-week correlation only) is real and correctly wired,
+but its cross-player correlation layer has no effect on any output
+column of this function -- worth a reader knowing rather than assuming
+these season quantiles encode real cross-player dependence (final review
+fix wave, M3).
 """
 
 from __future__ import annotations
@@ -55,6 +66,8 @@ def aggregate_ros(
     default_recovery_prob: float,
     correlation: CorrelationSettings,
     rng: np.random.Generator,
+    default_p_active_by_position: dict[str, float] | None = None,
+    default_p_miss_by_position: dict[str, float] | None = None,
 ) -> pl.DataFrame:
     players = sorted(projections_ros["player_id"].unique().to_list())
     n_players = len(players)
@@ -80,8 +93,47 @@ def aggregate_ros(
     recovery = np.array(
         [calibration.recovery_prob.get(pos, default_recovery_prob) for pos in positions]
     )
-    p_miss = np.tile(np.array([p_miss_now.get(pid, 0.0) for pid in players]), (n_weeks, 1))
-    p_active = np.array([p_active_now.get(pid, 1.0) for pid in players])
+    # Real bug found in whole-branch review (C1, the most severe finding in
+    # this plan's review history): a player entirely missing from
+    # `p_active_now`/`p_miss_now` -- a real, common case for any player thin
+    # on recent anchor-week data -- used to silently default to
+    # p_active=1.0/p_miss=0.0, i.e. "definitely healthy," the exact opposite
+    # of this project's own "honest null, never guess" convention (Task 8's
+    # `apply_empirical_error_quantiles`, this same function's own null-mean/
+    # null-quantile guard below). Real measured impact on the live
+    # rogan-radinator-league board: 299 of 622 ranked players (48%) had no
+    # anchor-week row and all 299 got the undiscounted maximum
+    # expected_games.
+    #
+    # The real fallback, per player, in order: (1) their own real per-player
+    # value; (2) `default_p_active_by_position`/`default_p_miss_by_position`'s
+    # real positional base rate for their position
+    # (`sim.injury.positional_base_rate`/
+    # `models.baselines.positional_availability_base_rate`, passed in by the
+    # caller); (3) if neither is available, this is a genuine "we know
+    # nothing" case -- `has_availability_info` below marks that player for
+    # full exclusion (zero points, zero expected_games via the same
+    # `has_projection` masking the null-mean/null-quantile guard already
+    # uses), rather than guessing.
+    default_p_active_by_position = default_p_active_by_position or {}
+    default_p_miss_by_position = default_p_miss_by_position or {}
+    p_active_values: list[float] = []
+    p_miss_values: list[float] = []
+    has_availability_info: list[bool] = []
+    for pid, pos in zip(players, positions, strict=True):
+        active_val = p_active_now.get(pid)
+        if active_val is None:
+            active_val = default_p_active_by_position.get(pos)
+        miss_val = p_miss_now.get(pid)
+        if miss_val is None:
+            miss_val = default_p_miss_by_position.get(pos)
+        has_availability_info.append(active_val is not None and miss_val is not None)
+        p_active_values.append(active_val if active_val is not None else 1.0)
+        p_miss_values.append(miss_val if miss_val is not None else 0.0)
+
+    p_miss = np.tile(np.array(p_miss_values), (n_weeks, 1))
+    p_active = np.array(p_active_values)
+    has_availability_info_arr = np.array(has_availability_info, dtype=bool)
 
     # `p_active_now` reflects the anchor week's already-unconditional
     # consensus mean (see module docstring) -- applying it again there
@@ -134,9 +186,26 @@ def aggregate_ros(
         # numeric treatment a bye/unavailable week already gets elsewhere in
         # this same aggregation; every other real week for that player is
         # untouched.
+        # Fix 3 (final review fix wave): the original guard only checked
+        # `mean`, but `baselines.apply_empirical_error_quantiles` (called
+        # upstream in predict_ros.py) can return a null q10..q90 value for a
+        # position whose empirical error bucket is empty, even when `mean`
+        # itself is real. Such a row used to pass the mean-only guard, then
+        # `PlayerMarginal.quantile_values` would carry a `None`, propagating
+        # into a NaN through the copula machinery -- the exact same
+        # severity-1 "NaN sorts to rank 1" bug class the mean-only guard
+        # already fixed, through the one door it left open. Widened to
+        # require every quantile column non-null too.
         week_rows = (
             projections_ros.filter(pl.col("week") == week)
-            .filter(pl.col("mean").is_not_null())
+            .filter(
+                pl.col("mean").is_not_null()
+                & pl.col("q10").is_not_null()
+                & pl.col("q25").is_not_null()
+                & pl.col("q50").is_not_null()
+                & pl.col("q75").is_not_null()
+                & pl.col("q90").is_not_null()
+            )
             .sort(
                 pl.col("player_id").map_elements(
                     lambda p: player_index.get(p, -1), return_dtype=pl.Int64
@@ -169,6 +238,16 @@ def aggregate_ros(
         for local_i, global_i in enumerate(present_idx):
             totals[:, week_idx, global_i] = scores[:, local_i]
             has_projection[week_idx, global_i] = True
+
+    # Fix 1 continued: a player with no real per-player p_active/p_miss AND
+    # no positional fallback (`has_availability_info_arr[i] is False`) gets
+    # BOTH their totals (points) and their has_projection (games) zeroed
+    # here -- an honest, visible "we don't know" for that player's entire
+    # season, exactly the same numeric treatment (zero, not fabricated) a
+    # null-mean/null-quantile week already gets, just applied across every
+    # week for the whole player rather than a single week.
+    totals = totals * has_availability_info_arr[None, None, :]
+    has_projection = has_projection & has_availability_info_arr[None, :]
 
     actual = totals * available * p_active_by_week[None, :, :]
     season_totals = actual.sum(axis=1)  # (ros_sims, n_players)

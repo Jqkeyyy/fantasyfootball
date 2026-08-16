@@ -50,6 +50,7 @@ filtered = filter_board(displayed, position=position_filter, available_ids=None)
 st.dataframe(
     filtered.select(
         "rank",
+        "player_name",
         "rank_change_display",
         "position",
         "vor_ros",
