@@ -754,7 +754,7 @@ git commit -m "feat: within-player week-to-week correlation estimator and sample
 - Create: `notebooks/estimate_ros_calibration.py`
 
 **Interfaces:**
-- Consumes: `sim.injury.estimate_recovery_prob` (Task 3), `sim.persistence.estimate_within_player_correlation`/`season_variance_ratio` (Task 4), `sim.injury.build_hazard_features`/`build_hazard_grid`, real `data/features/player_week_features.parquet`, real `data/interim/{rosters,schedule,injuries,snap_counts}.parquet` and the nflverse/dynastyprocess crosswalk (same real tables `notebooks/materialize_b3_historical.py` and `sim/injury.py`'s own docstring already name).
+- Consumes: `sim.injury.estimate_recovery_prob` (Task 3), `sim.persistence.estimate_within_player_correlation`/`season_variance_ratio` (Task 4), `sim.injury.build_hazard_grid`, real `data/features/player_week_features.parquet`, and the real RAW `rosters` table via `ingest.nflverse.fetch_rosters` (`data/raw/nflverse/rosters_<season-range-label>.parquet` — there is no `data/interim/rosters.parquet`; `sim/injury.py`'s own module docstring and `build_hazard_grid` both confirm this reads the raw nflverse table directly, not a curated interim one).
 - Produces: `config/ros_calibration.yml`, overwritten with real numbers (`config.write` via `yaml.safe_dump`, matching `write_source_refresh_status`'s own precedent).
 
 - [ ] **Step 1: Write the script**
@@ -804,7 +804,13 @@ def main() -> None:
         )
 
     print("\nBuilding real hazard grid for injury-duration recovery estimation...")
-    rosters = pl.read_parquet(data_root / "interim" / "rosters.parquet")
+    from ffapp.ingest import nflverse
+
+    rosters_path = nflverse.fetch_rosters(
+        list(range(settings.seasons.train_start, settings.seasons.current)),
+        offline=True, settings=settings,
+    )
+    rosters = pl.read_parquet(rosters_path)
     hazard_grid = injury.build_hazard_grid(rosters)
     recovery_by_position = injury.estimate_recovery_prob(hazard_grid)
     print("Real injury-duration recovery_prob, by position (1 / mean real run length):")
@@ -836,7 +842,7 @@ if __name__ == "__main__":
 Run: `uv run python notebooks/estimate_ros_calibration.py`
 Expected: prints real per-position rho/recovery_prob and variance ratios; `config/ros_calibration.yml` is overwritten with real numbers (no longer the Task 2 placeholder).
 
-Requires `data/features/player_week_features.parquet` and `data/interim/rosters.parquet` to already exist — see `HANDOFF.md` §6 if they don't on this machine.
+Requires `data/features/player_week_features.parquet` and the real raw `data/raw/nflverse/rosters_<season-range>.parquet` (fetched via `ingest.nflverse.fetch_rosters`, see this task's own corrected consumes-list above) to already exist — see `HANDOFF.md` §6 if they don't on this machine.
 
 - [ ] **Step 3: Record the real numbers in the journal**
 
@@ -2393,10 +2399,19 @@ def rankings_ros_command(
         zip(target_rows["player_id"].to_list(), p_active_series.to_list(), strict=True)
     )
 
-    rosters_table = pl.read_parquet(settings.data_root / "interim" / "rosters.parquet")
+    # rosters/snap_counts have no data/interim/ counterpart -- sim.injury's own
+    # build_hazard_features reads the RAW nflverse tables directly (confirmed
+    # against sim/injury.py's own module docstring and docs/JOURNAL.md's task
+    # 2.3 entry). schedule/injuries genuinely do have real interim tables.
+    train_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
+    rosters_table = pl.read_parquet(
+        nflverse.fetch_rosters(train_season_range, offline=True, settings=settings)
+    )
     schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
     injuries = pl.read_parquet(settings.data_root / "interim" / "injuries.parquet")
-    snap_counts = pl.read_parquet(settings.data_root / "interim" / "snap_counts.parquet")
+    snap_counts = pl.read_parquet(
+        nflverse.fetch_snap_counts(train_season_range, offline=True, settings=settings)
+    )
     # `fetch_player_ids` returns a Path to the raw CSV (`data/raw/nflverse/player_ids.csv`),
     # not parquet -- `mapping.load_crosswalk_base` is the same already-tested loader
     # `mapping.build_players_dim` itself calls internally, reused here rather than
