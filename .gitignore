@@ -1,6 +1,26 @@
 .env
 
-data/
+# `data/*`, not `data/` -- a bare `data/` makes git treat the whole tree as
+# an excluded directory it never descends into, so no negation below it can
+# ever re-include anything (confirmed live: `!data/outputs/**` had no effect
+# at all under a bare `data/` ignore). `data/*` still ignores everything
+# directly under data/ by default but leaves git willing to look inside.
+#
+# SPEC-ADDENDUM-05.md SS B.3: consensus projections are perishable and not
+# re-fetchable after the week passes, unlike nflverse data -- the prediction
+# log is committed to git despite the blanket data/ ignore. Each level below
+# is re-ignored immediately after being opened, so this exposes only
+# data/outputs/<league_slug>/prediction_log/ -- not the rest of data/outputs/
+# (confirmed live: an earlier version of this chain that skipped the
+# re-ignore steps accidentally exposed every other file under
+# data/outputs/<league_slug>/, e.g. draft_board.csv).
+data/*
+!data/outputs/
+data/outputs/*
+!data/outputs/*/
+data/outputs/*/*
+!data/outputs/*/prediction_log/
+!data/outputs/*/prediction_log/**
 rankings/
 vendor/
 

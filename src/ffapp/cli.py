@@ -20,6 +20,7 @@ from ffapp.ingest import nflverse, rankings, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.models import availability, baselines, points, predict
 from ffapp.scoring import golden
+from ffapp.tools import prediction_log
 
 load_env()
 
@@ -29,11 +30,13 @@ cache_app = typer.Typer(name="cache", help="Manage the offline data cache (SPEC-
 ids_app = typer.Typer(name="ids", help="Cross-source player id resolution (SPEC.md §7).")
 scoring_app = typer.Typer(name="scoring", help="League scoring engine (SPEC.md §8).")
 draft_app = typer.Typer(name="draft", help="Draft board and draft-day support (SPEC.md §9).")
+log_app = typer.Typer(name="log", help="In-season prediction logging (SPEC-ADDENDUM-05.md §B).")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
 app.add_typer(scoring_app, name="scoring")
 app.add_typer(draft_app, name="draft")
+app.add_typer(log_app, name="log")
 
 
 def _version_callback(value: bool) -> None:
@@ -746,3 +749,184 @@ def project_command(
         f"Wrote {result.height} projections for season {resolved_season} week {week} "
         f"to {output_path} ({combined.height} total rows)."
     )
+
+
+def _resolve_league_slug(league: str | None) -> tuple[str, dict[str, float]]:
+    league_config = load_league(league) if league is not None else load_primary_league()
+    return league_config.slug, league_config.league_cache["scoring_settings"]
+
+
+@log_app.command("week")
+def log_week_command(
+    week: int = typer.Option(..., "--week", help="Target week to log."),
+    run_label: str = typer.Option(..., "--run-label", help="tuesday | thursday | sunday."),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to settings.seasons.current."
+    ),
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Real in-season prediction logging (`SPEC-ADDENDUM-05.md` §B; task
+    3.8) -- one row per real player, capturing `b3_mean`/`model_mean`/
+    `b2_mean`/`p_active` plus every real per-source point value
+    (`espn`/`cbs`/`fantasysharks`/`fftoday`/`footballguys`/`draftsharks`/
+    `fantasypros`), for this exact moment -- weekly consensus projections
+    are not re-fetchable, so this cannot be re-run for a past week and
+    get the same real numbers back. Committed to git (§B.3): run
+    `git add data/outputs/<league_slug>/prediction_log/` after this and
+    commit, same non-reproducibility reasoning as the rankings gitignore
+    exception.
+    """
+    if run_label not in prediction_log.RUN_LABELS:
+        typer.echo(f"run_label={run_label!r} is not one of {prediction_log.RUN_LABELS}.", err=True)
+        raise typer.Exit(code=1)
+
+    settings = load_settings()
+    resolved_season = season if season is not None else settings.seasons.current
+    league_slug, scoring_settings = _resolve_league_slug(league)
+
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    schedule_path = settings.data_root / "interim" / "schedule.parquet"
+    b3_historical_path = settings.data_root / "interim" / "b3_predictions.parquet"
+    for path in (features_path, schedule_path, b3_historical_path):
+        if not path.exists():
+            typer.echo(
+                f"Missing {path}. Materialise the interim/feature tables and the real B3 "
+                "archive first (see HANDOFF.md).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+    features = pl.read_parquet(features_path)
+    schedule = pl.read_parquet(schedule_path)
+    b3_historical = pl.read_parquet(b3_historical_path)
+
+    crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
+    sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
+    players_dim = mapping.build_players_dim(
+        crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
+    )
+
+    now = datetime.now(UTC)
+    rows, fetch_rows = prediction_log.build_prediction_log(
+        features,
+        schedule,
+        resolved_season,
+        week,
+        run_label,
+        league_slug=league_slug,
+        scoring_settings=scoring_settings,
+        players_dim=players_dim,
+        train_start=settings.seasons.train_start,
+        min_train_rows=settings.model.min_train_rows,
+        lightgbm_params=settings.model.lightgbm,
+        quantile_alphas=settings.model.quantiles,
+        b3_historical=b3_historical,
+        code_version=evaluation_report.current_git_commit(),
+        now=now,
+        offline=offline,
+        settings=settings,
+    )
+    if rows.is_empty():
+        typer.echo(
+            f"No prediction log rows generated for season {resolved_season} week {week} -- "
+            "either not enough training data, or that week's row universe doesn't exist yet.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    path = prediction_log.write_prediction_log(
+        rows,
+        fetch_rows,
+        resolved_season,
+        week,
+        run_label,
+        league_slug=league_slug,
+        settings=settings,
+    )
+    n_errors = fetch_rows.filter(pl.col("fetch_error").is_not_null()).height
+    typer.echo(
+        f"Wrote {rows.height} prediction log rows for {league_slug} season {resolved_season} "
+        f"week {week} run={run_label} to {path} ({n_errors} of {fetch_rows.height} sources "
+        "failed this run -- see fetch_error). Remember: `git add` and commit this file (§B.3)."
+    )
+
+
+@log_app.command("backfill")
+def log_backfill_command(
+    week: int = typer.Option(..., "--week", help="Week to backfill actual_points for."),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to settings.seasons.current."
+    ),
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+) -> None:
+    """Fills `actual_points` for every real row already logged for
+    `(season, week)` (`SPEC-ADDENDUM-05.md` §B.4). Run in the Tuesday job
+    for the prior week, once games are complete. Raises a clear, named
+    error (not a silent no-op) if that week was never logged.
+    """
+    settings = load_settings()
+    resolved_season = season if season is not None else settings.seasons.current
+    league_slug, _ = _resolve_league_slug(league)
+
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    if not features_path.exists():
+        typer.echo(f"Missing {features_path}.", err=True)
+        raise typer.Exit(code=1)
+    features = pl.read_parquet(features_path)
+
+    try:
+        filled = prediction_log.backfill_actual_points(
+            features, resolved_season, week, league_slug=league_slug, settings=settings
+        )
+    except prediction_log.MissingBackfillError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    n_filled = filled.filter(pl.col("actual_points").is_not_null()).height
+    typer.echo(
+        f"Backfilled actual_points for {n_filled} of {filled.height} logged rows, "
+        f"season {resolved_season} week {week}. Remember: `git add` and commit (§B.3)."
+    )
+
+
+@log_app.command("check-sources")
+def log_check_sources_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+) -> None:
+    """`SPEC-ADDENDUM-05.md` §B.2's own real resolution mechanism, in two
+    parts. Weekly sources: counts distinct `payload_sha256` values per
+    source across every real logged week, promotes a source with exactly
+    one distinct hash across at least 3 real logged weeks to `frozen`,
+    confirms one whose hash changed as `weekly_confirmed`, and writes the
+    result to `config/source_refresh_status.yml`. Season sources
+    (`espn`/`cbs`/`fantasysharks`/`fftoday`/`footballguys`/`draftsharks`
+    -- real season-long totals, not weekly numbers, confirmed live
+    2026-08-16): reports whether each one's own real mean value declines
+    week over week (a genuine rest-of-season signal) or stays flat (a
+    static full-season snapshot). Run after Week 3-4.
+    """
+    settings = load_settings()
+    league_slug, _ = _resolve_league_slug(league)
+
+    summary = prediction_log.check_sources(league_slug=league_slug, settings=settings)
+    if summary.is_empty():
+        typer.echo("No source_fetches.parquet logged yet -- run `ffapp log week` first.", err=True)
+        raise typer.Exit(code=1)
+
+    for row in summary.sort("source").iter_rows(named=True):
+        line = (
+            f"{row['source']}: {row['n_distinct_hashes']} distinct hash(es) across "
+            f"{row['n_weeks_logged']} real logged week(s) -> {row['status']}"
+        )
+        if row["season_trend"] is not None:
+            line += f"  |  season_trend={row['season_trend']} (n_weeks={row['season_n_weeks']})"
+        typer.echo(line)
+    typer.echo("Wrote config/source_refresh_status.yml.")
