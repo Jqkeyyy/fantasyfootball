@@ -113,7 +113,7 @@ def simulate_availability(
     p_miss: np.ndarray,
     *,
     season_sims: int,
-    recovery_prob: float,
+    recovery_prob: float | np.ndarray,
     rng: np.random.Generator,
 ) -> np.ndarray:
     """SPEC §13.4: "sample availability per player from injury hazard
@@ -127,6 +127,12 @@ def simulate_availability(
     available. A player only re-rolls `p_miss` once they're not already
     serving a sampled multi-week absence -- `remaining_out` carries that
     countdown forward week to week within each simulated path.
+
+    `recovery_prob` may be a single float shared by every player, or a
+    (n_players,) array of real per-player values (e.g. per-position,
+    broadcast onto each player before calling) -- numpy's own geometric
+    draw already broadcasts either shape against (season_sims, n_players)
+    without further change here.
     """
     n_weeks, n_players = p_miss.shape
     available = np.ones((season_sims, n_weeks, n_players), dtype=bool)

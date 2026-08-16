@@ -24,6 +24,7 @@ from ffapp.sim.injury import (
     add_snap_pct_trend,
     add_weeks_since_return,
     build_hazard_grid,
+    estimate_recovery_prob,
     fit_hazard_model,
     positional_base_rate,
     predict_p_miss,
@@ -349,3 +350,37 @@ def test_positional_base_rate_and_predict_positional_base_rate() -> None:
 def test_feature_columns_matches_what_fit_hazard_model_actually_consumes() -> None:
     train = _training_rows()
     assert set(FEATURE_COLUMNS) <= set(train.columns)
+
+
+# --- estimate_recovery_prob --------------------------------------------------
+
+
+def test_estimate_recovery_prob_from_real_run_lengths() -> None:
+    # player p1: misses weeks 3-5 (a real 3-week run), plays otherwise.
+    # player p2: misses week 2 alone (a real 1-week run).
+    # Both RB. mean run length = (3 + 1) / 2 = 2.0 -> recovery_prob = 0.5.
+    grid = pl.DataFrame(
+        {
+            "player_id": ["p1"] * 6 + ["p2"] * 4,
+            "season": [2023] * 10,
+            "week": [1, 2, 3, 4, 5, 6, 1, 2, 3, 4],
+            "position": ["RB"] * 10,
+            "missed": [False, False, True, True, True, False, False, True, False, False],
+        }
+    )
+    result = estimate_recovery_prob(grid)
+    assert result["RB"] == pytest.approx(0.5)
+
+
+def test_estimate_recovery_prob_omits_position_with_no_real_misses() -> None:
+    grid = pl.DataFrame(
+        {
+            "player_id": ["q1", "q1"],
+            "season": [2023, 2023],
+            "week": [1, 2],
+            "position": ["QB", "QB"],
+            "missed": [False, False],
+        }
+    )
+    result = estimate_recovery_prob(grid)
+    assert "QB" not in result
