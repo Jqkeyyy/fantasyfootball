@@ -6,9 +6,12 @@ from ffapp.config import (
     InvalidProjectionSourceError,
     MultiplePrimaryLeaguesError,
     NoPrimaryLeagueError,
+    RosCalibration,
+    RosSettings,
     load_all_leagues,
     load_league,
     load_primary_league,
+    load_ros_calibration,
     load_settings,
     write_league_stub,
 )
@@ -317,3 +320,31 @@ def test_write_league_stub_preserves_hand_set_is_primary_but_refreshes_league_ca
     league = load_league("existing", leagues_dir=leagues_dir)
     assert league.is_primary is True
     assert league.league_cache["total_rosters"] == 999
+
+
+def test_ros_settings_defaults() -> None:
+    settings = load_settings(FIXTURES / "settings.yml")
+    assert settings.ros.season_end_week == 18
+    assert settings.ros.ros_sims == 3000
+    assert settings.ros.default_recovery_prob == 0.5
+
+
+def test_load_ros_calibration_reads_real_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "ros_calibration.yml"
+    path.write_text(
+        "within_player_week_correlation:\n"
+        "  QB: 0.31\n"
+        "  RB: 0.24\n"
+        "recovery_prob:\n"
+        "  QB: 0.4\n"
+        "  RB: 0.33\n"
+    )
+    calibration = load_ros_calibration(path)
+    assert calibration.within_player_week_correlation == {"QB": 0.31, "RB": 0.24}
+    assert calibration.recovery_prob == {"QB": 0.4, "RB": 0.33}
+
+
+def test_load_ros_calibration_missing_file_returns_empty(tmp_path: Path) -> None:
+    calibration = load_ros_calibration(tmp_path / "does_not_exist.yml")
+    assert calibration.within_player_week_correlation == {}
+    assert calibration.recovery_prob == {}
