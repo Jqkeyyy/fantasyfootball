@@ -10,6 +10,23 @@ quantile grids (current week unchanged, future weeks per
 stage only -- SPEC-ADDENDUM-04.md §D.2's own literal pseudocode, and the
 one place in this pipeline availability is applied (never baked into the
 shape function, which would double-count).
+
+**`p_active_now` is applied to future weeks only, never to the current/
+anchor week.** `projections_ros`'s current-week row (`is_current_week`,
+Task 8's own output) carries a `mean` from `models.predict.project_week`
+with `projection_source in {"baseline_b2", "consensus_b3"}` -- that
+function's own docstring is explicit that this `mean` "is already an
+unconditional quantity by construction (no `p_active` re-multiplication
+... that would double-count the same playing-time signal ... already
+reflects)". `p_active_now` is exactly that same Part-A model
+(`models.availability.predict_p_active`) evaluated on the anchor week, so
+multiplying it into the current week's already-unconditional mean here
+would double-count. Future weeks are unaffected -- their `mean` comes
+from `models.ros_shape`, which never bakes in availability (Task 7), so
+`p_active_now` is correctly applied there exactly once. The hazard-driven
+`available` mask (from `p_miss_now` via `simulate_availability`) is a
+genuinely different signal (multi-week persistence, no B3 equivalent)
+and is applied to every week including the current one, unchanged.
 """
 
 from __future__ import annotations
@@ -66,6 +83,24 @@ def aggregate_ros(
     )
     p_active = np.array([p_active_now.get(pid, 1.0) for pid in players])
 
+    # `p_active_now` reflects the anchor week's already-unconditional
+    # consensus mean (see module docstring) -- applying it again there
+    # would double-count. Build a per-week multiplier that is 1.0 for
+    # the current week and the real `p_active` array for every other
+    # (future) week, instead of broadcasting `p_active` uniformly.
+    is_current_week_by_week = {
+        week: bool(
+            projections_ros.filter(pl.col("week") == week)["is_current_week"].any()
+        )
+        for week in weeks
+    }
+    p_active_by_week = np.array(
+        [
+            np.ones(n_players) if is_current_week_by_week[week] else p_active
+            for week in weeks
+        ]
+    )  # (n_weeks, n_players)
+
     available = simulate_availability(
         p_miss, season_sims=ros_sims, recovery_prob=recovery, rng=rng
     )  # (ros_sims, n_weeks, n_players)
@@ -98,9 +133,9 @@ def aggregate_ros(
         for local_i, global_i in enumerate(present_idx):
             totals[:, week_idx, global_i] = scores[:, local_i]
 
-    actual = totals * available * p_active[None, None, :]
+    actual = totals * available * p_active_by_week[None, :, :]
     season_totals = actual.sum(axis=1)  # (ros_sims, n_players)
-    expected_games = (available * p_active[None, None, :]).sum(axis=1).mean(axis=0)
+    expected_games = (available * p_active_by_week[None, :, :]).sum(axis=1).mean(axis=0)
 
     playoff_idx = [weeks.index(w) for w in playoff_weeks if w in weeks]
     playoff_value = (
