@@ -2606,28 +2606,13 @@ open "ROS Rankings" from the sidebar.
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
 import polars as pl
 import streamlit as st
 
 from ffapp.app.ros_rankings_page import filter_board, style_rank_change
 from ffapp.config import load_primary_league, load_settings
-from ffapp.draft.pick_order import resolve_my_roster_id
-from ffapp.ids import mapping as ids_mapping
-from ffapp.ingest import nflverse, sleeper
 
 st.set_page_config(page_title="ROS Rankings", layout="wide")
-
-
-@st.cache_data
-def _players_dim_cached() -> pl.DataFrame:
-    settings = load_settings()
-    crosswalk = nflverse.fetch_player_ids(offline=True, settings=settings)
-    sleeper_players = sleeper.fetch_players(offline=True, settings=settings)
-    return ids_mapping.build_players_dim(crosswalk, sleeper_players, ids_mapping.ID_OVERRIDES_PATH)
-
 
 settings = load_settings()
 league = load_primary_league()
@@ -2650,7 +2635,7 @@ with st.sidebar:
     st.header("Filters")
     positions = ["All", *sorted(board["position"].unique().to_list())]
     position_choice = st.selectbox("Position", options=positions)
-    show_available_only = st.checkbox("Free agents only (already scoped -- confirms Sleeper data)", value=False)
+    st.caption("Every row here is already a real current free agent -- rostered players never reach this board (Task 10's own `current_free_agent_projections` scoping).")
 
 position_filter = None if position_choice == "All" else position_choice
 filtered = filter_board(displayed, position=position_filter, available_ids=None)
