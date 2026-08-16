@@ -2056,7 +2056,7 @@ def _league_format() -> LeagueFormat:
 def test_current_free_agent_projections_excludes_rostered_players() -> None:
     ros_points = pl.DataFrame({"player_id": ["p1", "p2"], "ros_points": [80.0, 60.0]})
     players_dim = pl.DataFrame(
-        {"player_id": ["p1", "p2"], "sleeper_id": ["s1", "s2"], "position": ["RB", "WR"], "status": ["Active", "Active"], "team": ["KC", "BUF"]}
+        {"player_id": ["p1", "p2"], "sleeper_id": ["s1", "s2"], "position": ["RB", "WR"], "active": [True, True], "team": ["KC", "BUF"]}
     )
     result = ros_rankings.current_free_agent_projections(
         ros_points, players_dim, rostered_ids={"s1"}, eligible_positions={"RB", "WR"}
@@ -2065,16 +2065,27 @@ def test_current_free_agent_projections_excludes_rostered_players() -> None:
 
 
 def test_build_ros_board_adds_vor_ros_and_differs_by_league_format() -> None:
+    # 50 RBs + 50 WRs -- large enough that neither league format's dedicated
+    # starter count (10-team RB2 = 20, 18-team RB2 = 36) exhausts the real
+    # pool and falls back to `replacement_level`'s own clamp (which would
+    # otherwise silently collapse both formats onto the same worst-available
+    # player and make this test's own assertion false regardless of whether
+    # LeagueFormat is wired correctly -- a real bug caught while writing this
+    # test, not a hypothetical one).
+    n_per_position = 50
     ros_points = pl.DataFrame(
-        {"player_id": [f"p{i}" for i in range(1, 21)], "ros_points": [float(100 - i) for i in range(1, 21)]}
+        {
+            "player_id": [f"p{i}" for i in range(1, 2 * n_per_position + 1)],
+            "ros_points": [float(200 - i) for i in range(1, 2 * n_per_position + 1)],
+        }
     )
     players_dim = pl.DataFrame(
         {
-            "player_id": [f"p{i}" for i in range(1, 21)],
-            "sleeper_id": [f"s{i}" for i in range(1, 21)],
-            "position": ["RB"] * 10 + ["WR"] * 10,
-            "status": ["Active"] * 20,
-            "team": ["KC"] * 20,
+            "player_id": [f"p{i}" for i in range(1, 2 * n_per_position + 1)],
+            "sleeper_id": [f"s{i}" for i in range(1, 2 * n_per_position + 1)],
+            "position": ["RB"] * n_per_position + ["WR"] * n_per_position,
+            "active": [True] * (2 * n_per_position),
+            "team": ["KC"] * (2 * n_per_position),
         }
     )
     fmt_10team = _league_format()
