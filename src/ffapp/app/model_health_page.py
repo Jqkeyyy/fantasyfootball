@@ -30,10 +30,17 @@ rather than only ever showing the newest.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 class ModelHealthNotBuiltError(Exception):
     """No evaluation report exists yet for the given path."""
+
+
+class ProjectionSourceEvaluationNotFoundError(Exception):
+    """No real evaluation summary exists for the given `projection_source`."""
 
 
 def list_reports(eval_dir: Path) -> list[Path]:
@@ -74,9 +81,40 @@ def load_report_markdown(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def load_projection_source_evaluation(path: Path) -> dict[str, Any]:
+    """`config/projection_source_evaluation.yml`'s own real content
+    (SPEC-ADDENDUM-04.md §C's "what its current margin over B2 is") --
+    a small, human-curated summary of the real evaluation already
+    recorded in full in `docs/JOURNAL.md`'s 2026-08-16 closing entry, not
+    a live computation (no real evaluation harness currently scores
+    `consensus_b3`/`anchored` as walk-forward predictors inside
+    `ffapp evaluate`)."""
+    if not path.exists():
+        raise ModelHealthNotBuiltError(f"No projection-source evaluation summary found at {path}.")
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def projection_source_summary(evaluation: dict[str, Any], projection_source: str) -> dict[str, str]:
+    """The real `status`/`margin_over_b2` entry for one configured
+    `projection_source`, from `load_projection_source_evaluation`'s own
+    output -- raises rather than guessing if a source has no real
+    recorded evaluation (e.g. a brand-new source added to
+    `config.PROJECTION_SOURCES` before this file was updated for it)."""
+    sources = evaluation.get("sources", {})
+    if projection_source not in sources:
+        raise ProjectionSourceEvaluationNotFoundError(
+            f"No real evaluation summary recorded for projection_source={projection_source!r} "
+            "-- update config/projection_source_evaluation.yml."
+        )
+    return dict(sources[projection_source])
+
+
 __all__ = [
     "ModelHealthNotBuiltError",
+    "ProjectionSourceEvaluationNotFoundError",
     "latest_report",
     "list_reports",
+    "load_projection_source_evaluation",
     "load_report_markdown",
+    "projection_source_summary",
 ]

@@ -15,10 +15,23 @@ this same task).
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
+
 import polars as pl
 
+from ffapp.config import Settings
 from ffapp.ids import mapping
+from ffapp.ingest import rankings
+from ffapp.interim.build import SKILL_POSITIONS
 from ffapp.projections.aggregate import add_join_key
+
+_B3_FOR_WEEK_SCHEMA = {
+    "player_id": pl.String,
+    "season": pl.Int64,
+    "week": pl.Int64,
+    "b3_points": pl.Float64,
+}
 
 
 def _sort(df: pl.DataFrame) -> pl.DataFrame:
@@ -152,11 +165,109 @@ def add_b3_fp_weekly_consensus(fp_weekly: pl.DataFrame, players_dim: pl.DataFram
     )
 
 
+def fetch_b3_for_week(
+    season: int,
+    week: int,
+    cutoff_utc: str,
+    players_dim: pl.DataFrame,
+    *,
+    offline: bool | None = None,
+    settings: Settings | None = None,
+) -> pl.DataFrame:
+    """Real single-week B3 materialization for the live projection
+    pipeline (`models.predict.project_week`'s `projection_source="consensus_b3"`
+    branch, `SPEC-ADDENDUM-04.md` §C) -- the same real mechanism task
+    1.20's own evaluation used across many weeks at once
+    (`ingest.rankings.fetch_fp_weekly_commits`/`select_commit_before`/
+    `fetch_fp_weekly_snapshot`/`normalize_fp_weekly`), applied to exactly
+    the one week being projected.
+
+    `cutoff_utc` is that week's own real first kickoff
+    (`player_week_features.parquet`'s own `as_of_utc` column, task 1.9 --
+    SPEC §12.1's own definition) -- `select_commit_before`'s own as_of
+    contract: the latest real commit strictly before kickoff, never after.
+
+    Honestly empty (not a crash) if no real commit exists before
+    `cutoff_utc` -- the archive's own real start is 2021-08-29
+    (`select_commit_before`'s own docstring); a season/week before that
+    has no real B3 to serve, same "leave it null, don't fake it"
+    precedent as every other real data gap in this project.
+    """
+    commits_path = rankings.fetch_fp_weekly_commits(offline=offline, settings=settings)
+    commits = json.loads(commits_path.read_text())["commits"]
+    sha = rankings.select_commit_before(commits, cutoff_utc)
+    if sha is None:
+        return pl.DataFrame(schema=_B3_FOR_WEEK_SCHEMA)
+
+    snapshot_path = rankings.fetch_fp_weekly_snapshot(sha, offline=offline, settings=settings)
+    csv_text = snapshot_path.read_text()
+    fp_weekly = rankings.normalize_fp_weekly(csv_text, season=season, week=week)
+    return add_b3_fp_weekly_consensus(fp_weekly, players_dim)
+
+
+def empirical_error_quantiles(
+    rows: pl.DataFrame,
+    mean_column: str,
+    quantile_alphas: Sequence[float],
+) -> dict[str, dict[float, float]]:
+    """The real, per-position empirical distribution of
+    `target - <mean_column>` -- `SPEC-ADDENDUM-04.md` §D's own blocking
+    work item (`docs/JOURNAL.md`'s 2026-08-16 entry): a real coverage
+    check on 2023-2024 held-out data found this beats v1's own quantile
+    spread recentered around a different-source mean by a wide margin
+    (v1's spread badly under-covered -- up to 24pp off nominal on the
+    80% interval; the empirical approach cleared task 1.16's own 5pp bar
+    at every position on both intervals). No model at all -- purely
+    non-parametric, exactly the real historical spread of how wrong
+    `mean_column` has actually been, per position.
+
+    `rows` must already carry `target`/`position`/`mean_column` --
+    callers control what counts as "historical" (walk-forward
+    correctness, CLAUDE.md rule 1/2, is the CALLER's job: pass only rows
+    strictly before whatever week this gets applied to). A position
+    with zero real rows gets an empty `{}` -- callers must handle that
+    honestly (no interval, not a guessed one), same "leave it null"
+    precedent as every other real data gap in this project.
+    """
+    with_error = rows.with_columns((pl.col("target") - pl.col(mean_column)).alias("_error"))
+    result: dict[str, dict[float, float]] = {}
+    for position in SKILL_POSITIONS:
+        errors = with_error.filter(pl.col("position") == position)["_error"].drop_nulls()
+        if errors.is_empty():
+            result[position] = {}
+            continue
+        result[position] = {
+            tau: float(errors.quantile(tau, interpolation="linear") or 0.0)
+            for tau in quantile_alphas
+        }
+    return result
+
+
+def apply_empirical_error_quantiles(
+    mean: pl.Series,
+    position: pl.Series,
+    error_quantiles: dict[str, dict[float, float]],
+    tau: float,
+) -> pl.Series:
+    """`mean + error_quantiles[position][tau]`, clipped at 0 -- the real
+    floor every other quantity in this project's distribution machinery
+    already enforces (`quantiles.mixture_with_p_active`'s own "a player
+    with p_active=0.5 has a genuine floor of 0"). A position with no
+    real recorded error quantiles (`empirical_error_quantiles`'s own
+    honest `{}`) gets an honest null, not a guessed offset."""
+    offsets = [error_quantiles.get(p, {}).get(tau) for p in position.to_list()]
+    offset_series = pl.Series("_offset", offsets, dtype=pl.Float64)
+    return (mean + offset_series).clip(lower_bound=0.0)
+
+
 __all__ = [
     "add_availability_base_rate",
     "add_b0_positional_mean",
     "add_b1_season_to_date_mean",
     "add_b2_ewm_4",
     "add_b3_fp_weekly_consensus",
+    "apply_empirical_error_quantiles",
+    "empirical_error_quantiles",
+    "fetch_b3_for_week",
     "pooled_rolling_mean",
 ]

@@ -16,7 +16,7 @@ from ffapp.evaluation import backtest
 from ffapp.evaluation import metrics as evaluation_metrics
 from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
-from ffapp.ingest import rankings
+from ffapp.ingest import nflverse, rankings, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.models import availability, baselines, points, predict
 from ffapp.scoring import golden
@@ -653,17 +653,35 @@ def project_command(
     season: int | None = typer.Option(
         None, "--season", help="Defaults to settings.seasons.current."
     ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
 ) -> None:
     """Real weekly projections (SPEC §6.2, §11.8; task 1.18): fit
-    availability + points + quantiles on every row strictly before
-    `(season, week)`, predict onto that week's own real row universe, and
-    upsert into `data/outputs/projections.parquet` -- every row carrying
-    `model_version`, `as_of_utc`, `feature_hash`, and `git_commit`.
+    availability + quantiles, plus whichever conditional-mean source
+    `settings.model.projection_source` names (`SPEC-ADDENDUM-04.md` §C
+    -- real default `consensus_b3`, see `config.ModelSettings`'s own
+    docstring and `docs/JOURNAL.md`'s 2026-08-16 closing entry), on
+    every row strictly before `(season, week)`, predict onto that week's
+    own real row universe, and upsert into
+    `data/outputs/projections.parquet` -- every row carrying
+    `model_version`, `projection_source`, `as_of_utc`, `feature_hash`,
+    and `git_commit`.
 
     Requires that week's own row universe to already exist in
     `features/player_week_features.parquet` -- for the *current*, not-yet-
     played 2026 season this means whatever nflverse has published so far
     (see HANDOFF.md; 2026 has no release at all as of this session).
+
+    `consensus_b3` needs a real, live-fetched crosswalk plus a real
+    FantasyPros weekly-archive commit/snapshot -- pass `--no-offline` the
+    first time for a given week (subsequent calls reuse the same cached
+    commit/snapshot, `baselines.fetch_b3_for_week`'s own idempotent
+    fetch). It also needs `data/interim/b3_predictions.parquet` -- this
+    project's own real historical B3 archive, used to build the real
+    empirical quantile spread around this week's own B3 mean (SPEC-
+    ADDENDUM-04.md §D, `docs/JOURNAL.md`'s 2026-08-16 entry) -- exits
+    with a clear error naming the missing file if it isn't built yet.
     """
     settings = load_settings()
     resolved_season = season if season is not None else settings.seasons.current
@@ -678,6 +696,24 @@ def project_command(
         raise typer.Exit(code=1)
     features = pl.read_parquet(features_path)
 
+    players_dim = None
+    b3_historical = None
+    if settings.model.projection_source == "consensus_b3":
+        crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
+        sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
+        players_dim = mapping.build_players_dim(
+            crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH
+        )
+        b3_historical_path = settings.data_root / "interim" / "b3_predictions.parquet"
+        if not b3_historical_path.exists():
+            typer.echo(
+                f"Missing {b3_historical_path}. consensus_b3's quantile spread needs this "
+                "project's real historical B3 archive -- see HANDOFF.md for how to build it.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        b3_historical = pl.read_parquet(b3_historical_path)
+
     now = datetime.now(UTC)
     result = predict.project_week(
         features,
@@ -689,6 +725,11 @@ def project_command(
         quantile_alphas=settings.model.quantiles,
         code_version=evaluation_report.current_git_commit(),
         now=now,
+        projection_source=settings.model.projection_source,
+        players_dim=players_dim,
+        b3_historical=b3_historical,
+        offline=offline,
+        settings=settings,
     )
     if result.is_empty():
         typer.echo(

@@ -12,9 +12,12 @@ import pytest
 
 from ffapp.app.model_health_page import (
     ModelHealthNotBuiltError,
+    ProjectionSourceEvaluationNotFoundError,
     latest_report,
     list_reports,
+    load_projection_source_evaluation,
     load_report_markdown,
+    projection_source_summary,
 )
 
 
@@ -87,3 +90,61 @@ class TestLoadReportMarkdown:
     def test_raises_a_named_error_when_missing(self, tmp_path: Path) -> None:
         with pytest.raises(ModelHealthNotBuiltError, match="ffapp evaluate"):
             load_report_markdown(tmp_path / "report.md")
+
+
+_FIXTURE_EVALUATION_YAML = """
+as_of: "2026-08-16"
+sources:
+  consensus_b3:
+    status: "shipped default"
+    margin_over_b2: "real lineup regret win"
+  direct:
+    status: "does not clear its own bar"
+    margin_over_b2: "worse at every position"
+"""
+
+
+class TestLoadProjectionSourceEvaluation:
+    def test_loads_the_real_yaml_content(self, tmp_path: Path) -> None:
+        path = tmp_path / "projection_source_evaluation.yml"
+        path.write_text(_FIXTURE_EVALUATION_YAML, encoding="utf-8")
+
+        evaluation = load_projection_source_evaluation(path)
+
+        assert evaluation["as_of"] == "2026-08-16"
+        assert set(evaluation["sources"]) == {"consensus_b3", "direct"}
+
+    def test_raises_a_named_error_when_missing(self, tmp_path: Path) -> None:
+        with pytest.raises(ModelHealthNotBuiltError):
+            load_projection_source_evaluation(tmp_path / "missing.yml")
+
+    def test_the_real_committed_config_file_loads_and_covers_every_projection_source(self) -> None:
+        """The actual `config/projection_source_evaluation.yml` this
+        project ships -- must stay in sync with `config.PROJECTION_SOURCES`."""
+        from ffapp.config import PROJECTION_SOURCES
+
+        repo_root = Path(__file__).parent.parent
+        path = repo_root / "config" / "projection_source_evaluation.yml"
+
+        evaluation = load_projection_source_evaluation(path)
+
+        assert set(evaluation["sources"]) == set(PROJECTION_SOURCES)
+        for source in PROJECTION_SOURCES:
+            summary = projection_source_summary(evaluation, source)
+            assert summary["status"]
+            assert summary["margin_over_b2"]
+
+
+class TestProjectionSourceSummary:
+    def test_returns_the_real_entry_for_a_known_source(self) -> None:
+        evaluation = {"sources": {"consensus_b3": {"status": "x", "margin_over_b2": "y"}}}
+
+        summary = projection_source_summary(evaluation, "consensus_b3")
+
+        assert summary == {"status": "x", "margin_over_b2": "y"}
+
+    def test_raises_a_named_error_for_an_unrecorded_source(self) -> None:
+        evaluation = {"sources": {"consensus_b3": {"status": "x", "margin_over_b2": "y"}}}
+
+        with pytest.raises(ProjectionSourceEvaluationNotFoundError):
+            projection_source_summary(evaluation, "anchored")

@@ -81,12 +81,36 @@ DEFAULT_LIGHTGBM_SETTINGS = LightGBMSettings(
 DEFAULT_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90)
 
 
+PROJECTION_SOURCES = ("anchored", "direct", "baseline_b2", "consensus_b3")
+DEFAULT_PROJECTION_SOURCE = "consensus_b3"
+
+
+class InvalidProjectionSourceError(Exception):
+    """`model.projection_source` in `settings.yml` isn't one of `PROJECTION_SOURCES`."""
+
+
 @dataclass(frozen=True)
 class ModelSettings:
+    """`projection_source` (`SPEC-ADDENDUM-04.md` §C): which model
+    supplies the conditional-mean/point estimate `models.predict.project_week`
+    composes into the final projection -- `"anchored"` (task 1.20) and
+    `"direct"` (task 1.15) never cleared their own real evaluation bar
+    (`docs/JOURNAL.md`'s 2026-08-16 closing entry: three independent
+    tests, including one tuned directly on the decisive metric, all
+    found neither beats B2 robustly) -- `"consensus_b3"` is the real
+    default, per SPEC §12.3's own shipping rule ("ship B3, keep working
+    in the background") made explicit rather than an informal fallback.
+    `"baseline_b2"` exists for a direct, no-external-dependency
+    comparison point, and for `SPEC-ADDENDUM-04.md` §E's cold-start
+    schedule (weeks 1-3 default to `consensus_b3` specifically, not
+    `baseline_b2` -- a trailing average has no real signal before a
+    player's own season has started)."""
+
     min_train_rows: int
     retrain_cadence_weeks: int
     lightgbm: LightGBMSettings = DEFAULT_LIGHTGBM_SETTINGS
     quantiles: tuple[float, ...] = DEFAULT_QUANTILES
+    projection_source: str = DEFAULT_PROJECTION_SOURCE
 
 
 @dataclass(frozen=True)
@@ -206,11 +230,17 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
     )
     quantiles_raw = model_raw.get("quantiles")
     quantiles = tuple(float(q) for q in quantiles_raw) if quantiles_raw else DEFAULT_QUANTILES
+    projection_source = model_raw.get("projection_source", DEFAULT_PROJECTION_SOURCE)
+    if projection_source not in PROJECTION_SOURCES:
+        raise InvalidProjectionSourceError(
+            f"model.projection_source={projection_source!r} is not one of {PROJECTION_SOURCES}"
+        )
     model = ModelSettings(
         min_train_rows=int(model_raw.get("min_train_rows", 2000)),
         retrain_cadence_weeks=int(model_raw.get("retrain_cadence_weeks", 1)),
         lightgbm=lightgbm,
         quantiles=quantiles,
+        projection_source=projection_source,
     )
 
     simulation_raw = raw.get("simulation", {})

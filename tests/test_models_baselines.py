@@ -1,3 +1,5 @@
+import json
+
 import polars as pl
 import pytest
 
@@ -228,6 +230,126 @@ def test_add_b3_does_not_cross_match_different_positions() -> None:
     result = baselines.add_b3_fp_weekly_consensus(fp_weekly, players_dim)
 
     assert result.height == 0
+
+
+# --- fetch_b3_for_week -------------------------------------------------------------------
+
+_FP_WEEKLY_CSV = (
+    '"page","player_name","pos","team","ecr","r2p_pts"\n"qb","Joe Burrow","QB","CIN",1.42,"22.1"\n'
+)
+
+
+def test_fetch_b3_for_week_resolves_the_real_commit_before_cutoff(tmp_path, monkeypatch) -> None:
+    from ffapp.ingest import rankings
+
+    commits_path = tmp_path / "fp_weekly_commits.json"
+    commits_path.write_text(
+        json.dumps({"commits": [{"sha": "abc123", "date": "2023-10-01T00:00:00Z"}]})
+    )
+    snapshot_path = tmp_path / "fp_weekly_abc123.csv"
+    snapshot_path.write_text(_FP_WEEKLY_CSV)
+
+    monkeypatch.setattr(rankings, "fetch_fp_weekly_commits", lambda **kwargs: commits_path)
+
+    captured_sha: list[str] = []
+
+    def fake_fetch_snapshot(sha: str, **kwargs: object):
+        captured_sha.append(sha)
+        return snapshot_path
+
+    monkeypatch.setattr(rankings, "fetch_fp_weekly_snapshot", fake_fetch_snapshot)
+
+    players_dim = pl.DataFrame([_players_dim_row()])
+    result = baselines.fetch_b3_for_week(2023, 5, "2023-10-05T00:00:00Z", players_dim, offline=True)
+
+    assert captured_sha == ["abc123"]
+    row = result.row(0, named=True)
+    assert row["player_id"] == "00-0036442"
+    assert row["season"] == 2023
+    assert row["week"] == 5
+    assert row["b3_points"] == pytest.approx(22.1)
+
+
+def test_fetch_b3_for_week_is_honestly_empty_when_no_commit_precedes_the_cutoff(
+    tmp_path, monkeypatch
+) -> None:
+    from ffapp.ingest import rankings
+
+    commits_path = tmp_path / "fp_weekly_commits.json"
+    commits_path.write_text(
+        json.dumps({"commits": [{"sha": "abc123", "date": "2023-10-01T00:00:00Z"}]})
+    )
+    monkeypatch.setattr(rankings, "fetch_fp_weekly_commits", lambda **kwargs: commits_path)
+
+    def fail_if_called(sha: str, **kwargs: object):
+        raise AssertionError("should not fetch a snapshot with no commit before cutoff")
+
+    monkeypatch.setattr(rankings, "fetch_fp_weekly_snapshot", fail_if_called)
+
+    players_dim = pl.DataFrame([_players_dim_row()])
+    result = baselines.fetch_b3_for_week(2021, 1, "2021-08-01T00:00:00Z", players_dim, offline=True)
+
+    assert result.is_empty()
+    assert result.columns == ["player_id", "season", "week", "b3_points"]
+
+
+# --- empirical_error_quantiles / apply_empirical_error_quantiles -------------------------
+
+
+def test_empirical_error_quantiles_computes_the_real_per_position_distribution() -> None:
+    rows = pl.DataFrame(
+        [
+            {"position": "RB", "target": 10.0, "b3_points": 8.0},  # error 2.0
+            {"position": "RB", "target": 12.0, "b3_points": 8.0},  # error 4.0
+            {"position": "RB", "target": 4.0, "b3_points": 8.0},  # error -4.0
+            {"position": "WR", "target": 20.0, "b3_points": 10.0},  # error 10.0
+        ]
+    )
+
+    result = baselines.empirical_error_quantiles(rows, "b3_points", [0.5])
+
+    assert result["RB"][0.5] == pytest.approx(2.0)  # median of [2.0, 4.0, -4.0]
+    assert result["WR"][0.5] == pytest.approx(10.0)
+
+
+def test_empirical_error_quantiles_is_honestly_empty_for_a_position_with_no_rows() -> None:
+    rows = pl.DataFrame([{"position": "RB", "target": 10.0, "b3_points": 8.0}])
+
+    result = baselines.empirical_error_quantiles(rows, "b3_points", [0.5])
+
+    assert result["WR"] == {}
+
+
+def test_apply_empirical_error_quantiles_adds_the_real_offset() -> None:
+    mean = pl.Series("mean", [8.0, 10.0])
+    position = pl.Series("position", ["RB", "WR"])
+    error_quantiles = {"RB": {0.5: 2.0}, "WR": {0.5: -3.0}}
+
+    result = baselines.apply_empirical_error_quantiles(mean, position, error_quantiles, 0.5)
+
+    assert result.to_list() == pytest.approx([10.0, 7.0])
+
+
+def test_apply_empirical_error_quantiles_clips_at_zero() -> None:
+    mean = pl.Series("mean", [1.0])
+    position = pl.Series("position", ["RB"])
+    error_quantiles = {"RB": {0.1: -50.0}}
+
+    result = baselines.apply_empirical_error_quantiles(mean, position, error_quantiles, 0.1)
+
+    assert result.to_list() == [0.0]
+
+
+def test_apply_empirical_error_quantiles_is_null_for_a_position_with_no_recorded_quantiles() -> (
+    None
+):
+    mean = pl.Series("mean", [8.0])
+    position = pl.Series("position", ["TE"])
+    error_quantiles: dict[str, dict[float, float]] = {"RB": {0.5: 2.0}}
+
+    result = baselines.apply_empirical_error_quantiles(mean, position, error_quantiles, 0.5)
+
+    assert result.to_list() == [None]
 
 
 # --- pooled_rolling_mean (generalized, replaces _positional_rolling_rate) ---------

@@ -13,6 +13,10 @@ model:
   quantiles: [0.10, 0.25, 0.50, 0.75, 0.90]
   retrain_cadence_weeks: 1
   min_train_rows: 2000
+  # anchored | direct | baseline_b2 | consensus_b3 -- see config.ModelSettings'
+  # own docstring and docs/JOURNAL.md's 2026-08-16 closing entry (task
+  # 1.15/1.20 real evaluations, SPEC-ADDENDUM-04.md SS C's shipping rule).
+  projection_source: "consensus_b3"
   lightgbm:
     n_estimators: 800
     learning_rate: 0.03

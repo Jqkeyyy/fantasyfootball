@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from ffapp.config import (
+    InvalidProjectionSourceError,
     MultiplePrimaryLeaguesError,
     NoPrimaryLeagueError,
     load_all_leagues,
@@ -106,6 +107,36 @@ def test_load_settings_reads_model_quantiles(tmp_path: Path) -> None:
     settings = load_settings(settings_path, root=tmp_path)
 
     assert settings.model.quantiles == pytest.approx((0.05, 0.5, 0.95))
+
+
+def test_load_settings_defaults_projection_source_to_consensus_b3(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text("paths:\n  data_root: './data'\n")
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.model.projection_source == "consensus_b3"
+
+
+def test_load_settings_reads_a_configured_projection_source(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\nmodel:\n  projection_source: 'anchored'\n"
+    )
+
+    settings = load_settings(settings_path, root=tmp_path)
+
+    assert settings.model.projection_source == "anchored"
+
+
+def test_load_settings_rejects_an_unknown_projection_source(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.yml"
+    settings_path.write_text(
+        "paths:\n  data_root: './data'\nmodel:\n  projection_source: 'made_up'\n"
+    )
+
+    with pytest.raises(InvalidProjectionSourceError):
+        load_settings(settings_path, root=tmp_path)
 
 
 def test_load_settings_reads_lightgbm_hyperparams(tmp_path: Path) -> None:

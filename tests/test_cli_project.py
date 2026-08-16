@@ -55,6 +55,7 @@ def _features() -> pl.DataFrame:
                         "availability_flag": True,
                         "target": 10.0 + week + share,
                         "target_share_ewm_3": share,
+                        "as_of_utc": f"{season}-09-{week:02d}T00:00:00Z",
                         **{k: v for k, v in _DEFAULT_FEATURES.items() if k != "target_share_ewm_3"},
                     }
                 )
@@ -73,7 +74,17 @@ def fixture_settings(tmp_path: Path) -> Settings:
             root=tmp_path / "raw", offline_default=True, staleness_hours={}, warn_on_stale=True
         ),
         seasons=SeasonsSettings(train_start=2020, current=2021),
-        model=ModelSettings(min_train_rows=1, retrain_cadence_weeks=1, lightgbm=_FAST_PARAMS),
+        model=ModelSettings(
+            min_train_rows=1,
+            retrain_cadence_weeks=1,
+            lightgbm=_FAST_PARAMS,
+            # This CLI test fixture predates task 1.20's projection_source
+            # config (SPEC-ADDENDUM-04.md §C); "direct" matches its own
+            # real intent -- testing the CLI's upsert/error-handling
+            # plumbing with the fast points model, not a real B3 network
+            # fetch (CLAUDE.md: no live network calls in tests).
+            projection_source="direct",
+        ),
     )
 
 
@@ -141,3 +152,94 @@ def test_project_defaults_season_to_settings_seasons_current(
     result = runner.invoke(cli.app, ["project", "--week", "1"])
 
     assert result.exit_code == 0, result.output
+
+
+def test_project_wires_consensus_b3_source_end_to_end(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """SPEC-ADDENDUM-04.md §C: `settings.model.projection_source` fully
+    drives the CLI, including building `players_dim` for the real
+    resolution step -- network calls mocked (CLAUDE.md: no live network
+    calls in tests)."""
+    from ffapp.config import ModelSettings
+    from ffapp.models import baselines as baselines_module
+
+    b3_source_settings = Settings(
+        data_root=fixture_settings.data_root,
+        sleeper_username=fixture_settings.sleeper_username,
+        cache=fixture_settings.cache,
+        seasons=fixture_settings.seasons,
+        model=ModelSettings(
+            min_train_rows=1,
+            retrain_cadence_weeks=1,
+            lightgbm=_FAST_PARAMS,
+            projection_source="consensus_b3",
+        ),
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: b3_source_settings)
+    monkeypatch.setattr(
+        cli.nflverse, "fetch_player_ids", lambda **kwargs: tmp_path / "crosswalk.csv"
+    )
+    monkeypatch.setattr(cli.sleeper, "fetch_players", lambda **kwargs: tmp_path / "sleeper.json")
+    monkeypatch.setattr(
+        cli.mapping, "build_players_dim", lambda *args, **kwargs: pl.DataFrame({"player_id": []})
+    )
+
+    interim_dir = b3_source_settings.data_root / "interim"
+    interim_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        schema={"player_id": pl.Utf8, "season": pl.Int64, "week": pl.Int64, "b3_points": pl.Float64}
+    ).write_parquet(interim_dir / "b3_predictions.parquet")
+
+    fake_b3 = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2", "p3"],
+            "season": [2020, 2020, 2020],
+            "week": [8, 8, 8],
+            "b3_points": [11.0, 22.0, 33.0],
+        }
+    )
+    monkeypatch.setattr(baselines_module, "fetch_b3_for_week", lambda *args, **kwargs: fake_b3)
+
+    result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
+
+    assert result.exit_code == 0, result.output
+    written = pl.read_parquet(b3_source_settings.data_root / "outputs" / "projections.parquet")
+    assert set(written["projection_source"].to_list()) == {"consensus_b3"}
+    by_player = {row["player_id"]: row["mean"] for row in written.to_dicts()}
+    assert by_player["p1"] == pytest.approx(11.0)
+    assert by_player["p2"] == pytest.approx(22.0)
+    assert by_player["p3"] == pytest.approx(33.0)
+
+
+def test_project_exits_with_a_clear_error_when_the_b3_archive_is_missing(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    from ffapp.config import ModelSettings
+
+    b3_source_settings = Settings(
+        data_root=fixture_settings.data_root,
+        sleeper_username=fixture_settings.sleeper_username,
+        cache=fixture_settings.cache,
+        seasons=fixture_settings.seasons,
+        model=ModelSettings(
+            min_train_rows=1,
+            retrain_cadence_weeks=1,
+            lightgbm=_FAST_PARAMS,
+            projection_source="consensus_b3",
+        ),
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: b3_source_settings)
+    monkeypatch.setattr(
+        cli.nflverse, "fetch_player_ids", lambda **kwargs: tmp_path / "crosswalk.csv"
+    )
+    monkeypatch.setattr(cli.sleeper, "fetch_players", lambda **kwargs: tmp_path / "sleeper.json")
+    monkeypatch.setattr(
+        cli.mapping, "build_players_dim", lambda *args, **kwargs: pl.DataFrame({"player_id": []})
+    )
+    # No data/interim/b3_predictions.parquet written -- real, missing-archive case.
+
+    result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
+
+    assert result.exit_code == 1
+    assert "b3_predictions.parquet" in result.output

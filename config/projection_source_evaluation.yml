@@ -1,0 +1,52 @@
+# Real evaluation results for each `model.projection_source` option
+# (SPEC-ADDENDUM-04.md SS C), read by the Model Health page
+# (app/model_health_page.py::load_projection_source_evaluation) to show
+# "which source is live and what its current margin over B2 is."
+#
+# Every number here comes from a real evaluation already run and
+# recorded in full in docs/JOURNAL.md's 2026-08-16 closing entry
+# (tasks 1.15/1.20) -- this file is a small, human-curated summary of
+# that entry, not a live computation (no real evaluation harness
+# currently scores consensus_b3/anchored as walk-forward predictors
+# inside `ffapp evaluate` -- SPEC-ADDENDUM-04.md SS D's own rest-of-season
+# pipeline is the next place that would change). Refresh this file's
+# `as_of` and content whenever a new real evaluation supersedes it.
+as_of: "2026-08-16"
+
+sources:
+  consensus_b3:
+    status: "shipped default (SPEC-ADDENDUM-04.md SS C)"
+    margin_over_b2: >-
+      Real lineup regret 3.1-5.7 pts/week BETTER than B2 (2021-2024, 20-seed
+      robustness check; the advantage strengthens, not weakens, under a
+      fair common-support restriction) -- the metric that decided this.
+      Startable-rows Spearman is roughly tied with B2 per position, not a
+      clear win either way.
+
+  anchored:
+    status: "built, task 1.20 -- does not clear its own bar"
+    margin_over_b2: >-
+      Startable-rows Spearman edges B2 at RB/WR only (2021-2024); no
+      bootstrap CI excludes zero anywhere, QB/TE are identical to B2 by
+      construction (fitted blend weight 0.0). Real lineup regret is a
+      near-wash to slightly worse than B2 (+0.4 to +1.3 pts/week across a
+      20-seed check). A weight tuned directly on dev-season regret found a
+      combo that looked dramatically better (28.0 vs 39.0 pts/week) but
+      did not replicate on held-out seasons (33.2 vs 32.4) -- a real,
+      documented overfitting result, the most reusable finding in this
+      line of work.
+
+  direct:
+    status: "built, task 1.15 -- does not clear its own bar"
+    margin_over_b2: >-
+      Worse than B2 on Spearman-within-position-week at every position
+      (2021-2024, original evaluation). SPEC-ADDENDUM-04.md SS A's five
+      real diagnostics (2026-08-15/16) found genuine prediction
+      compression (std(pred)/std(actual) ~0.57) and confirmed Spearman had
+      been measured on the wrong population (all rows, not startable) --
+      neither fully closed the gap to B2, and a lambdarank objective swap
+      didn't fix the compression either.
+
+  baseline_b2:
+    status: "reference point"
+    margin_over_b2: "The bar every other source is measured against -- margin is 0 by definition."
