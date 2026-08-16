@@ -41,6 +41,7 @@ from __future__ import annotations
 import pandas as pd
 import polars as pl
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -247,9 +248,25 @@ def fit_hazard_model(train_rows: pl.DataFrame) -> Pipeline:
     the whole point of this model (SPEC: consumed downstream by the
     season simulator and the games-played adjustment, both of which need
     real probabilities, not a discrimination-optimised score)."""
+    # Real gap found live during task 13's own e2e verification, not by any unit
+    # test: `age` is null for 157/96081 real 2015-2025 rows (a real nflverse
+    # `birth_date` gap, or a roster week with no matching `schedule` row) --
+    # `missed_prior_two_seasons`/`weeks_since_return`/`snap_pct_trend` are each
+    # already null-safe by construction (explicit `.fill_null`/sentinel above),
+    # but `age` wasn't, and scikit-learn's `LogisticRegression` refuses NaN
+    # input outright. Median imputation (fit on train, applied identically at
+    # predict time via the pipeline) keeps `predict_p_miss`'s one-row-in/
+    # one-row-out contract intact rather than silently shrinking the output --
+    # this project's own CLAUDE.md rule 4 concern (don't silently drop rows).
     preprocessor = ColumnTransformer(
         [
-            ("numeric", StandardScaler(), NUMERIC_COLUMNS),
+            (
+                "numeric",
+                Pipeline(
+                    [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+                ),
+                NUMERIC_COLUMNS,
+            ),
             ("categorical", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_COLUMNS),
         ]
     )

@@ -6,8 +6,6 @@ from ffapp.config import (
     InvalidProjectionSourceError,
     MultiplePrimaryLeaguesError,
     NoPrimaryLeagueError,
-    RosCalibration,
-    RosSettings,
     load_all_leagues,
     load_league,
     load_primary_league,

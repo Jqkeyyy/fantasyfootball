@@ -140,15 +140,11 @@ def _apply_common_mocks(
         encoding="utf-8",
     )
     monkeypatch.setattr(cli.sleeper, "fetch_players", lambda **kwargs: tmp_path / "sleeper.json")
-    monkeypatch.setattr(
-        cli.mapping, "build_players_dim", lambda *args, **kwargs: _players_dim()
-    )
+    monkeypatch.setattr(cli.mapping, "build_players_dim", lambda *args, **kwargs: _players_dim())
 
     rosters_json_path = tmp_path / "rosters.json"
     rosters_json_path.write_text(json.dumps([{"players": ["s1"]}]), encoding="utf-8")
-    monkeypatch.setattr(
-        cli.sleeper, "fetch_rosters", lambda league_id, **kwargs: rosters_json_path
-    )
+    monkeypatch.setattr(cli.sleeper, "fetch_rosters", lambda league_id, **kwargs: rosters_json_path)
 
     nflverse_rosters_path = tmp_path / "nflverse_rosters.parquet"
     pl.DataFrame(schema={"player_id": pl.Utf8}).write_parquet(nflverse_rosters_path)
@@ -158,8 +154,19 @@ def _apply_common_mocks(
 
     snap_counts_path = tmp_path / "snap_counts.parquet"
     pl.DataFrame(schema={"player_id": pl.Utf8}).write_parquet(snap_counts_path)
+    monkeypatch.setattr(cli.nflverse, "fetch_snap_counts", lambda *args, **kwargs: snap_counts_path)
+
+    # Real bug found live during task 13's own e2e verification: cli.py used to
+    # read interim/injuries.parquet (already normalized gsis_id -> player_id by
+    # ingest.nflverse.normalize_injuries), but sim.injury.add_injury_report needs
+    # the RAW nflverse schema (still gsis_id) -- same raw-table pattern as
+    # fetch_rosters/fetch_snap_counts just above. This mock matches the corrected
+    # production code; build_hazard_features itself is still mocked out below, so
+    # the fixture's own schema doesn't need to carry a real gsis_id column.
+    nflverse_injuries_path = tmp_path / "nflverse_injuries.parquet"
+    pl.DataFrame(schema={"gsis_id": pl.Utf8}).write_parquet(nflverse_injuries_path)
     monkeypatch.setattr(
-        cli.nflverse, "fetch_snap_counts", lambda *args, **kwargs: snap_counts_path
+        cli.nflverse, "fetch_injuries", lambda *args, **kwargs: nflverse_injuries_path
     )
 
     monkeypatch.setattr(
@@ -180,9 +187,7 @@ def _apply_common_mocks(
             "week": [8, 8, 7, 7],
         }
     )
-    monkeypatch.setattr(
-        cli.injury, "build_hazard_features", lambda *args, **kwargs: hazard_grid
-    )
+    monkeypatch.setattr(cli.injury, "build_hazard_features", lambda *args, **kwargs: hazard_grid)
     monkeypatch.setattr(cli.injury, "fit_hazard_model", lambda train_rows: object())
     monkeypatch.setattr(
         cli.injury,

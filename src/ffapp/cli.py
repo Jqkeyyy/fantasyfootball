@@ -939,16 +939,27 @@ def rankings_ros_command(
         zip(target_rows["player_id"].to_list(), p_active_series.to_list(), strict=True)
     )
 
-    # rosters/snap_counts have no data/interim/ counterpart -- sim.injury's own
-    # build_hazard_features reads the RAW nflverse tables directly (confirmed
-    # against sim/injury.py's own module docstring and docs/JOURNAL.md's task
-    # 2.3 entry). schedule/injuries genuinely do have real interim tables.
+    # rosters/snap_counts/injuries have no usable data/interim/ counterpart here --
+    # sim.injury's own build_hazard_features reads the RAW nflverse tables directly
+    # (confirmed against sim/injury.py's own module docstring and docs/JOURNAL.md's
+    # task 2.3 entry). schedule genuinely does have a real interim table this needs.
+    # Real bug found live during task 13's own e2e verification, not by any unit
+    # test (the CLI test mocks injury.build_hazard_features out entirely): this used
+    # to read interim/injuries.parquet, but ingest.nflverse.normalize_injuries
+    # (task 1.4) already renames that table's own gsis_id -> player_id, while
+    # sim.injury.add_injury_report expects the RAW nflverse schema, still named
+    # gsis_id -- exactly like rosters_table/snap_counts two lines below, which
+    # already correctly read the raw table via nflverse.fetch_*, not interim/.
+    # Reading interim/injuries.parquet raised a real ColumnNotFoundError on
+    # "gsis_id" the first time this command was run against real 2025 data.
     train_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
     rosters_table = pl.read_parquet(
         nflverse.fetch_rosters(train_season_range, offline=True, settings=settings)
     )
     schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
-    injuries = pl.read_parquet(settings.data_root / "interim" / "injuries.parquet")
+    injuries = pl.read_parquet(
+        nflverse.fetch_injuries(train_season_range, offline=True, settings=settings)
+    )
     snap_counts = pl.read_parquet(
         nflverse.fetch_snap_counts(train_season_range, offline=True, settings=settings)
     )

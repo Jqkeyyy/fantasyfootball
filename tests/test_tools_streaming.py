@@ -208,9 +208,7 @@ def test_score_historical_stats_reuses_build_stat_frame_scoring_unmodified() -> 
     schedules = _schedules()
     scoring_settings = {"sack": 1.0}
 
-    direct = scoring_stats.build_stat_frame(
-        _EMPTY_PLAYER_STATS, team_stats, schedules, _EMPTY_PBP
-    )
+    direct = scoring_stats.build_stat_frame(_EMPTY_PLAYER_STATS, team_stats, schedules, _EMPTY_PBP)
     expected = direct.with_columns(score_stat_line(direct, scoring_settings).alias("points"))
 
     result = streaming.score_historical_stats(

@@ -61,8 +61,12 @@ def aggregate_ros(
     if n_players == 0:
         return pl.DataFrame(
             schema={
-                "player_id": pl.String, "ros_points": pl.Float64, "ros_p10": pl.Float64,
-                "ros_p50": pl.Float64, "ros_p90": pl.Float64, "expected_games": pl.Float64,
+                "player_id": pl.String,
+                "ros_points": pl.Float64,
+                "ros_p10": pl.Float64,
+                "ros_p50": pl.Float64,
+                "ros_p90": pl.Float64,
+                "expected_games": pl.Float64,
                 "playoff_weeks_value": pl.Float64,
             }
         )
@@ -72,15 +76,11 @@ def aggregate_ros(
     player_index = {pid: i for i, pid in enumerate(players)}
 
     positions = [position_by_player.get(pid, "") for pid in players]
-    rho = np.array(
-        [calibration.within_player_week_correlation.get(pos, 0.0) for pos in positions]
-    )
+    rho = np.array([calibration.within_player_week_correlation.get(pos, 0.0) for pos in positions])
     recovery = np.array(
         [calibration.recovery_prob.get(pos, default_recovery_prob) for pos in positions]
     )
-    p_miss = np.tile(
-        np.array([p_miss_now.get(pid, 0.0) for pid in players]), (n_weeks, 1)
-    )
+    p_miss = np.tile(np.array([p_miss_now.get(pid, 0.0) for pid in players]), (n_weeks, 1))
     p_active = np.array([p_active_now.get(pid, 1.0) for pid in players])
 
     # `p_active_now` reflects the anchor week's already-unconditional
@@ -89,16 +89,11 @@ def aggregate_ros(
     # the current week and the real `p_active` array for every other
     # (future) week, instead of broadcasting `p_active` uniformly.
     is_current_week_by_week = {
-        week: bool(
-            projections_ros.filter(pl.col("week") == week)["is_current_week"].any()
-        )
+        week: bool(projections_ros.filter(pl.col("week") == week)["is_current_week"].any())
         for week in weeks
     }
     p_active_by_week = np.array(
-        [
-            np.ones(n_players) if is_current_week_by_week[week] else p_active
-            for week in weeks
-        ]
+        [np.ones(n_players) if is_current_week_by_week[week] else p_active for week in weeks]
     )  # (n_weeks, n_players)
 
     available = simulate_availability(
@@ -108,15 +103,39 @@ def aggregate_ros(
     player_factor = rng.standard_normal((ros_sims, n_players))
     totals = np.zeros((ros_sims, n_weeks, n_players))
     for week_idx, week in enumerate(weeks):
-        week_rows = projections_ros.filter(pl.col("week") == week).sort(
-            pl.col("player_id").map_elements(
-                lambda p: player_index.get(p, -1), return_dtype=pl.Int64
+        # Real gap found live during task 13's own e2e verification, not by any
+        # unit test: `models.predict_ros.project_week_range`'s own module
+        # docstring documents an honest null `mean`/quantile grid for a real
+        # (player, week) whose position/tau bucket has no empirical error-
+        # quantile history yet ("never guess, leave it null" -- see that
+        # module's own comment). `sim.week.PlayerMarginal`/the copula
+        # machinery propagate that single null into a NaN for the player's
+        # *entire* season total once summed, which then sorted to the very
+        # top of the board (NaN comparisons in the ranking sort put these
+        # players at rank 1, ahead of every real projection -- confirmed live:
+        # 49 of 622 real rogan-radinator-league players, all with `vor_ros`
+        # NaN, occupied ranks 1-49 before this fix). Excluding a null-`mean`
+        # (player, week) row from this week's own marginals -- rather than
+        # fabricating a specific point value for it -- leaves that player's
+        # `totals` at this week's already-zero-initialised default, the same
+        # numeric treatment a bye/unavailable week already gets elsewhere in
+        # this same aggregation; every other real week for that player is
+        # untouched.
+        week_rows = (
+            projections_ros.filter(pl.col("week") == week)
+            .filter(pl.col("mean").is_not_null())
+            .sort(
+                pl.col("player_id").map_elements(
+                    lambda p: player_index.get(p, -1), return_dtype=pl.Int64
+                )
             )
         )
         present_ids = week_rows["player_id"].to_list()
         marginals = [
             PlayerMarginal(
-                player_id=row["player_id"], position=row["position"], team=row["team"],
+                player_id=row["player_id"],
+                position=row["position"],
+                team=row["team"],
                 opponent_team=row.get("opponent_team"),
                 alphas=list(_QUANTILE_ALPHAS),
                 quantile_values=[row[_Q_COLUMNS[a]] for a in _QUANTILE_ALPHAS],
@@ -127,8 +146,12 @@ def aggregate_ros(
         week_rho = rho[present_idx]
         week_factor = player_factor[:, present_idx]
         scores = simulate_week_with_common_factor(
-            marginals, correlation, week_sims=ros_sims, player_factor=week_factor,
-            rho=week_rho, rng=rng,
+            marginals,
+            correlation,
+            week_sims=ros_sims,
+            player_factor=week_factor,
+            rho=week_rho,
+            rng=rng,
         )
         for local_i, global_i in enumerate(present_idx):
             totals[:, week_idx, global_i] = scores[:, local_i]
@@ -139,9 +162,7 @@ def aggregate_ros(
 
     playoff_idx = [weeks.index(w) for w in playoff_weeks if w in weeks]
     playoff_value = (
-        actual[:, playoff_idx, :].sum(axis=1).mean(axis=0)
-        if playoff_idx
-        else np.zeros(n_players)
+        actual[:, playoff_idx, :].sum(axis=1).mean(axis=0) if playoff_idx else np.zeros(n_players)
     )
 
     ros_points = season_totals.mean(axis=0)

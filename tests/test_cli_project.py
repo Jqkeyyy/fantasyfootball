@@ -298,9 +298,7 @@ def test_project_command_accepts_from_week_through_week_and_league(
     monkeypatch.setattr(
         cli.mapping, "build_players_dim", lambda *args, **kwargs: pl.DataFrame({"player_id": []})
     )
-    monkeypatch.setattr(
-        cli.ros_consensus, "fetch_season_consensus", lambda *args, **kwargs: {}
-    )
+    monkeypatch.setattr(cli.ros_consensus, "fetch_season_consensus", lambda *args, **kwargs: {})
     _write_ros_interim_tables(fixture_settings)
 
     calls: dict[str, object] = {}
