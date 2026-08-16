@@ -637,3 +637,45 @@ regimes rather than trying to force weekly consensus onto weeks it was never pub
 This is a real, load-bearing implementation decision, not an incidental default — it
 determines what "future week projection" even means in this pipeline, since no source
 publishes one directly. Full task breakdown: `docs/superpowers/plans/2026-08-16-ros-rankings-pipeline.md`.
+
+## 2026-08-16 (later still) — Task 5: real ROS calibration constants materialized
+
+`notebooks/estimate_ros_calibration.py` (new, real, permanent — same status as
+`materialize_b3_historical.py`) run for real against `data/features/player_week_features.parquet`
+(94,422 rows) and the real raw nflverse rosters table
+(`data/raw/nflverse/rosters_2015-2025.parquet`, via `ingest.nflverse.fetch_rosters(...,
+offline=True)`). `config/ros_calibration.yml` overwritten with real numbers, replacing Task 2's
+`{}`/`{}` placeholder. Real stdout:
+
+```
+Real within-player week-to-week correlation (ICC), by position:
+  QB: rho=0.3446  (10-week season total variance ratio vs independent: 4.101x)
+  RB: rho=0.3972  (10-week season total variance ratio vs independent: 4.575x)
+  TE: rho=0.3512  (10-week season total variance ratio vs independent: 4.161x)
+  WR: rho=0.3803  (10-week season total variance ratio vs independent: 4.422x)
+
+Real injury-duration recovery_prob, by position (1 / mean real run length):
+  QB: recovery_prob=0.2590  (mean real duration 3.86 weeks)
+  RB: recovery_prob=0.4761  (mean real duration 2.10 weeks)
+  TE: recovery_prob=0.4722  (mean real duration 2.12 weeks)
+  WR: recovery_prob=0.5027  (mean real duration 1.99 weeks)
+```
+
+**Real bug found against real data, worked around in the new script (not in `sim.persistence`,
+out of Task 5's own scope to fix at the source):** `persistence.estimate_within_player_correlation`'s
+own docstring and its own test fixture (`tests/test_sim_persistence.py`) both assume the input
+frame carries a `season_type` column. The real, committed `features/player_week_features.parquet`
+does not have one — confirmed live (no `season_type` in its 88-column real schema, and its real
+`week` values run 1-22, matching `tools.sos`'s own docstring that this table carries real
+postseason rows too). `season_type` is a real attribute of `(season, week)` alone (confirmed live:
+every real `(season, week)` pair in `interim/schedule.parquet` maps to exactly one `season_type`),
+so the script joins it in from `interim/schedule.parquet` before calling the estimator — supplying
+the documented input contract, not changing the estimator's own logic. Worth a follow-up look at
+whether `sim.persistence`'s own docstring/contract should be updated to say explicitly where
+`season_type` is expected to come from, since the real production table it's designed to consume
+doesn't carry it natively.
+
+Also confirms the correction note dispatched with this task: the plan's original text
+(`data/interim/rosters.parquet`) was wrong — no such file exists or ever has; the real path is
+`ingest.nflverse.fetch_rosters(seasons, offline=True, settings=settings)`, cached at
+`data/raw/nflverse/rosters_2015-2025.parquet`.
