@@ -102,6 +102,19 @@ def aggregate_ros(
 
     player_factor = rng.standard_normal((ros_sims, n_players))
     totals = np.zeros((ros_sims, n_weeks, n_players))
+    # Real bug found in review (not by any unit test), separate from and quieter
+    # than the NaN-sort bug above: excluding a null-`mean` (player, week) row
+    # from `marginals`/`totals` correctly zeroes its POINTS contribution, but
+    # `expected_games` was originally computed over the full `weeks` list with
+    # no awareness of which (player, week) cells actually had a real
+    # projection -- a player missing one week's projection still had that week
+    # counted toward `expected_games`, silently understating their real
+    # points-per-game (`ros_points / expected_games`) with no visible flag
+    # anywhere. `has_projection` tracks, per week per player, whether that
+    # player was actually present in `week_rows` this week (i.e. survived the
+    # `mean.is_not_null()` filter) -- the same condition the points exclusion
+    # above already uses -- so both quantities are gated identically.
+    has_projection = np.zeros((n_weeks, n_players), dtype=bool)
     for week_idx, week in enumerate(weeks):
         # Real gap found live during task 13's own e2e verification, not by any
         # unit test: `models.predict_ros.project_week_range`'s own module
@@ -155,10 +168,21 @@ def aggregate_ros(
         )
         for local_i, global_i in enumerate(present_idx):
             totals[:, week_idx, global_i] = scores[:, local_i]
+            has_projection[week_idx, global_i] = True
 
     actual = totals * available * p_active_by_week[None, :, :]
     season_totals = actual.sum(axis=1)  # (ros_sims, n_players)
-    expected_games = (available * p_active_by_week[None, :, :]).sum(axis=1).mean(axis=0)
+    # Gated by `has_projection` so a (player, week) excluded above for having
+    # no real projection doesn't still count as an expected game for that
+    # player -- the same real week is now excluded from both the points sum
+    # and the games-played sum, never one without the other. Weeks/players
+    # that DO have a real projection are completely unaffected (their mask
+    # value is True, i.e. a no-op multiplier).
+    expected_games = (
+        (available * p_active_by_week[None, :, :] * has_projection[None, :, :])
+        .sum(axis=1)
+        .mean(axis=0)
+    )
 
     playoff_idx = [weeks.index(w) for w in playoff_weeks if w in weeks]
     playoff_value = (

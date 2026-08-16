@@ -796,6 +796,29 @@ real/updated tests, full suite green afterward:**
    week, the same numeric treatment a bye/unavailable week already gets elsewhere in the identical
    aggregation; every other real week for that player is untouched.
 
+**Fix-round correction, same task, found by independent review (a real, quieter residual defect in
+bug 3's own fix, plus a real test-coverage gap):** excluding a null-`mean` week from `totals`
+correctly zeroed its points contribution, but `expected_games` was still computed as
+`(available * p_active_by_week).sum(axis=1)` over the FULL week list, with no awareness of which
+`(week, player)` cells had actually been excluded — a player missing one week's real projection
+still had that week silently counted as an expected game, understating real points-per-game
+(`ros_points / expected_games`) with no visible flag anywhere. Confirmed with a real repro: a
+fully-populated 3-week player and a one-null-week player both showed `expected_games=3.0` before
+this fix. Fixed with a `has_projection` boolean array, `(n_weeks, n_players)`, set `True` only for
+the exact `(week_idx, global_i)` cells that survive the week loop's own `mean.is_not_null()` filter
+(the same condition the points exclusion already uses) — `expected_games` now multiplies by
+`has_projection[None, :, :]` before summing, touching only the specific excluded cells, not
+`available`/`p_active_by_week` for any cell that does have a real projection. Real values from the
+new regression test (`ros_sims=5000`): the one-null-week player now shows `expected_games=2.0`
+exactly (was `3.0`) and `ros_points≈32.41` (real 2-week sum 15+18=33, matched within Monte Carlo
+noise); the fully-populated 3-week comparison case shows `expected_games=3.0`, `ros_points≈44.40`
+(real sum 45). Also added the regression tests this bug's own original fix shipped without: new
+`test_aggregate_ros_null_week_excluded_from_points_and_expected_games`
+(`tests/test_tools_ros_aggregate.py`, a fresh `_projections_ros_with_null_week()` fixture) and new
+`test_fit_hazard_model_handles_null_age_without_crashing` (`tests/test_sim_injury.py`, reuses the
+existing `_training_rows()` fixture with one row's `age` set null). Did not investigate the real
+49/622 null-bucket rate itself — explicitly out of scope, belongs to task 1.22.
+
 **Step 2: Streamlit page (`6_ROS_Rankings.py`) not verified in a live browser this session.**
 `claude-in-chrome`'s `list_connected_browsers` returned `[]` — the same real, previously-documented
 quirk `HANDOFF.md` §7 already names (needs the real Chrome browser specifically signed in, not this
@@ -814,7 +837,8 @@ warm --all-leagues`/`ffapp scoring validate --all-leagues` do, confirmed against
 The runbook rows use the real, working per-league invocation instead, with an explicit note that the
 two rows must be run once per real league slug by hand until `--all-leagues` exists.
 
-**Step 5: full suite.** `uv run pytest` — full suite green (fixed tests: `test_cli_rankings.py`,
+**Step 5: full suite.** `uv run pytest` — **1156 passed** (1154 after the first fix round, +2 real
+regression tests from the fix-round correction above; fixed/added tests: `test_cli_rankings.py`,
 `test_sim_injury.py`, `test_tools_ros_aggregate.py`, no regressions elsewhere). `ruff check`/`ruff
 format --check`/`mypy src/` all clean.
 

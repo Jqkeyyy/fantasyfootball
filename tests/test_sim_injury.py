@@ -337,6 +337,39 @@ def test_fit_hazard_model_learns_a_real_signal() -> None:
     assert p_risky > p_safe
 
 
+def test_fit_hazard_model_handles_null_age_without_crashing() -> None:
+    """Regression test for a real bug found live during Task 13's own
+    e2e verification: 157 of 96,081 real 2015-2025 hazard-grid rows have
+    a genuinely null `age` (a real missing nflverse `birth_date`, or a
+    roster week with no matching `schedule` row) -- `missed_prior_two_
+    seasons`/`weeks_since_return`/`snap_pct_trend` are each already
+    null-safe by construction, but `age` wasn't, and scikit-learn's
+    `LogisticRegression` refused the real NaN input outright
+    (`ValueError: Input X contains NaN`). Fixed with median imputation
+    ahead of `StandardScaler` in the numeric pipeline -- this locks that
+    fix in with a null `age` row mixed into the existing training fixture,
+    the same fixture shape `test_fit_hazard_model_and_predict_p_miss_
+    returns_one_probability_per_row` already uses."""
+    train = _training_rows().with_columns(
+        pl.when(pl.int_range(pl.len()) == 0)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("age"))
+        .alias("age")
+    )
+    assert train["age"].is_null().sum() == 1
+
+    model = fit_hazard_model(train)  # must not raise ValueError: Input X contains NaN
+    predicted = predict_p_miss(model, train)
+
+    assert predicted.len() == train.height
+    assert predicted.min() >= 0.0
+    assert predicted.max() <= 1.0
+    # The null-age row (index 0) specifically still gets a real, valid
+    # probability, not NaN and not a crash.
+    null_row_p_miss = predicted[0]
+    assert 0.0 <= null_row_p_miss <= 1.0
+
+
 def test_positional_base_rate_and_predict_positional_base_rate() -> None:
     train = _training_rows()
 
