@@ -116,8 +116,8 @@ SOURCE_NAMES: tuple[str, ...] = (
     "draftsharks",
     "fantasypros",
 )
-_POINT_SOURCES: tuple[str, ...] = ("espn", "cbs", "fantasysharks", "fftoday")
-_RANK_SOURCES: tuple[str, ...] = ("footballguys", "draftsharks")
+POINT_SOURCES: tuple[str, ...] = ("espn", "cbs", "fantasysharks", "fftoday")
+RANK_SOURCES: tuple[str, ...] = ("footballguys", "draftsharks")
 
 # Confirmed live against real 2025 week-10 data, not inferred -- see
 # module docstring. fantasypros is the one source whose own value is a
@@ -234,7 +234,7 @@ def _resolve_to_player_id(df: pl.DataFrame, players_dim: pl.DataFrame) -> pl.Dat
     return with_key.join(resolved, on="join_key", how="left").drop_nulls("player_id")
 
 
-def _fetch_point_source(
+def fetch_point_source(
     name: str,
     season: int,
     scoring_settings: dict[str, float],
@@ -258,7 +258,7 @@ def _fetch_point_source(
         elif name == "fftoday":
             path = rankings.fetch_fftoday(season, offline=offline, settings=settings)
             raw_df = rankings.normalize_fftoday(json.loads(path.read_text()), season=season)
-        else:  # pragma: no cover -- defensive, _POINT_SOURCES is a closed set
+        else:  # pragma: no cover -- defensive, POINT_SOURCES is a closed set
             raise ValueError(f"unknown point source {name!r}")
 
         payload_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -281,7 +281,7 @@ def _fetch_point_source(
         return SourceFetchResult(_EMPTY_POINTS, None, None, fetched_at, 0, str(exc))
 
 
-def _fetch_rank_source(
+def fetch_rank_source(
     name: str,
     season: int,
     reference_curve: pl.DataFrame,
@@ -301,7 +301,7 @@ def _fetch_rank_source(
         elif name == "draftsharks":
             path = rankings.fetch_draftsharks(offline=offline, settings=settings)
             raw_df = rankings.normalize_draftsharks(json.loads(path.read_text()), season=season)
-        else:  # pragma: no cover -- defensive, _RANK_SOURCES is a closed set
+        else:  # pragma: no cover -- defensive, RANK_SOURCES is a closed set
             raise ValueError(f"unknown rank source {name!r}")
 
         payload_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -400,8 +400,8 @@ def fetch_all_sources(
     fetch_rows: list[dict[str, Any]] = []
 
     point_results: dict[str, SourceFetchResult] = {}
-    for name in _POINT_SOURCES:
-        result = _fetch_point_source(
+    for name in POINT_SOURCES:
+        result = fetch_point_source(
             name, season, scoring_settings, players_dim, offline=offline, settings=settings, now=now
         )
         point_results[name] = result
@@ -419,8 +419,8 @@ def fetch_all_sources(
     )
 
     rank_results: dict[str, SourceFetchResult] = {}
-    for name in _RANK_SOURCES:
-        result = _fetch_rank_source(
+    for name in RANK_SOURCES:
+        result = fetch_rank_source(
             name, season, reference_curve, players_dim, offline=offline, settings=settings, now=now
         )
         rank_results[name] = result
@@ -749,7 +749,7 @@ _TREND_MIN_WEEKS = 3
 _TREND_DECLINE_THRESHOLD = -0.05  # relative slope per week; more negative = declining
 
 
-def _season_source_trend(log_dir: Path) -> pl.DataFrame:
+def season_source_trend(log_dir: Path) -> pl.DataFrame:
     """Real per-season-source trend detection: does this source's own
     real mean value (across every real player logged that week) decline
     materially week over week, or stay flat? A declining season-total
@@ -832,7 +832,7 @@ def check_sources(
     already-confirmed real fact. Writes the updated statuses back to
     `config/source_refresh_status.yml`.
 
-    **Season-source trend detection** (`_season_source_trend`): a
+    **Season-source trend detection** (`season_source_trend`): a
     separate, real question for `SEASON_SOURCES` specifically -- does
     the real value decline (a genuine rest-of-season signal) or stay
     flat (a static full-season snapshot)? Reported alongside, in the
@@ -857,7 +857,7 @@ def check_sources(
         pl.col("payload_sha256").n_unique().alias("n_distinct_hashes"),
     )
 
-    trend_df = _season_source_trend(_log_dir(settings, league_slug))
+    trend_df = season_source_trend(_log_dir(settings, league_slug))
     trend_by_source = {row["source"]: row for row in trend_df.iter_rows(named=True)}
 
     current = load_source_refresh_status(path)
@@ -901,7 +901,9 @@ def check_sources(
 
 __all__ = [
     "MissingBackfillError",
+    "POINT_SOURCES",
     "PREDICTION_LOG_SCHEMA",
+    "RANK_SOURCES",
     "REFRESH_STATUSES",
     "RUN_LABELS",
     "SOURCE_FETCH_SCHEMA",
@@ -911,7 +913,10 @@ __all__ = [
     "build_prediction_log",
     "check_sources",
     "fetch_all_sources",
+    "fetch_point_source",
+    "fetch_rank_source",
     "load_source_refresh_status",
+    "season_source_trend",
     "write_prediction_log",
     "write_source_refresh_status",
 ]
