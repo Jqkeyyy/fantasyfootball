@@ -2146,7 +2146,6 @@ from __future__ import annotations
 
 import polars as pl
 
-from ffapp.ids.mapping import league_relevant
 from ffapp.league_format import LeagueFormat
 from ffapp.tools import vor
 from ffapp.tools.waivers import free_agent_pool
@@ -2306,7 +2305,12 @@ In `src/ffapp/cli.py`, extend `project_command` with `--from-week`/`--through-we
         crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
         sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
         players_dim = mapping.build_players_dim(crosswalk_path, sleeper_players_path, mapping.ID_OVERRIDES_PATH)
-        with_key = ros_consensus_add_join_key(players_dim)  # add_join_key from projections.aggregate, applied to players_dim's own name/position columns
+        # No join_key pre-processing needed here -- project_week_range (Task 8)
+        # already calls mapping.dedupe_to_one_row_per_name_position internally
+        # on whatever players_dim it receives, and fetch_season_consensus's own
+        # fetchers (via prediction_log._resolve_to_player_id) do the same. The
+        # raw build_players_dim output is exactly what every downstream
+        # consumer expects -- confirmed by reading both call chains directly.
 
         b3_historical_path = settings.data_root / "interim" / "b3_predictions.parquet"
         if not b3_historical_path.exists():
@@ -2336,7 +2340,7 @@ In `src/ffapp/cli.py`, extend `project_command` with `--from-week`/`--through-we
 
         result = predict_ros.project_week_range(
             features, schedule, dpa, resolved_season, from_week, through_week, league_config.slug,
-            scoring_settings, with_key, b3_historical, actuals_to_date, season_points, trend_by_source,
+            scoring_settings, players_dim, b3_historical, actuals_to_date, season_points, trend_by_source,
             settings.model.quantiles, now, train_start=settings.seasons.train_start,
             min_train_rows=settings.model.min_train_rows, lightgbm_params=settings.model.lightgbm,
             code_version=evaluation_report.current_git_commit(), offline=offline, settings=settings,
@@ -2349,8 +2353,6 @@ In `src/ffapp/cli.py`, extend `project_command` with `--from-week`/`--through-we
         typer.echo(f"Wrote {result.height} ROS projections to {output_path} ({combined.height} total rows).")
         return
 ```
-
-(`ros_consensus_add_join_key` above is a placeholder name for whatever thin real wiring resolves `players_dim`'s own `player_name`/`position` into the `join_key` column `models.ros_consensus.aggregate_remaining_value` needs — implement it as a direct call to `projections.aggregate.add_join_key(players_dim.rename({"full_name": "player_name"}))`, matching how every other real caller in this codebase already builds a `join_key` from `players_dim`; check `players_dim`'s real column name for the player's full name in `ids/mapping.py` before wiring this — it is `full_name` in every other real call site already read in this plan's research, e.g. `schedule_grid_page.py`'s own join.)
 
 Add a new `rankings_app`:
 
@@ -2388,7 +2390,9 @@ def rankings_ros_command(
         raise typer.Exit(code=1)
     rosters = json.loads(sleeper.fetch_rosters(league_config.league_id, offline=True, settings=settings).read_text())
     rostered_ids = waivers.rostered_sleeper_ids(rosters)
-    eligible_positions = ids_mapping.league_relevant_positions(league_format)
+    # league_relevant_positions takes the real LeagueConfig (needs .league_cache/
+    # .overrides), not LeagueFormat -- confirmed against its real signature.
+    eligible_positions = ids_mapping.league_relevant_positions(league_config)
 
     if projections_ros.filter(pl.col("is_current_week")).is_empty():
         typer.echo(f"{ros_path} has no real current-week row -- was it built for this season?", err=True)
