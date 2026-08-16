@@ -223,3 +223,12 @@ def test_project_week_range_future_week_uses_shape_not_project_week(monkeypatch)
     assert set(future_rows["week"].to_list()) == {6, 7}
     # season_consensus_ros_points = 150 - 50 = 100, split across weeks 6/7
     assert future_rows["mean"].sum() == pytest.approx(100.0, rel=0.01)
+    # This fixture's `features`/`b3_historical` carry zero real historical
+    # rows, so `empirical_error_quantiles` has no recorded error for WR at
+    # any tau. `apply_empirical_error_quantiles` must produce an honest
+    # null in that case, not a fabricated zero-width interval collapsed
+    # onto `mean` -- the same "never guess, leave it null" convention
+    # `predict.project_week`'s own current-week path already relies on by
+    # calling the identical function directly.
+    for column in ("q10", "q25", "q50", "q75", "q90"):
+        assert future_rows[column].is_null().all(), f"{column} should be null, not a guessed offset"

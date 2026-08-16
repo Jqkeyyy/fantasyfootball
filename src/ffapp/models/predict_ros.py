@@ -228,10 +228,23 @@ def project_week_range(
             dpa_groups,
         )
         allocated = allocated.join(weeks_with_opponents, on="week", how="left")
+        # `position` is attached before the quantile loop so
+        # `apply_empirical_error_quantiles` (the same real function
+        # `predict.project_week`'s own current-week path already calls
+        # directly) can be reused as-is, rather than reimplementing its
+        # offset-lookup-and-clip logic inline. That reimplementation
+        # previously defaulted a missing historical-error offset to
+        # `0.0` (a fabricated zero-width interval); the real function
+        # defaults to `None` and lets it propagate to an honest null --
+        # this project's established "never guess, leave it null"
+        # convention (CLAUDE.md rule 4, applied here to missing-data
+        # rather than a dropped join row).
+        allocated = allocated.with_columns(pl.lit(row["position"]).alias("position"))
         for tau, column_name in _Q_COLUMN_NAMES.items():
-            offset = error_quantiles.get(row["position"], {}).get(tau, 0.0)
             allocated = allocated.with_columns(
-                (pl.col("mean") + offset).clip(lower_bound=0.0).alias(column_name)
+                baselines.apply_empirical_error_quantiles(
+                    allocated["mean"], allocated["position"], error_quantiles, tau
+                ).alias(column_name)
             )
         future_frames.append(
             allocated.with_columns(
