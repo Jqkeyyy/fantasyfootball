@@ -1,0 +1,10 @@
+recovery_prob:
+  QB: 0.259
+  RB: 0.4761
+  TE: 0.4722
+  WR: 0.5027
+within_player_week_correlation:
+  QB: 0.3446
+  RB: 0.3972
+  TE: 0.3512
+  WR: 0.3803

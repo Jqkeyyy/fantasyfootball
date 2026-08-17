@@ -589,3 +589,258 @@ Places where the spec/addenda were silent, ambiguous, or (in one case) internall
 - **`nflverse`'s raw `team_stats`/`player_stats` tables carry real NFL postseason rows (`season_type == "POST"`, weeks 19-22) alongside the regular season, and `scoring.stats.build_dst_stat_frame`/`build_player_stat_frame` don't filter them out on their own.** No fantasy league here plays through the postseason (`tools.sos` already established this exact `REG`-only scoping precedent) — any new code building a real historical points table from these two tables directly (rather than via an already-`REG`-scoped interim table) needs its own `season_type == "REG"` filter before joining, or postseason games quietly inflate season totals. Confirmed live: an early, unfiltered version of `tools.streaming`'s DST/K streaming-replacement check overstated both positions' real streaming totals by including 4 extra playoff weeks' worth of points.
 - **A `Write` call on a file that already exists but was never `Read` this session can silently clobber it without the tool's own "must Read first" safety check firing** — confirmed live: creating `tests/test_features_build.py` for task 1.9's new tests overwrote task 1.5's own pre-existing 7 tests (`LeakageError`/`assert_training_lag`/`assert_inference_availability`, committed in `13fe0f6`) without any warning, because that specific file had never been `Read` earlier in *this* session even though it existed in git history. Caught immediately by the resulting `ImportError` (the new file imported `LeakageError` from the wrong module) rather than silently losing the old tests — recovered the original content via `git show 13fe0f6:tests/test_features_build.py` and merged both sets of tests into one file. **Worth remembering: before using `Write` on any path that might already exist and hasn't been `Read` this session, check `git log --oneline -- <path>` first, especially for a filename that's a natural, obvious choice for new work in an area another task already touched (`build.py`/`test_..._build.py` is exactly this kind of collision-prone name).**
 - **A commit can land real, substantial work under an accidental one-character commit message (`"g"`), with no corresponding `TASKS.md`/`HANDOFF.md` update, if a session ends abruptly mid-commit.** Found at the start of a later session on a different machine: `git log` showed the tip commit's message was just `"g"`, and diffing it revealed it wired `lineup_regret` into `evaluation/metrics.py` (task 1.13's deferred piece) and extended the `evaluate` CLI with real fitted-model wiring (most of task 1.17) — genuine, tested, passing work, just never reflected in either tracking doc. Caught by the human noticing the doc/reality mismatch and asking directly, not detected automatically. **Worth checking `git log -1`'s actual commit message and diff against what `TASKS.md`/`HANDOFF.md` claim is the current state at the start of any session that resumes someone else's (or a crashed prior) work, rather than trusting the docs' own narrative at face value.**
+
+## 2026-08-16 (later) — SPEC-ADDENDUM-04.md §D.1 amended: horizon split for the ROS pipeline
+
+§D.1 as written assumes per-week projections are obtainable for every future week. They
+aren't: FantasyPros' weekly archive (`ingest.rankings.FP_WEEKLY_ARCHIVE_PATH`,
+`fp_latest_weekly.csv`) publishes only the *current* week's consensus — there is no
+future-week weekly file to fetch, live or historical. Verified by re-reading
+`normalize_fp_weekly`/`fetch_fp_weekly_snapshot`: every real row this project has ever
+pulled from that archive is tagged with the (season, week) it was *selected for* by
+`select_commit_before`, not a week the source itself published multiple horizons for.
+
+Implementation decision, made before building task 1.21: split the ROS horizon into two
+regimes rather than trying to force weekly consensus onto weeks it was never published for.
+
+- **Current week** (the anchor week the pipeline is run for): unchanged. Real weekly
+  `consensus_b3` (`models.baselines.fetch_b3_for_week`) plus the already-shipped
+  calibrated empirical spread (`models.baselines.empirical_error_quantiles`). No change to
+  `models/predict.py::project_week`.
+- **Future weeks** (anchor+1 through the horizon's `through_week`): the six season-long
+  preseason-style sources (ESPN/CBS/FantasySharks/FFToday/FootballGuys/DraftSharks — the
+  same seven-minus-FantasyPros set `tools.prediction_log` already fetches weekly and
+  correctly separates from the one real weekly source) are re-fetched *live, this week*,
+  resolved to a real remaining-season value per `check_sources`' own already-shipped
+  full-season-vs-ROS trend detection (declining materially => already a forward signal;
+  flat/insufficient data => full-season, subtract real actuals-to-date — the safer default
+  either way, logged per source), then aggregated via the same trimmed-mean
+  `projections.aggregate.aggregate_projections` the draft board already uses. This one
+  number is the real *level* for a player's entire remaining season.
+- **Shape:** the season-long level is allocated across the player's own real remaining
+  weeks (byes excluded entirely) proportional to each week's real opponent matchup quality
+  (`defense_position_allowed`'s own already-validated, already-walk-forward-safe
+  `adj_epa_allowed`, task 1.8), frozen at whatever is known as of the anchor week — never a
+  future week's own rating, which doesn't exist yet regardless. Availability/injury is
+  deliberately NOT baked into the shape (that would double-count against the aggregation
+  stage's own `p_play[w]` multiplier) — the shape answers "if this player plays a full
+  week w, how much of their remaining-season value lands in that week," not "will they
+  play."
+- **ROS aggregate:** Monte Carlo over the future-week distributions (empirical-error-
+  quantile spread recentered on each week's shaped mean, same already-validated mechanism
+  `consensus_b3` uses for the current week) plus the current week's own real distribution,
+  combined with within-player week-to-week correlation (new, `sim/persistence.py`) and
+  task 2.2's existing cross-player correlation, gated by task 2.3/2.4's persistent-duration
+  injury sampling.
+
+"Consensus supplies the level; the pipeline supplies the shape" is the one-line summary.
+This is a real, load-bearing implementation decision, not an incidental default — it
+determines what "future week projection" even means in this pipeline, since no source
+publishes one directly. Full task breakdown: `docs/superpowers/plans/2026-08-16-ros-rankings-pipeline.md`.
+
+## 2026-08-16 (later still) — Task 5: real ROS calibration constants materialized
+
+`notebooks/estimate_ros_calibration.py` (new, real, permanent — same status as
+`materialize_b3_historical.py`) run for real against `data/features/player_week_features.parquet`
+(94,422 rows) and the real raw nflverse rosters table
+(`data/raw/nflverse/rosters_2015-2025.parquet`, via `ingest.nflverse.fetch_rosters(...,
+offline=True)`). `config/ros_calibration.yml` overwritten with real numbers, replacing Task 2's
+`{}`/`{}` placeholder. Real stdout:
+
+```
+Real within-player week-to-week correlation (ICC), by position:
+  QB: rho=0.3446  (10-week season total variance ratio vs independent: 4.101x)
+  RB: rho=0.3972  (10-week season total variance ratio vs independent: 4.575x)
+  TE: rho=0.3512  (10-week season total variance ratio vs independent: 4.161x)
+  WR: rho=0.3803  (10-week season total variance ratio vs independent: 4.422x)
+
+Real injury-duration recovery_prob, by position (1 / mean real run length):
+  QB: recovery_prob=0.2590  (mean real duration 3.86 weeks)
+  RB: recovery_prob=0.4761  (mean real duration 2.10 weeks)
+  TE: recovery_prob=0.4722  (mean real duration 2.12 weeks)
+  WR: recovery_prob=0.5027  (mean real duration 1.99 weeks)
+```
+
+**Real bug found against real data, worked around in the new script (not in `sim.persistence`,
+out of Task 5's own scope to fix at the source):** `persistence.estimate_within_player_correlation`'s
+own docstring and its own test fixture (`tests/test_sim_persistence.py`) both assume the input
+frame carries a `season_type` column. The real, committed `features/player_week_features.parquet`
+does not have one — confirmed live (no `season_type` in its 88-column real schema, and its real
+`week` values run 1-22, matching `tools.sos`'s own docstring that this table carries real
+postseason rows too). `season_type` is a real attribute of `(season, week)` alone (confirmed live:
+every real `(season, week)` pair in `interim/schedule.parquet` maps to exactly one `season_type`),
+so the script joins it in from `interim/schedule.parquet` before calling the estimator — supplying
+the documented input contract, not changing the estimator's own logic. Worth a follow-up look at
+whether `sim.persistence`'s own docstring/contract should be updated to say explicitly where
+`season_type` is expected to come from, since the real production table it's designed to consume
+doesn't carry it natively.
+
+Also confirms the correction note dispatched with this task: the plan's original text
+(`data/interim/rosters.parquet`) was wrong — no such file exists or ever has; the real path is
+`ingest.nflverse.fetch_rosters(seasons, offline=True, settings=settings)`, cached at
+`data/raw/nflverse/rosters_2015-2025.parquet`.
+
+## 2026-08-16 (later still) — Task 13: real end-to-end verification, close-out, three more real bugs found live
+
+Closes out the 13-task ROS rankings pipeline plan (`.superpowers/sdd/2026-08-16-ros-rankings-pipeline/`).
+Design decisions (correlation estimator, shape-allocation "consensus supplies the level, the
+pipeline supplies the shape") are already recorded in Task 5's own entry and the §D.1 amendment
+entry above — not repeated here. Two documented approximations this task's own brief asked to be
+given a permanent record, both already written into the code's own docstrings but not yet
+cross-referenced from this file:
+
+- **Within-week correlation dilution** (`sim/persistence.py`'s own module docstring). The
+  single-factor random-intercept construction that gives a player's weeks their real `rho`
+  correlation scales that week's idiosyncratic (cross-player-correlated) component by
+  `sqrt(1 - rho)` before applying `sim.week`'s own cross-player correlation matrix to it — so the
+  REALIZED cross-player correlation within one simulated week is diluted by
+  `sqrt((1-rho_i)(1-rho_j))` relative to `CorrelationSettings`'s configured constants (calibrated
+  assuming full weight on the correlated component). Not corrected for — `rho` values are modest
+  (Task 5's own real numbers, 0.34-0.40), and a fully joint player×week covariance model would be
+  a real rewrite for an unclear accuracy gain. A documented simplification, not a silent one.
+- **Injury duration measured in real consecutive gameday-roster rows, not calendar weeks**
+  (`sim/injury.py::estimate_recovery_prob`'s own docstring). A real bye week has no row at all in
+  `build_hazard_grid`'s own output, so a "run" of missed weeks is counted in consecutive real rows,
+  matching exactly how `sim.season.simulate_availability`'s own `remaining_weeks` concept already
+  counts decision points — not raw week-number arithmetic, which would silently conflate a bye week
+  with an extra week of real injury absence. This project has no per-team bye-aware duration model
+  anywhere yet; a documented simplification, not a guess.
+
+**Two real bugs from Task 9/Task 10's own final review, found and fixed before this task started,
+given a permanent record here since neither had one yet:**
+
+1. **`tools.ros_aggregate.aggregate_ros` double-applied `p_active_now` to the current/anchor week**
+   (`3846f7b`). `p_active_now` is the same Part-A availability model (`models.availability
+   .predict_p_active`) already baked into the anchor week's own unconditional consensus mean
+   (`models.predict.project_week`'s own docstring is explicit about this) — multiplying it in again
+   at the aggregation stage double-counted the same playing-time signal for the one week it doesn't
+   apply to. Fixed with a per-week multiplier (`p_active_by_week`) that's `1.0` for the current week
+   (keyed off Task 8's own `is_current_week` flag) and the real `p_active` array for every future
+   week, whose `mean` comes from `models.ros_shape` and never bakes in availability. The
+   hazard-driven `available` mask (`p_miss_now` via `simulate_availability`) is a genuinely
+   different, multi-week-persistent signal with no B3 equivalent, and is correctly applied to every
+   week including the current one, unchanged.
+2. **`tools.ros_rankings.current_free_agent_projections` silently dropped `p10/p50/p90/
+   expected_games/playoff_weeks_value`** (`3d6e4f4`) — its `.select("player_id", "position",
+   "ros_points")` hardcoded exactly the three columns `aggregate_ros` produced when this function
+   was first written, and didn't grow when `aggregate_ros` grew a real quantile spread. Fixed to
+   preserve every real column `ros_points_table` carries (`extra_columns = [c for c in
+   ros_points_table.columns if c != "player_id"]`), not a hardcoded subset — the same "don't
+   silently drop what a join partner carries" lesson CLAUDE.md rule 4 names for row drops, applied
+   here to a column drop instead.
+
+**Step 1: real end-to-end run, both real leagues, season 2025 weeks 10-17.** `ffapp project
+--season 2025 --from-week 10 --through-week 17 --league <slug> --no-offline` then `ffapp rankings
+ros --league <slug>`.
+
+- `rogan-radinator-league` (10-team, real `playoff_week_start=15`): `projections_ros.parquet` —
+  5242 real rows, all 8 weeks (10-17) present, 0 nulls in `as_of_utc`. `rankings ros` — 622 real
+  free-agent players. Rank 1: RB `00-0041027`, `ros_points=224.71`, `vor_ros=185.24`,
+  `expected_games=8.0`, `playoff_weeks_value=98.68` (a real, separate, smaller column than
+  `ros_points`, as required). A second consecutive real run showed real non-null `rank_change`
+  movement (e.g. +1/-1 at several ranks 10-20) — proves the `latest.parquet` diff mechanism against
+  two real runs, not just the fixture's "first run is null" case.
+- `bdff-chopped` (18-team, real `playoff_week_start=0`, per this task's own correction note not yet
+  configured on Sleeper for the 2026 season): same real 8-week/5242-row coverage. `rankings ros` —
+  766 real free-agent players (a materially larger pool than the 10-team league, as expected — more
+  real players are rostered elsewhere in an 18-team league). Rank 1: QB `00-0036442`,
+  `vor_ros=203.41`. `playoff_weeks_value=0.0` for every real row — **not a bug**: `tools.sos
+  .playoff_weeks`'s own docstring defines `playoff_week_start <= 0` as an honestly empty
+  playoff-week list, and this league's real config genuinely has it at `0`.
+- **`vor_ros` confirmed materially different by league format for the identical real player** (this
+  task's own required check): `00-0041027` (RB) scored `vor_ros=185.24` (rank 1) in the 10-team
+  league vs `vor_ros=165.93` (rank 2) in the 18-team league — different replacement levels/
+  free-agent pools from `LeagueFormat`, not a fixed-point bug.
+
+**Three more real bugs found live during this task's own e2e run against real data, none caught by
+any unit test (each test's own fixture happened to match the pre-fix behaviour), all fixed with
+real/updated tests, full suite green afterward:**
+
+1. **`cli.py`'s `rankings_ros_command` read the wrong injuries table.** It loaded
+   `interim/injuries.parquet` (already renamed `gsis_id` → `player_id` by
+   `ingest.nflverse.normalize_injuries`, task 1.4) into `sim.injury.build_hazard_features`, which
+   was deliberately built (task 2.3) to consume the RAW nflverse schema, still `gsis_id` — the exact
+   same raw-table pattern already used two lines below for `rosters_table`/`snap_counts` in the same
+   function. Real error: `ColumnNotFoundError: unable to find column "gsis_id"`. Fixed to call
+   `nflverse.fetch_injuries(train_season_range, offline=True, settings=settings)` like its
+   neighbours. No test caught it because `tests/test_cli_rankings.py` mocks
+   `injury.build_hazard_features` out entirely — its own fixture for `interim/injuries.parquet` used
+   the wrong (post-normalisation) schema too, matching the bug rather than the callee's real
+   contract. Added a real mock for `nflverse.fetch_injuries` to that test file, matching the sibling
+   `fetch_rosters`/`fetch_snap_counts` mocks already there.
+2. **`sim.injury.fit_hazard_model` crashed on real data: `ValueError: Input X contains NaN`.**
+   157 of 96,081 real 2015-2025 hazard-grid rows have a null `age` (a real missing nflverse
+   `birth_date`, or a roster week with no matching `schedule` row) — `missed_prior_two_seasons`/
+   `weeks_since_return`/`snap_pct_trend` are each already null-safe by construction, but `age`
+   wasn't, and scikit-learn's `LogisticRegression` refuses NaN input natively. Fixed with
+   `SimpleImputer(strategy="median")` ahead of `StandardScaler` in the numeric `ColumnTransformer`
+   branch (fit on train, applied identically at predict time via the pipeline) — preserves
+   `predict_p_miss`'s one-row-in/one-row-out contract rather than silently shrinking its output.
+3. **The most consequential one: a null `mean`/quantile grid silently corrupted an entire player's
+   season total, and the corrupted players sorted to the very TOP of the board.**
+   `models.predict_ros.project_week_range` (tasks 7/8, already committed and correctly documented)
+   deliberately leaves a real `(player, week)`'s `mean`/quantile grid null when no empirical
+   error-quantile bucket exists yet for that position/tau — that module's own comment names this
+   "never guess, leave it null," CLAUDE.md rule 4's own convention applied to missing data. But
+   `tools.ros_aggregate.aggregate_ros` (task 9) built every week's `PlayerMarginal`s from
+   `projections_ros` unconditionally, and summing one `NaN`-containing week across the season turned
+   the player's *entire* `ros_points`/`vor_ros` to `NaN` — and polars/pandas both sort `NaN` before
+   real numbers by default, so `tools.ros_rankings.build_ros_board`'s rank assignment put these
+   players at ranks 1 through 49, ahead of every real, well-formed projection. Confirmed live before
+   the fix: 49 of 622 real `rogan-radinator-league` players, every one with `vor_ros=NaN`, occupied
+   the top 49 ranks; the first real player with an actual `vor_ros` value (204.6) sat at rank 50.
+   Fixed by excluding a null-`mean` `(player, week)` row from that week's own marginals in
+   `aggregate_ros`, rather than fabricating a specific point value for it (the "fabricated
+   zero-width interval" trap `project_week_range`'s own comment already named and avoided upstream)
+   — that player's `totals` array simply keeps its already-zero-initialised default for that one
+   week, the same numeric treatment a bye/unavailable week already gets elsewhere in the identical
+   aggregation; every other real week for that player is untouched.
+
+**Fix-round correction, same task, found by independent review (a real, quieter residual defect in
+bug 3's own fix, plus a real test-coverage gap):** excluding a null-`mean` week from `totals`
+correctly zeroed its points contribution, but `expected_games` was still computed as
+`(available * p_active_by_week).sum(axis=1)` over the FULL week list, with no awareness of which
+`(week, player)` cells had actually been excluded — a player missing one week's real projection
+still had that week silently counted as an expected game, understating real points-per-game
+(`ros_points / expected_games`) with no visible flag anywhere. Confirmed with a real repro: a
+fully-populated 3-week player and a one-null-week player both showed `expected_games=3.0` before
+this fix. Fixed with a `has_projection` boolean array, `(n_weeks, n_players)`, set `True` only for
+the exact `(week_idx, global_i)` cells that survive the week loop's own `mean.is_not_null()` filter
+(the same condition the points exclusion already uses) — `expected_games` now multiplies by
+`has_projection[None, :, :]` before summing, touching only the specific excluded cells, not
+`available`/`p_active_by_week` for any cell that does have a real projection. Real values from the
+new regression test (`ros_sims=5000`): the one-null-week player now shows `expected_games=2.0`
+exactly (was `3.0`) and `ros_points≈32.41` (real 2-week sum 15+18=33, matched within Monte Carlo
+noise); the fully-populated 3-week comparison case shows `expected_games=3.0`, `ros_points≈44.40`
+(real sum 45). Also added the regression tests this bug's own original fix shipped without: new
+`test_aggregate_ros_null_week_excluded_from_points_and_expected_games`
+(`tests/test_tools_ros_aggregate.py`, a fresh `_projections_ros_with_null_week()` fixture) and new
+`test_fit_hazard_model_handles_null_age_without_crashing` (`tests/test_sim_injury.py`, reuses the
+existing `_training_rows()` fixture with one row's `age` set null). Did not investigate the real
+49/622 null-bucket rate itself — explicitly out of scope, belongs to task 1.22.
+
+**Step 2: Streamlit page (`6_ROS_Rankings.py`) not verified in a live browser this session.**
+`claude-in-chrome`'s `list_connected_browsers` returned `[]` — the same real, previously-documented
+quirk `HANDOFF.md` §7 already names (needs the real Chrome browser specifically signed in, not this
+machine's apparent default). Per this task's own brief, didn't block on it: confirmed a real
+`HTTP 200` on the page's own route (`/ROS_Rankings`) while `uv run streamlit run
+src/ffapp/app/streamlit_app.py` was live, plus the page's own pure functions carry real test
+coverage (`tests/test_app_ros_rankings_page.py`). Not a substitute for an actual rendered-in-browser
+check — owed next time this machine has Chrome properly signed in, same open item the Model Health
+page already carries from a prior session.
+
+**Step 3: Tuesday runbook.** `SPEC.md` §16.1's own pipeline-schedule table got two new rows per
+`SPEC-ADDENDUM-04.md` §D.4. **Real, small follow-up gap, written honestly rather than invented:**
+neither `ffapp project` nor `ffapp rankings ros` has a real `--all-leagues` flag (only `ffapp cache
+warm --all-leagues`/`ffapp scoring validate --all-leagues` do, confirmed against `cli.py` directly)
+— §D.4's own literal text names that flag for both new rows, but this plan's task 11 never built it.
+The runbook rows use the real, working per-league invocation instead, with an explicit note that the
+two rows must be run once per real league slug by hand until `--all-leagues` exists.
+
+**Step 5: full suite.** `uv run pytest` — **1156 passed** (1154 after the first fix round, +2 real
+regression tests from the fix-round correction above; fixed/added tests: `test_cli_rankings.py`,
+`test_sim_injury.py`, `test_tools_ros_aggregate.py`, no regressions elsewhere). `ruff check`/`ruff
+format --check`/`mypy src/` all clean.
+
+Files touched this task beyond the three bug fixes and their tests: `SPEC.md` (§16.1 runbook rows),
+`TASKS.md` (1.21 checked off), `HANDOFF.md` (session entry), this file.

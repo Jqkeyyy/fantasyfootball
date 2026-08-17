@@ -41,6 +41,7 @@ from __future__ import annotations
 import pandas as pd
 import polars as pl
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -247,9 +248,25 @@ def fit_hazard_model(train_rows: pl.DataFrame) -> Pipeline:
     the whole point of this model (SPEC: consumed downstream by the
     season simulator and the games-played adjustment, both of which need
     real probabilities, not a discrimination-optimised score)."""
+    # Real gap found live during task 13's own e2e verification, not by any unit
+    # test: `age` is null for 157/96081 real 2015-2025 rows (a real nflverse
+    # `birth_date` gap, or a roster week with no matching `schedule` row) --
+    # `missed_prior_two_seasons`/`weeks_since_return`/`snap_pct_trend` are each
+    # already null-safe by construction (explicit `.fill_null`/sentinel above),
+    # but `age` wasn't, and scikit-learn's `LogisticRegression` refuses NaN
+    # input outright. Median imputation (fit on train, applied identically at
+    # predict time via the pipeline) keeps `predict_p_miss`'s one-row-in/
+    # one-row-out contract intact rather than silently shrinking the output --
+    # this project's own CLAUDE.md rule 4 concern (don't silently drop rows).
     preprocessor = ColumnTransformer(
         [
-            ("numeric", StandardScaler(), NUMERIC_COLUMNS),
+            (
+                "numeric",
+                Pipeline(
+                    [("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]
+                ),
+                NUMERIC_COLUMNS,
+            ),
             ("categorical", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL_COLUMNS),
         ]
     )
@@ -281,6 +298,48 @@ def predict_positional_base_rate(rates: dict[str, float], rows: pl.DataFrame) ->
     )
 
 
+def estimate_recovery_prob(hazard_grid: pl.DataFrame) -> dict[str, float]:
+    """Real per-position injury-duration estimate for
+    `sim.season.simulate_availability`'s own geometric-duration
+    persistence mechanic (SPEC §13.4: "sample duration, not independent
+    per-week draws"). A real "run" is a maximal sequence of consecutive
+    real gameday-roster ROWS (`build_hazard_grid`'s own ACT/INA-scoped
+    rows, sorted by week) with `missed=True` for the same player within
+    the same season -- deliberately measured in consecutive real rows,
+    not consecutive calendar week numbers, since a real bye week has no
+    row in this grid at all (see `build_hazard_grid`'s own docstring) and
+    `simulate_availability`'s own `remaining_weeks` concept already
+    counts decision points the same way, not raw week numbers. A
+    documented simplification, not a guess: this project has no per-team
+    bye-aware duration model anywhere yet.
+
+    `recovery_prob[position] = 1 / mean(real_run_length)` -- the method-
+    of-moments estimator for a geometric distribution's own parameter,
+    matching exactly what `simulate_availability`'s
+    `rng.geometric(recovery_prob)` draws (mean = 1/p). A position with
+    zero real recorded miss-runs is omitted, not defaulted -- there is
+    nothing real to estimate from; callers fall back to
+    `config.RosSettings.default_recovery_prob` explicitly.
+    """
+    ordered = hazard_grid.sort(["player_id", "season", "week"])
+    prev_missed = pl.col("missed").shift(1).over(["player_id", "season"]).fill_null(False)
+    run_start = pl.col("missed") & ~prev_missed
+    run_id = run_start.cum_sum().over(["player_id", "season"]).alias("_run_id")
+    with_run_id = ordered.with_columns(run_id)
+    runs = (
+        with_run_id.filter(pl.col("missed"))
+        .group_by(["player_id", "season", "_run_id"])
+        .agg(pl.len().alias("run_length"), pl.col("position").first().alias("position"))
+    )
+    if runs.is_empty():
+        return {}
+    by_position = runs.group_by("position").agg(pl.col("run_length").mean().alias("mean_duration"))
+    return {
+        row["position"]: float(1.0 / row["mean_duration"])
+        for row in by_position.iter_rows(named=True)
+    }
+
+
 __all__ = [
     "CATEGORICAL_COLUMNS",
     "FEATURE_COLUMNS",
@@ -293,6 +352,7 @@ __all__ = [
     "add_weeks_since_return",
     "build_hazard_features",
     "build_hazard_grid",
+    "estimate_recovery_prob",
     "fit_hazard_model",
     "positional_base_rate",
     "predict_p_miss",

@@ -24,6 +24,7 @@ from ffapp.sim.injury import (
     add_snap_pct_trend,
     add_weeks_since_return,
     build_hazard_grid,
+    estimate_recovery_prob,
     fit_hazard_model,
     positional_base_rate,
     predict_p_miss,
@@ -336,6 +337,39 @@ def test_fit_hazard_model_learns_a_real_signal() -> None:
     assert p_risky > p_safe
 
 
+def test_fit_hazard_model_handles_null_age_without_crashing() -> None:
+    """Regression test for a real bug found live during Task 13's own
+    e2e verification: 157 of 96,081 real 2015-2025 hazard-grid rows have
+    a genuinely null `age` (a real missing nflverse `birth_date`, or a
+    roster week with no matching `schedule` row) -- `missed_prior_two_
+    seasons`/`weeks_since_return`/`snap_pct_trend` are each already
+    null-safe by construction, but `age` wasn't, and scikit-learn's
+    `LogisticRegression` refused the real NaN input outright
+    (`ValueError: Input X contains NaN`). Fixed with median imputation
+    ahead of `StandardScaler` in the numeric pipeline -- this locks that
+    fix in with a null `age` row mixed into the existing training fixture,
+    the same fixture shape `test_fit_hazard_model_and_predict_p_miss_
+    returns_one_probability_per_row` already uses."""
+    train = _training_rows().with_columns(
+        pl.when(pl.int_range(pl.len()) == 0)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(pl.col("age"))
+        .alias("age")
+    )
+    assert train["age"].is_null().sum() == 1
+
+    model = fit_hazard_model(train)  # must not raise ValueError: Input X contains NaN
+    predicted = predict_p_miss(model, train)
+
+    assert predicted.len() == train.height
+    assert predicted.min() >= 0.0
+    assert predicted.max() <= 1.0
+    # The null-age row (index 0) specifically still gets a real, valid
+    # probability, not NaN and not a crash.
+    null_row_p_miss = predicted[0]
+    assert 0.0 <= null_row_p_miss <= 1.0
+
+
 def test_positional_base_rate_and_predict_positional_base_rate() -> None:
     train = _training_rows()
 
@@ -349,3 +383,37 @@ def test_positional_base_rate_and_predict_positional_base_rate() -> None:
 def test_feature_columns_matches_what_fit_hazard_model_actually_consumes() -> None:
     train = _training_rows()
     assert set(FEATURE_COLUMNS) <= set(train.columns)
+
+
+# --- estimate_recovery_prob --------------------------------------------------
+
+
+def test_estimate_recovery_prob_from_real_run_lengths() -> None:
+    # player p1: misses weeks 3-5 (a real 3-week run), plays otherwise.
+    # player p2: misses week 2 alone (a real 1-week run).
+    # Both RB. mean run length = (3 + 1) / 2 = 2.0 -> recovery_prob = 0.5.
+    grid = pl.DataFrame(
+        {
+            "player_id": ["p1"] * 6 + ["p2"] * 4,
+            "season": [2023] * 10,
+            "week": [1, 2, 3, 4, 5, 6, 1, 2, 3, 4],
+            "position": ["RB"] * 10,
+            "missed": [False, False, True, True, True, False, False, True, False, False],
+        }
+    )
+    result = estimate_recovery_prob(grid)
+    assert result["RB"] == pytest.approx(0.5)
+
+
+def test_estimate_recovery_prob_omits_position_with_no_real_misses() -> None:
+    grid = pl.DataFrame(
+        {
+            "player_id": ["q1", "q1"],
+            "season": [2023, 2023],
+            "week": [1, 2],
+            "position": ["QB", "QB"],
+            "missed": [False, False],
+        }
+    )
+    result = estimate_recovery_prob(grid)
+    assert "QB" not in result

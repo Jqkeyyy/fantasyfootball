@@ -251,3 +251,23 @@ def test_simulate_season_rejects_a_non_power_of_two_playoff_field() -> None:
             recovery_prob=0.5,
             rng=rng,
         )
+
+
+def test_simulate_availability_accepts_per_player_recovery_prob() -> None:
+    """Two players, very different recovery speeds: p0 recovers almost
+    instantly (recovery_prob=0.99, real duration ~1 week), p1 recovers
+    very slowly (recovery_prob=0.05, real duration ~20 weeks). Once
+    either player takes a real miss, p0's average real absence should be
+    far shorter than p1's -- proves the array is actually applied
+    per-player, not broadcast as one shared scalar."""
+    n_weeks, n_players, season_sims = 30, 2, 4000
+    p_miss = np.full((n_weeks, n_players), 0.5)  # force an early real miss for both
+    recovery_prob = np.array([0.99, 0.05])
+    rng = np.random.default_rng(0)
+
+    available = simulate_availability(
+        p_miss, season_sims=season_sims, recovery_prob=recovery_prob, rng=rng
+    )
+    p0_miss_rate = 1.0 - available[:, :, 0].mean()
+    p1_miss_rate = 1.0 - available[:, :, 1].mean()
+    assert p1_miss_rate > p0_miss_rate + 0.1  # real, not noise-sized difference

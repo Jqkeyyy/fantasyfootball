@@ -1232,8 +1232,12 @@ Design constraints: fast to load (everything precomputed, nothing trained on pag
 | Tue 06:00 | `ffapp ingest all --season 2026` | Post-Monday-night stats, snaps, transactions |
 | Tue 07:00 | `ffapp features build && ffapp train --incremental` | Refresh features, retrain |
 | Tue 07:30 | `ffapp project --week N+1 && ffapp waivers` | Waiver-day projections and bids |
+| Tue 07:30 | `ffapp project --from-week N+1 --through-week 18 --league <slug>` (repeat per real league — see note below) | Rest-of-season projections (`SPEC-ADDENDUM-04.md` §D; task 1.21) |
+| Tue 07:45 | `ffapp rankings ros --league <slug>` (repeat per real league — see note below) | Rest-of-season VOR board + rank-change vs. the prior Tuesday |
 | Thu 09:00 | `ffapp ingest injuries odds && ffapp project --week N` | Final injury report, opening lines |
 | Sun 10:00 | `ffapp ingest injuries && ffapp project --week N && ffapp startsit` | Inactives, final lineup call |
+
+**No real `--all-leagues` flag exists yet on `ffapp project` or `ffapp rankings ros`** (task 1.21, this project's own real CLI, confirmed against `cli.py` — only `ffapp cache warm --all-leagues` and `ffapp scoring validate --all-leagues` have it). `SPEC-ADDENDUM-04.md` §D.4's own literal text names `--all-leagues` for these two rows; until that flag is actually added, the two ROS rows above must be run once per real league slug (`rogan-radinator-league`, `bdff-chopped`) by hand on a real Tuesday, not invoked with a flag that doesn't exist. Tracked as a real, small follow-up gap in `HANDOFF.md`.
 
 Run under local cron initially. Every command is idempotent and logs to `data/outputs/logs/`.
 

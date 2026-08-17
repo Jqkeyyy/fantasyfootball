@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = REPO_ROOT / "config"
 SETTINGS_PATH = CONFIG_DIR / "settings.yml"
 LEAGUES_DIR = CONFIG_DIR / "leagues"
+ROS_CALIBRATION_PATH = CONFIG_DIR / "ros_calibration.yml"
 
 
 class NoPrimaryLeagueError(Exception):
@@ -157,6 +158,23 @@ DEFAULT_WAIVER_SETTINGS = WaiverSettings(playoff_weight=1.5, aggressiveness=1.0)
 
 
 @dataclass(frozen=True)
+class RosSettings:
+    """SPEC-ADDENDUM-04.md §D: rest-of-season horizon and Monte Carlo sizing.
+    `default_recovery_prob` is the fallback used for any position
+    `RosCalibration.recovery_prob` doesn't cover (e.g. before Task 5's
+    materialization script has ever run) -- same magnitude as
+    `sim.season.simulate_availability`'s own pre-existing default, kept
+    in sync deliberately rather than drifting to two different numbers."""
+
+    season_end_week: int = 18
+    ros_sims: int = 3000
+    default_recovery_prob: float = 0.5
+
+
+DEFAULT_ROS_SETTINGS = RosSettings()
+
+
+@dataclass(frozen=True)
 class Settings:
     data_root: Path
     sleeper_username: str | None
@@ -166,6 +184,7 @@ class Settings:
     model: ModelSettings = ModelSettings(min_train_rows=2000, retrain_cadence_weeks=1)
     simulation: SimulationSettings = SimulationSettings(season_sims=3000, week_sims=20000)
     waivers: WaiverSettings = DEFAULT_WAIVER_SETTINGS
+    ros: RosSettings = DEFAULT_ROS_SETTINGS
 
 
 @dataclass(frozen=True)
@@ -266,6 +285,14 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         aggressiveness=float(waivers_raw.get("aggressiveness", dw.aggressiveness)),
     )
 
+    ros_raw = raw.get("ros", {})
+    dr = DEFAULT_ROS_SETTINGS
+    ros = RosSettings(
+        season_end_week=int(ros_raw.get("season_end_week", dr.season_end_week)),
+        ros_sims=int(ros_raw.get("ros_sims", dr.ros_sims)),
+        default_recovery_prob=float(ros_raw.get("default_recovery_prob", dr.default_recovery_prob)),
+    )
+
     return Settings(
         data_root=data_root,
         sleeper_username=sleeper_username,
@@ -275,6 +302,7 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         model=model,
         simulation=simulation,
         waivers=waivers,
+        ros=ros,
     )
 
 
@@ -361,3 +389,29 @@ def write_league_stub(
     }
     path.write_text(yaml.safe_dump(document, sort_keys=False))
     return path
+
+
+@dataclass(frozen=True)
+class RosCalibration:
+    """Empirically-estimated constants from `notebooks/estimate_ros_calibration.py`
+    (Task 5) -- committed to git like `config/id_overrides.csv`, not
+    computed on every run (the estimation reads the full real historical
+    player-week/injury tables, seconds not milliseconds). A position
+    absent from either dict (no real historical data for it, or the
+    script hasn't been re-run yet) is the caller's job to default --
+    `sim.persistence`/`sim.injury`'s own consuming functions do this
+    explicitly rather than this loader guessing a fallback value that
+    isn't its own to pick."""
+
+    within_player_week_correlation: dict[str, float]
+    recovery_prob: dict[str, float]
+
+
+def load_ros_calibration(path: Path = ROS_CALIBRATION_PATH) -> RosCalibration:
+    if not path.exists():
+        return RosCalibration(within_player_week_correlation={}, recovery_prob={})
+    raw = yaml.safe_load(path.read_text()) or {}
+    return RosCalibration(
+        within_player_week_correlation=dict(raw.get("within_player_week_correlation", {})),
+        recovery_prob=dict(raw.get("recovery_prob", {})),
+    )
