@@ -20,7 +20,7 @@ from datetime import datetime
 
 import polars as pl
 
-from ffapp.config import DEFAULT_LIGHTGBM_SETTINGS, LightGBMSettings, Settings
+from ffapp.config import DEFAULT_LIGHTGBM_SETTINGS, DEFAULT_ROS_SETTINGS, LightGBMSettings, Settings
 from ffapp.ids import mapping
 from ffapp.models import baselines, predict, ros_consensus, ros_shape
 
@@ -169,8 +169,27 @@ def project_week_range(
     if current.is_empty():
         return pl.DataFrame(schema=_OUTPUT_SCHEMA)
 
-    future_weeks = list(range(from_week + 1, through_week + 1))
-    if not future_weeks:
+    # Two distinct week ranges, per the final-review fix for the
+    # anchor-week double-count / horizon-squeeze bug (docs/JOURNAL.md's
+    # 2026-08-17 entry): `ros_consensus.resolve_remaining_value`'s level
+    # represents the player's REAL remaining season (from_week through
+    # the real end of the fantasy season), not just the caller's
+    # requested `through_week`. Allocating it across only the requested
+    # window would either double-count the anchor week (the level still
+    # includes it) or front-load weeks beyond `through_week` into the
+    # requested ones. Fix: allocate across the true full remaining season
+    # (`full_future_weeks`), then keep only the caller's requested slice
+    # (`requested_future_weeks`) for this call's own output.
+    season_end_week = (
+        settings.ros.season_end_week
+        if settings is not None
+        else DEFAULT_ROS_SETTINGS.season_end_week
+    )
+    full_future_weeks = list(range(from_week + 1, season_end_week + 1))
+    requested_future_weeks = [
+        w for w in range(from_week + 1, through_week + 1) if w <= season_end_week
+    ]
+    if not full_future_weeks or not requested_future_weeks:
         return current
 
     resolved = ros_consensus.resolve_remaining_value(
@@ -195,6 +214,26 @@ def project_week_range(
             aggregated.select("join_key", "season_consensus_ros_points"), on="join_key", how="inner"
         )
     )
+    # Subtract the anchor week's own already-known value (from `current`,
+    # i.e. this week's real `consensus_b3` mean) before allocating -- the
+    # level above still includes it (it's "full season minus actuals
+    # strictly before from_week", and from_week's own points haven't
+    # happened yet, so they're still baked into every season-long
+    # source). Without this subtraction the anchor week's value is
+    # counted twice: once directly via `current`, once more spread across
+    # future weeks. Floored at 0, matching `resolve_remaining_value`'s
+    # own "a remaining season can't be worth negative points" convention.
+    anchor_mean_by_player = current.select("player_id", pl.col("mean").alias("_anchor_mean"))
+    level_by_player = (
+        level_by_player.join(anchor_mean_by_player, on="player_id", how="left")
+        .with_columns(pl.col("_anchor_mean").fill_null(0.0))
+        .with_columns(
+            (pl.col("season_consensus_ros_points") - pl.col("_anchor_mean"))
+            .clip(lower_bound=0.0)
+            .alias("season_consensus_ros_points")
+        )
+        .drop("_anchor_mean")
+    )
 
     train_rows_with_b3 = features.filter(
         (pl.col("season") < season) | ((pl.col("season") == season) & (pl.col("week") < from_week))
@@ -213,10 +252,11 @@ def project_week_range(
             defense_position_allowed, season=season, as_of_week=from_week, position_group=group
         )
 
+    requested_future_weeks_set = set(requested_future_weeks)
     future_frames: list[pl.DataFrame] = []
     for row in level_by_player.iter_rows(named=True):
         weeks_with_opponents = ros_shape.future_week_opponents(
-            schedule, season=season, team=row["team"], weeks=future_weeks
+            schedule, season=season, team=row["team"], weeks=full_future_weeks
         )
         if weeks_with_opponents.is_empty():
             continue
@@ -227,6 +267,12 @@ def project_week_range(
             weeks_with_opponents,
             dpa_groups,
         )
+        # Shares above were computed over the real full remaining season
+        # (`full_future_weeks`) so per-week amounts are correctly scaled;
+        # only now do we keep the caller's actually-requested slice.
+        allocated = allocated.filter(pl.col("week").is_in(requested_future_weeks_set))
+        if allocated.is_empty():
+            continue
         allocated = allocated.join(weeks_with_opponents, on="week", how="left")
         # `position` is attached before the quantile loop so
         # `apply_empirical_error_quantiles` (the same real function
