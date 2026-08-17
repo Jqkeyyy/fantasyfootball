@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-17
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** pending (about to commit `start-app.bat`/`draft-prep.bat` plus doc updates directly to `main`). `data/` rebuilt and re-verified working offline for the real draft board (`ffapp draft board` — 981 players, live and offline); two launcher scripts added and tested live, including a real Streamlit first-run hang found and fixed. See §3's newest entry for full detail.
+**Last commit:** `54039d6` on `main` (pending push — will confirm sync next). `data/` rebuilt and re-verified working offline for the real draft board (`ffapp draft board` — 981 players, live and offline); two launcher scripts added and tested live, including a real Streamlit first-run hang found and fixed. See §3's newest entry for full detail.
 
 **Task 13 close-out (worktree `worktree-ros-rankings-pipeline`, 2026-08-16, later still):** the 13-task ROS rankings pipeline plan (task 1.21) is done — real end-to-end run against both real leagues, three more real bugs found live and fixed, local commit made (not pushed — see §1's newest entry below for the real commit SHA and every detail).
 
