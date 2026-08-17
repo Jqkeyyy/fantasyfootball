@@ -39,7 +39,8 @@ import polars as pl
 from rapidfuzz import fuzz, process
 
 from ffapp.cache.offline import OfflineCacheMiss
-from ffapp.config import REPO_ROOT, LeagueConfig, Settings
+from ffapp.config import CONFIG_DIR, REPO_ROOT, LeagueConfig, Settings
+from ffapp.draft import keepers as keepers_module
 from ffapp.draft import pick_order
 from ffapp.ids import mapping
 from ffapp.ingest import manual_rankings, nflverse, rankings, sleeper
@@ -162,6 +163,51 @@ class NoRankingsSourcesAvailableError(Exception):
 class NotEnoughPicksError(Exception):
     """This drafter owns fewer than 2 picks this draft -- p_avail_after_next
     and opportunity_cost have no second pick to reference."""
+
+
+def _resolve_keeper_join_keys(
+    with_vor: pl.DataFrame,
+    league: LeagueConfig,
+    settings: Settings,
+    *,
+    season: int,
+    offline: bool | None,
+    rosters_raw: list[dict[str, Any]],
+    players_dim: pl.DataFrame,
+    league_format: LeagueFormat,
+) -> set[str]:
+    """Real keepers for `league`/`season` -- prefers a hand-curated
+    override (`draft.keepers`, same module `draft.mock` uses) over
+    Sleeper's own `roster.keepers` field, real and confirmed buggy for at
+    least one league (the project owner spotted it wrongly flagging
+    Jahmyr Gibbs, never actually kept, 2026-08-16). Falls back to
+    Sleeper's own field only when no override config exists for this
+    league/season -- most leagues won't have one, and this project has no
+    evidence the bug is universal, so silently trusting Sleeper by
+    default (rather than showing zero keepers) is still the safer
+    default absent a reason to distrust it.
+    """
+    config_path = keepers_module.keeper_config_path(
+        CONFIG_DIR, league_slug=league.slug, season=season
+    )
+    if not config_path.exists():
+        keeper_ids = adp_tool.keeper_sleeper_ids(rosters_raw)
+        return adp_tool.keeper_join_keys(keeper_ids, players_dim)
+
+    assert league.league_id is not None
+    users_raw: list[dict[str, Any]] = json.loads(
+        sleeper.fetch_users(league.league_id, offline=offline, settings=settings).read_text()
+    )
+    board_for_matching = with_vor.select(pl.col("player_name").alias("player"), "position", "team")
+    keeper_config = keepers_module.load_keeper_config(config_path)
+    assignments = keepers_module.resolve_keeper_assignments(
+        keeper_config.entries,
+        board_for_matching,
+        users_raw=users_raw,
+        rosters_raw=rosters_raw,
+        n_teams=league_format.n_teams,
+    )
+    return {assignment.join_key for assignment in assignments}
 
 
 @dataclass(frozen=True)
@@ -484,8 +530,16 @@ def build_draft_board(
     rosters_raw: list[dict[str, Any]] = json.loads(
         sleeper.fetch_rosters(league.league_id, offline=offline, settings=settings).read_text()
     )
-    keeper_ids = adp_tool.keeper_sleeper_ids(rosters_raw)
-    keeper_keys = adp_tool.keeper_join_keys(keeper_ids, players_dim)
+    keeper_keys = _resolve_keeper_join_keys(
+        with_vor,
+        league,
+        settings,
+        season=season,
+        offline=offline,
+        rosters_raw=rosters_raw,
+        players_dim=players_dim,
+        league_format=league_format,
+    )
     with_keeper_flag = with_vor.with_columns(
         pl.col("join_key").is_in(list(keeper_keys)).alias("is_keeper")
     )

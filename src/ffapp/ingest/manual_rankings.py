@@ -40,6 +40,7 @@ _FILENAMES = {
     "fantasysharks": "1_081420261202.csv",
     "fftoday": "FFToday_PPR_Cheatsheet.xlsx",
     "footballguys": "FootballGuys_Rankings.xlsx",
+    "sleeper_adp": "ADP_Sleeper.xlsx",
 }
 
 _CANONICAL_SCHEMA = pl.Schema(
@@ -254,6 +255,51 @@ def normalize_manual_fantasysharks(raw: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# --- Sleeper ADP -----------------------------------------------------------------
+#
+# Not part of `MANUAL_RANKING_FETCHERS`/the "Pure Rankings" tab -- this file has
+# no overall `rank`, real ADP instead, and no `Position` column at all (real
+# export gap, confirmed live: the file has `#`/`Player`/`Team`/`Bye`/`Sleeper
+# ADP` only). Used by `draft.mock` as the preferred baseline for bot pick
+# decisions (project owner's own direct request 2026-08-16, over the live
+# `ingest.sleeper.fetch_sleeper_adp` API this project also has) -- joined
+# there by player name alone against the real board (which does carry
+# position), not by the usual `(name, position)` join_key every other
+# source in this codebase uses, since there's no position here to join on.
+# A player with a real Sleeper rank but no real ADP yet (confirmed live:
+# every deep-bench/free-agent row past ~#650 has `Sleeper ADP` null, "-" in
+# the real export) is dropped -- a null ADP contributes nothing a bot's own
+# fallback-to-`overall_rank` behavior doesn't already handle better.
+
+_SLEEPER_ADP_SCHEMA = pl.Schema(
+    {
+        "source": pl.Utf8,
+        "player_name": pl.Utf8,
+        "team": pl.Utf8,
+        "bye_week": pl.Int64,
+        "adp": pl.Float64,
+    }
+)
+
+
+def fetch_manual_sleeper_adp() -> pl.DataFrame:
+    return pl.read_excel(_manual_file_path("sleeper_adp"))
+
+
+def normalize_manual_sleeper_adp(raw: pl.DataFrame) -> pl.DataFrame:
+    return (
+        raw.select(
+            pl.lit("sleeper").alias("source"),
+            pl.col("Player").alias("player_name"),
+            pl.col("Team").alias("team"),
+            pl.col("Bye").alias("bye_week"),
+            pl.col("Sleeper ADP").alias("adp"),
+        )
+        .filter(pl.col("adp").is_not_null())
+        .cast(_SLEEPER_ADP_SCHEMA)
+    )
+
+
 MANUAL_RANKING_FETCHERS = {
     "cbs": (fetch_manual_cbs, normalize_manual_cbs),
     "draftsharks": (fetch_manual_draftsharks, normalize_manual_draftsharks),
@@ -275,6 +321,7 @@ __all__ = [
     "fetch_manual_fantasysharks",
     "fetch_manual_fftoday",
     "fetch_manual_footballguys",
+    "fetch_manual_sleeper_adp",
     "normalize_manual_cbs",
     "normalize_manual_draftsharks",
     "normalize_manual_espn",
@@ -282,4 +329,5 @@ __all__ = [
     "normalize_manual_fantasysharks",
     "normalize_manual_fftoday",
     "normalize_manual_footballguys",
+    "normalize_manual_sleeper_adp",
 ]

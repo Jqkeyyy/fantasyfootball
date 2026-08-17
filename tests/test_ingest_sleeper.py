@@ -269,3 +269,70 @@ def test_fetch_players_offline_without_cache_raises(
 
     with pytest.raises(OfflineCacheMiss):
         sleeper.fetch_players(offline=True, settings=settings)
+
+
+def test_fetch_sleeper_adp_writes_expected_path_and_calls_full_url(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    calls = []
+    monkeypatch.setattr(sleeper, "_get", lambda path: calls.append(path) or [])
+
+    path = sleeper.fetch_sleeper_adp(2026, offline=False, settings=settings)
+
+    assert len(calls) == 1
+    assert calls[0].startswith("https://api.sleeper.com/projections/nfl/2026?")
+    assert "position%5B%5D=RB" in calls[0]
+    assert "order_by=pts_ppr" in calls[0]
+    assert path.name == "adp_2026.json"
+
+
+def test_fetch_sleeper_adp_offline_without_cache_raises(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    monkeypatch.setattr(sleeper, "_get", lambda path: pytest.fail("should not fetch"))
+
+    with pytest.raises(OfflineCacheMiss):
+        sleeper.fetch_sleeper_adp(2026, offline=True, settings=settings)
+
+
+def _sleeper_adp_row(
+    *, first: str, last: str, position: str, team: str | None, adp_ppr: float | None
+) -> dict[str, object]:
+    return {
+        "player": {"first_name": first, "last_name": last, "position": position},
+        "team": team,
+        "stats": {} if adp_ppr is None else {"adp_ppr": adp_ppr},
+    }
+
+
+def test_normalize_sleeper_adp_extracts_adp_ppr_and_maps_def_to_dst() -> None:
+    payload = [
+        _sleeper_adp_row(first="Jahmyr", last="Gibbs", position="RB", team="DET", adp_ppr=1.1),
+        _sleeper_adp_row(
+            first="San Francisco", last="49ers", position="DEF", team="SF", adp_ppr=180.4
+        ),
+    ]
+
+    df = sleeper.normalize_sleeper_adp(payload, season=2026)
+
+    assert df.height == 2
+    gibbs = df.filter(df["player_name"] == "Jahmyr Gibbs").row(0, named=True)
+    assert gibbs["position"] == "RB"
+    assert gibbs["team"] == "DET"
+    assert gibbs["adp"] == 1.1
+    assert gibbs["source"] == "sleeper"
+    defense = df.filter(df["position"] == "DST").row(0, named=True)
+    assert defense["player_name"] == "San Francisco 49ers"
+
+
+def test_normalize_sleeper_adp_skips_rows_missing_adp_or_position() -> None:
+    payload = [
+        _sleeper_adp_row(first="No", last="Adp", position="RB", team="KC", adp_ppr=None),
+        _sleeper_adp_row(first="Bad", last="Position", position="", team="KC", adp_ppr=50.0),
+        _sleeper_adp_row(first="Jahmyr", last="Gibbs", position="RB", team="DET", adp_ppr=1.1),
+    ]
+
+    df = sleeper.normalize_sleeper_adp(payload, season=2026)
+
+    assert df.height == 1
+    assert df["player_name"][0] == "Jahmyr Gibbs"

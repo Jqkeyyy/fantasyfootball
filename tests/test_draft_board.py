@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -5,8 +6,9 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from ffapp.config import CacheSettings, Settings
+from ffapp.config import CacheSettings, LeagueConfig, Settings
 from ffapp.draft import board
+from ffapp.ingest import sleeper
 from ffapp.league_format import LeagueFormat
 
 # --- _streaming_replacement_overrides: board-level position exclusion -------
@@ -486,3 +488,138 @@ def test_current_git_commit_returns_none_if_git_is_unavailable(
     monkeypatch.setattr(subprocess, "run", boom)
 
     assert board._current_git_commit() is None
+
+
+# --- _resolve_keeper_join_keys ------------------------------------------------------
+
+
+def _keeper_test_league() -> LeagueConfig:
+    return LeagueConfig(
+        slug="test-league",
+        display_name="Test League",
+        is_primary=True,
+        league_id="1",
+        season=2026,
+        league_cache={},
+        overrides={},
+    )
+
+
+def _keeper_test_with_vor() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "join_key": ["jahmyr gibbs|RB", "jonathan taylor|RB"],
+            "player_name": ["Jahmyr Gibbs", "Jonathan Taylor"],
+            "position": ["RB", "RB"],
+            "team": ["DET", "IND"],
+        }
+    )
+
+
+def _keeper_test_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        data_root=tmp_path,
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=tmp_path / "raw", offline_default=True, staleness_hours={}, warn_on_stale=True
+        ),
+    )
+
+
+def test_resolve_keeper_join_keys_falls_back_to_sleeper_field_when_no_config_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No override config for this league/season -- real players_dim-based
+    resolution via Sleeper's own (real, if sometimes buggy) `roster.keepers`
+    field, same as before this override existed."""
+    monkeypatch.setattr(board, "CONFIG_DIR", tmp_path / "no-config-here")
+    rosters_raw = [{"roster_id": 101, "owner_id": "u1", "keepers": ["sid-gibbs"]}]
+    players_dim = pl.DataFrame(
+        {
+            "sleeper_id": ["sid-gibbs"],
+            "normalized_name": ["jahmyr gibbs"],
+            "position": ["RB"],
+            "team": ["DET"],
+        }
+    )
+
+    result = board._resolve_keeper_join_keys(
+        _keeper_test_with_vor(),
+        _keeper_test_league(),
+        _keeper_test_settings(tmp_path),
+        season=2026,
+        offline=True,
+        rosters_raw=rosters_raw,
+        players_dim=players_dim,
+        league_format=LeagueFormat(
+            n_teams=10,
+            starters={"RB": 2},
+            flex_slots={},
+            flex_eligible={},
+            bench=6,
+            ir=0,
+            playoff_week_start=15,
+            waiver_budget=None,
+        ),
+    )
+
+    assert result == {"jahmyr gibbs|RB"}
+
+
+def test_resolve_keeper_join_keys_prefers_config_override_and_ignores_sleeper_field(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A real config override for this league/season -- Sleeper's own
+    `roster.keepers` field (wrongly naming Gibbs here, matching the real
+    bug the project owner found live) is ignored entirely; only the
+    config's own real keeper (Jonathan Taylor) is returned."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "keepers_test-league_2026.yml").write_text(
+        "season: 2026\n"
+        "league_slug: test-league\n"
+        "keepers:\n"
+        "  - owner: Maybe17\n"
+        "    player: Jonathan Taylor\n"
+        '    pick: "2.6"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(board, "CONFIG_DIR", config_dir)
+
+    users_path = tmp_path / "users.json"
+    users_path.write_text(json.dumps([{"user_id": "u1", "display_name": "Maybe17"}]))
+    monkeypatch.setattr(sleeper, "fetch_users", lambda *a, **k: users_path)
+
+    # Sleeper's own field wrongly names Gibbs -- this must be ignored.
+    rosters_raw = [{"roster_id": 101, "owner_id": "u1", "keepers": ["sid-gibbs"]}]
+    players_dim = pl.DataFrame(
+        {
+            "sleeper_id": ["sid-gibbs"],
+            "normalized_name": ["jahmyr gibbs"],
+            "position": ["RB"],
+            "team": ["DET"],
+        }
+    )
+
+    result = board._resolve_keeper_join_keys(
+        _keeper_test_with_vor(),
+        _keeper_test_league(),
+        _keeper_test_settings(tmp_path),
+        season=2026,
+        offline=True,
+        rosters_raw=rosters_raw,
+        players_dim=players_dim,
+        league_format=LeagueFormat(
+            n_teams=10,
+            starters={"RB": 2},
+            flex_slots={},
+            flex_eligible={},
+            bench=6,
+            ir=0,
+            playoff_week_start=15,
+            waiver_budget=None,
+        ),
+    )
+
+    assert result == {"jonathan taylor|RB"}
+    assert "jahmyr gibbs|RB" not in result

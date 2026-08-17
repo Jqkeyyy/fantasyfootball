@@ -1,0 +1,45 @@
+# Real 2026 keepers for rogan-radinator-league, hand-entered by the project
+# owner (2026-08-16) because Sleeper's own `roster.keepers` field is known
+# to be wrong for this league (it incorrectly flags Jahmyr Gibbs as a
+# keeper). `pick` is "<round>.<pick_within_round>" exactly as Sleeper's own
+# draft board displays it -- the pick-within-round digit is the
+# CHRONOLOGICAL Nth pick made in that round, not a column/slot index, so
+# converting to an overall pick number is `(round - 1) * n_teams +
+# pick_within_round` regardless of whether the round is odd or even
+# (`draft.keepers.parse_pick_notation`). This is a real, committed
+# config file (like `config/id_overrides.csv`) -- small, hand-curated,
+# corrects a real upstream data bug -- not something to re-derive from
+# Sleeper's own API each session.
+season: 2026
+league_slug: rogan-radinator-league
+keepers:
+  - owner: TheeBeastly
+    player: Tucker Kraft
+    pick: "10.10"
+  - owner: lovedamunch
+    player: Tetairoa McMillan
+    pick: "5.2"
+  - owner: Maybe17
+    player: Jonathan Taylor
+    pick: "2.6"
+  - owner: Sam111777444
+    player: Kimani Vidal
+    pick: "16.7"
+  - owner: gavinreilly
+    player: Bijan Robinson
+    pick: "1.5"
+  - owner: LiambigD
+    player: Omarion Hampton
+    pick: "4.5"
+  - owner: cdalee9
+    player: Cam Skattebo
+    pick: "10.3"
+  - owner: leedog64
+    player: Tyler Warren
+    pick: "10.4"
+  - owner: vicksdogpoundd
+    player: James Cook III
+    pick: "3.9"
+  - owner: ThomasR7
+    player: Chris Olave
+    pick: "8.1"

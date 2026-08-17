@@ -235,3 +235,45 @@ def test_normalize_manual_fantasysharks_joins_first_and_last_name_and_normalises
     assert result.height == 2  # the LB (IDP, not fantasy-relevant) row is dropped
     assert result["player_name"].to_list() == ["Ja'Marr Chase", "Seattle Seahawks"]
     assert result["position"].to_list() == ["WR", "DST"]
+
+
+# --- normalize_manual_sleeper_adp --------------------------------------------------
+
+
+def test_normalize_manual_sleeper_adp_maps_columns() -> None:
+    raw = pl.DataFrame(
+        {
+            "#": [1, 2],
+            "Player": ["Jahmyr Gibbs", "Bijan Robinson"],
+            "Team": ["DET", "ATL"],
+            "Bye": [6, 11],
+            "Sleeper ADP": [1.0, 2.0],
+        }
+    )
+
+    result = mr.normalize_manual_sleeper_adp(raw)
+
+    assert result.columns == ["source", "player_name", "team", "bye_week", "adp"]
+    assert result["player_name"].to_list() == ["Jahmyr Gibbs", "Bijan Robinson"]
+    assert result["adp"].to_list() == [1.0, 2.0]
+    assert result["bye_week"].to_list() == [6, 11]
+    assert result["source"].to_list() == ["sleeper", "sleeper"]
+
+
+def test_normalize_manual_sleeper_adp_drops_rows_with_no_real_adp() -> None:
+    """Real export gap, confirmed live: every deep-bench/free-agent row
+    past ~#650 has a null `Sleeper ADP` (the real file uses "-")."""
+    raw = pl.DataFrame(
+        {
+            "#": [1, 657],
+            "Player": ["Jahmyr Gibbs", "Alex Bachman"],
+            "Team": ["DET", "LV"],
+            "Bye": [6, 13],
+            "Sleeper ADP": [1.0, None],
+        }
+    )
+
+    result = mr.normalize_manual_sleeper_adp(raw)
+
+    assert result.height == 1
+    assert result["player_name"].to_list() == ["Jahmyr Gibbs"]
