@@ -161,6 +161,50 @@ def test_pick_weights_favors_adp_close_to_current_pick() -> None:
     assert by_player["Bijan Robinson"] > by_player["Josh Allen"]
 
 
+def test_pick_weights_at_pick_1_makes_a_real_off_adp_outlier_implausible() -> None:
+    """Regression test, direct request 2026-08-16: a real test draft
+    produced Brock Bowers (a TE, real ADP ~21) going 1st overall, which
+    "would never happen" -- REACH_TEMPERATURE was lowered from 6.0 to 1.5
+    specifically to fix this. A pool row with ADP far from pick 1 (proxy
+    for Bowers) must end up with negligible weight relative to the true
+    consensus #1 pick, not just "less" weight.
+    """
+    board = pl.DataFrame(
+        {
+            "player": ["Consensus #1", "Real Outlier"],
+            "position": ["RB", "TE"],
+            "team": ["DET", "LVR"],
+            "vor": [200.0, 90.0],
+            "tier": [1, 1],
+            "overall_rank": [1, 21],
+            "adp": [1.0, 21.0],
+        }
+    )
+    state = _state(
+        pool=board.with_columns(
+            (pl.col("player") + "|" + pl.col("position")).alias("join_key")
+        ).select(
+            "join_key",
+            pl.col("player").alias("player_name"),
+            "position",
+            "team",
+            "vor",
+            "tier",
+            "overall_rank",
+            "adp",
+        ),
+        pick_no=1,
+    )
+
+    weights = mock.pick_weights(state, 101)
+    rows = state.pool.to_dicts()
+    by_player = dict(zip((r["player_name"] for r in rows), weights, strict=True))
+
+    # >100:1 in favor of the real consensus #1 pick -- the outlier is
+    # mathematically possible but not a realistic sampling outcome.
+    assert by_player["Consensus #1"] / by_player["Real Outlier"] > 100
+
+
 def test_bot_pick_is_deterministic_with_a_seeded_rng() -> None:
     state = _state(pick_no=1)
     rng_a = random.Random(42)

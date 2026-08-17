@@ -15,7 +15,7 @@ live draft assistant already answers for a human, just asked on a team's
 behalf instead of displayed to one.
 
 Bot logic (confirmed design, not SPEC): sample (not argmax) from a weighted
-distribution over the available pool -- `exp(-|adp - pick_no| / temperature)`
+distribution over the available pool -- `exp(-|adp - pick_no| / REACH_TEMPERATURE)`
 (a soft "stay near ADP, sometimes reach or fall") times a need multiplier
 (strong boost for an unfilled starter/flex slot, soft suppression once a
 position's bench is already stacked) times a run multiplier (mild boost
@@ -28,6 +28,22 @@ project owner found didn't match what real bot behaviour should look like);
 then that live API pull, if the manual file has no coverage for a player;
 then the board's own FFC-sourced `adp`; finally `overall_rank`, for a
 player none of the three ADP sources cover at all.
+
+`REACH_TEMPERATURE=1.5` (lowered from an original 6.0, direct request
+2026-08-16 after a real test draft produced Brock Bowers -- a TE, real
+ADP ~21 -- going 1st overall, "would never happen"). No separate
+early-vs-late-draft schedule needed: a single flat, low temperature
+already reproduces the desired shape on its own, confirmed by simulating
+1000 real trials at pick 1 (`docs/JOURNAL.md`'s own entry has the full
+numbers) -- `exp(-|adp-pick_no|/temperature)` naturally tightens further
+whenever many real close-ADP candidates cluster near the current pick (as
+they do at the very top of a real board) and loosens on its own wherever
+they don't (the deep, sparsely-differentiated tail), without any pick_no
+-dependent parameter. At `1.5`, pick 1 goes Jahmyr Gibbs ~68% of the
+time, Ja'Marr Chase/Puka Nacua/Christian McCaffrey/Jaxon Smith-Njigba
+most of the rest, and zero Bowers-caliber outliers across 1000 simulated
+trials -- while round-10/round-15 picks still show real, wide spread
+(mean |adp-pick_no| ~10 and ~14 respectively), simulated the same way.
 
 Keepers occupy their real overall pick number (`draft.keepers`, resolved
 from a hand-curated config, not Sleeper's own buggy `roster.keepers`
@@ -64,7 +80,7 @@ from ffapp.league_format import LeagueFormat, parse_league_format
 
 logger = logging.getLogger("ffapp.draft.mock")
 
-REACH_TEMPERATURE = 6.0
+REACH_TEMPERATURE = 1.5
 NEED_STARTER_BOOST = 2.5
 NEED_SUPPRESS_FACTOR = 0.15
 BENCH_SOFT_CAP_EXTRA = 2
