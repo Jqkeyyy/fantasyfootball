@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-17
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** pending (this session's duplicate-row fix + QB/TE sensitivity + sort options, about to be committed to `main` directly). Real board bug fixed (10 duplicate player-row pairs merged, one a keeper), `QB: -4, TE: -4` replacement-rank offset now the real default, new sort options on the Draft Board page. See §3's newest entry for full detail.
+**Last commit:** `aae8507` on `main` (pending push — will confirm sync next). Real board bug fixed (10 duplicate player-row pairs merged, one a keeper), `QB: -4, TE: -4` replacement-rank offset now the real default, new sort options on the Draft Board page. See §3's newest entry for full detail.
 
 **Task 13 close-out (worktree `worktree-ros-rankings-pipeline`, 2026-08-16, later still):** the 13-task ROS rankings pipeline plan (task 1.21) is done — real end-to-end run against both real leagues, three more real bugs found live and fixed, local commit made (not pushed — see §1's newest entry below for the real commit SHA and every detail).
 
