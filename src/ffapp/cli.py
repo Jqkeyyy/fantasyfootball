@@ -345,6 +345,7 @@ def draft_board_command(
     except (
         draft_board.NoRankingsSourcesAvailableError,
         draft_board.NotEnoughPicksError,
+        draft_board.DuplicatePlayerRowsError,
     ) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

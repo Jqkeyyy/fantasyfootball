@@ -59,6 +59,33 @@ def filter_board(
     return filtered
 
 
+# Real request, 2026-08-17: "raw VOR tells me who's worth most; it
+# doesn't tell me what I have to pay. On the clock I need the blended
+# view." overall_rank is already ascending by construction (rank 1 =
+# best); opportunity_cost/value_vs_adp are raw point/rank values where
+# higher = better value, so they sort descending -- "best first" for all
+# three, not a raw ascending/descending toggle the caller has to reason
+# about per column.
+SORT_OPTIONS: dict[str, tuple[str, bool]] = {
+    "Overall Rank (VOR)": ("overall_rank", False),
+    "Opportunity Cost": ("opportunity_cost", True),
+    "Value vs ADP": ("value_vs_adp", True),
+}
+DEFAULT_SORT_LABEL = "Overall Rank (VOR)"
+
+
+def sort_board(df: pl.DataFrame, *, sort_label: str = DEFAULT_SORT_LABEL) -> pl.DataFrame:
+    """Re-sort `df` by one of `SORT_OPTIONS`'s real board columns, "best
+    first" either way. Nulls always sort last regardless of direction --
+    a player with no real ADP coverage (so no `value_vs_adp`) should sink
+    to the bottom of that sort, never land first by an accident of
+    null-handling. Called before `cap_rows` so a row cap reflects the top
+    N by the CHOSEN sort, not top-N-by-VOR-then-resorted.
+    """
+    column, descending = SORT_OPTIONS[sort_label]
+    return df.sort(column, descending=descending, nulls_last=True)
+
+
 ROW_CAP_THRESHOLD = 1000
 DEFAULT_ROW_CAP = 400
 

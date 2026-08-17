@@ -226,6 +226,78 @@ def test_replacement_level_override_ignores_a_position_this_league_never_starts(
     assert "DST" not in replacement
 
 
+# --- replacement_rank_offset_overrides ----------------------------------------
+
+
+def test_replacement_rank_offset_overrides_shifts_past_the_standard_baseline() -> None:
+    # 15 real QBs, 90.0 down to 76.0 in 1.0 steps -- standard baseline
+    # (10-team, 1 QB starter, no flex) is rank 10 = 81.0 (90 - 9). An
+    # offset of +2 reads rank 12 instead.
+    projections = pl.DataFrame(_players("QB", 15, 90.0))
+    league_format = _format(n_teams=10, starters={"QB": 1})
+
+    overrides = vor.replacement_rank_offset_overrides(
+        projections, league_format, offsets_by_position={"QB": 2}
+    )
+
+    assert overrides["QB"] == pytest.approx(90.0 - 11)  # rank 12
+
+
+def test_replacement_rank_offset_overrides_zero_offset_matches_standard_baseline() -> None:
+    projections = pl.DataFrame(_players("TE", 20, 60.0))
+    league_format = _format(n_teams=10, starters={"TE": 1})
+
+    standard = vor.replacement_level(projections, league_format)
+    offset_zero = vor.replacement_rank_offset_overrides(
+        projections, league_format, offsets_by_position={"TE": 0}
+    )
+
+    assert offset_zero["TE"] == pytest.approx(standard["TE"])
+
+
+def test_replacement_rank_offset_overrides_clamps_at_the_real_pool_size() -> None:
+    # Only 12 real projected TEs, but an offset that would ask for rank 20
+    # (baseline 10 + offset 10) -- clamped to the worst real player, same
+    # defensive convention `replacement_level` itself already uses, not
+    # an IndexError.
+    projections = pl.DataFrame(_players("TE", 12, 60.0))
+    league_format = _format(n_teams=10, starters={"TE": 1})
+
+    overrides = vor.replacement_rank_offset_overrides(
+        projections, league_format, offsets_by_position={"TE": 10}
+    )
+
+    assert overrides["TE"] == pytest.approx(60.0 - 11)  # the 12th (worst) real TE
+
+
+def test_replacement_rank_offset_overrides_omits_a_position_not_named() -> None:
+    projections = pl.DataFrame(_players("QB", 15, 90.0) + _players("TE", 20, 60.0))
+    league_format = _format(n_teams=10, starters={"QB": 1, "TE": 1})
+
+    overrides = vor.replacement_rank_offset_overrides(
+        projections, league_format, offsets_by_position={"TE": 2}
+    )
+
+    assert "TE" in overrides
+    assert "QB" not in overrides
+
+
+def test_replacement_rank_offset_overrides_feeds_directly_into_compute_vor() -> None:
+    # The whole point: this function's own output is a drop-in
+    # `replacement_overrides` for `compute_vor`, the same plumbing DST/K
+    # streaming overrides already use.
+    projections = pl.DataFrame(_players("QB", 15, 90.0))
+    league_format = _format(n_teams=10, starters={"QB": 1})
+
+    offset_overrides = vor.replacement_rank_offset_overrides(
+        projections, league_format, offsets_by_position={"QB": 4}
+    )
+    result = vor.compute_vor(projections, league_format, replacement_overrides=offset_overrides)
+
+    qb1 = result.filter(pl.col("player_name") == "QB1").row(0, named=True)
+    assert qb1["vor"] == pytest.approx(90.0 - (90.0 - 13))  # rank 14 = 90 - 13
+
+
 def test_compute_vor_applies_replacement_overrides() -> None:
     """A streaming-derived replacement level far above the top preseason
     DST total (the real, confirmed case -- see tools.streaming) must drive

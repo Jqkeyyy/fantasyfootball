@@ -153,6 +153,48 @@ def replacement_level(
     return replacement
 
 
+def replacement_rank_offset_overrides(
+    projections: pl.DataFrame,
+    league_format: LeagueFormat,
+    *,
+    offsets_by_position: dict[str, int],
+    points_column: str = DEFAULT_POINTS_COLUMN,
+    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+) -> dict[str, float]:
+    """`{position: replacement_points}` for a configurable replacement-RANK
+    shift, for use as `replacement_level`/`compute_vor`'s own
+    `replacement_overrides` -- the standard fixed-point baseline
+    (`_converge_baseline`, "the Nth-best preseason total") is a reasonable
+    proxy for a position where a real injured starter's backup is
+    genuinely worse (RB/WR), but too shallow for a single-starter position
+    with a genuinely deep real waiver pool (real, direct request 2026-08-17:
+    131 real 2026 QBs, 213 real TEs, for 10 starting slots each in this
+    league -- true replacement is realistically deeper than "the 10th-best
+    projected"). Unlike `tools.streaming`'s empirical weekly-waiver
+    simulation (built for genuinely stream-able DST/K, where the whole
+    premise is starting a DIFFERENT player most weeks), this reads the
+    SAME sorted points pool `replacement_level` already builds, just at a
+    different rank -- QB's real fixed-point baseline (e.g. 10 in a 10-team
+    single-QB league) shifted by `offsets_by_position["QB"]` (e.g. +2 for
+    "QB12"). A position absent from `offsets_by_position`, or with no real
+    projected pool, is simply omitted -- the caller's existing
+    `replacement_overrides` handling already treats a missing key as "use
+    the standard baseline," no special-casing needed here.
+    """
+    points_by_position = _points_by_position(projections, points_column)
+    baseline = _converge_baseline(points_by_position, league_format, max_iterations)
+
+    overrides: dict[str, float] = {}
+    for pos, offset in offsets_by_position.items():
+        pool = points_by_position.get(pos, [])
+        base_rank = baseline.get(pos)
+        if not pool or base_rank is None or base_rank <= 0:
+            continue
+        rank = max(base_rank + offset, 1)
+        overrides[pos] = pool[min(rank, len(pool)) - 1]
+    return overrides
+
+
 def compute_vor(
     projections: pl.DataFrame,
     league_format: LeagueFormat,
@@ -196,5 +238,6 @@ __all__ = [
     "DEFAULT_POINTS_COLUMN",
     "compute_vor",
     "replacement_level",
+    "replacement_rank_offset_overrides",
     "startable_counts",
 ]

@@ -165,6 +165,83 @@ class NotEnoughPicksError(Exception):
     and opportunity_cost have no second pick to reference."""
 
 
+class DuplicatePlayerRowsError(Exception):
+    """A real player likely appears as two separate board rows -- see
+    `find_potential_duplicate_players`."""
+
+
+_DUPLICATE_CHECK_TOP_N = 300
+_DUPLICATE_FIRST_NAME_SIMILARITY_FLOOR = 85
+
+
+def _first_names_look_like_same_person(first_a: str, first_b: str) -> bool:
+    """`first_a`/`first_b` are already `mapping.normalize_name`-normalized
+    single tokens. A real first-name mismatch this project's own
+    normalization (diacritics + the `_NICKNAME_ALIASES` table) doesn't
+    already catch is still either a straightforward prefix relationship
+    (a nickname/short form not yet in that table) or close enough by
+    edit-distance to be worth flagging -- this is deliberately a
+    guardrail for whatever `normalize_name` doesn't yet know about, not
+    a replacement for it."""
+    if first_a == first_b:
+        return True
+    if first_a.startswith(first_b) or first_b.startswith(first_a):
+        return True
+    return fuzz.ratio(first_a, first_b) >= _DUPLICATE_FIRST_NAME_SIMILARITY_FLOOR
+
+
+def find_potential_duplicate_players(
+    board: pl.DataFrame, *, top_n: int = _DUPLICATE_CHECK_TOP_N
+) -> list[tuple[str, str]]:
+    """Post-aggregation guardrail (real gap found live, 2026-08-17): even
+    with diacritic stripping and the nickname alias table upstream
+    (`ids.mapping.normalize_name`), a same real player could still split
+    across two board rows under a name variant neither mechanism knows
+    about yet. Flags any two rows for the SAME `position` whose
+    normalized surname matches exactly and whose first names are either
+    a prefix of one another or similar enough (`_first_names_look_like_
+    same_person`) -- almost always the same real person, not a
+    coincidental same-surname pair (which would also need the same
+    position to trigger a false positive here).
+
+    Scoped to the top `top_n` rows by `overall_rank` -- exactly where a
+    split player materially damages replacement level/VOR for every
+    other player at that position; a same-surname coincidence deep in
+    the pool (two real, different late-round players) isn't worth
+    failing a build over. Returns the real pairs found, empty if none --
+    the caller decides whether that's a hard failure.
+    """
+    scoped = board.filter(pl.col("overall_rank") <= top_n)
+    parsed = []
+    for row in scoped.iter_rows(named=True):
+        tokens = mapping.normalize_name(row["player"]).split()
+        if not tokens:
+            continue
+        parsed.append(
+            {
+                "player": row["player"],
+                "position": row["position"],
+                "first": tokens[0],
+                "surname": tokens[-1],
+            }
+        )
+
+    by_group: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for r in parsed:
+        by_group.setdefault((r["position"], r["surname"]), []).append(r)
+
+    pairs: list[tuple[str, str]] = []
+    for group in by_group.values():
+        if len(group) < 2:
+            continue
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                a, b = group[i], group[j]
+                if _first_names_look_like_same_person(a["first"], b["first"]):
+                    pairs.append((a["player"], b["player"]))
+    return pairs
+
+
 def _resolve_keeper_join_keys(
     with_vor: pl.DataFrame,
     league: LeagueConfig,
@@ -523,8 +600,20 @@ def build_draft_board(
         offline=offline,
         settings=settings,
     )
+    # Real, direct request 2026-08-17: a genuinely different mechanism from
+    # DST/K's streaming overrides above (empirical weekly-waiver simulation
+    # -- doesn't apply to a position you draft and start every week), but
+    # the same plug point (`compute_vor`'s own `replacement_overrides`).
+    # Empty (`{}`) unless `settings.draft.replacement_rank_offsets` names a
+    # position -- current behavior unchanged by default; see that
+    # config field's own docstring for why this is never a guessed default.
+    rank_offset_overrides = vor_tool.replacement_rank_offset_overrides(
+        scoped, league_format, offsets_by_position=dict(settings.draft.replacement_rank_offsets)
+    )
     with_vor = vor_tool.compute_vor(
-        scoped, league_format, replacement_overrides=streaming_overrides
+        scoped,
+        league_format,
+        replacement_overrides={**streaming_overrides, **rank_offset_overrides},
     )
 
     rosters_raw: list[dict[str, Any]] = json.loads(
@@ -573,11 +662,23 @@ def build_draft_board(
 
     with_tiers = tiers_tool.assign_tiers(with_opportunity_cost, method=settings.draft.tier_method)
 
-    return finalize_draft_board(
+    result = finalize_draft_board(
         with_tiers,
         as_of_utc=datetime.now(UTC).isoformat(),
         git_commit=_current_git_commit(),
     )
+    duplicates = find_potential_duplicate_players(result)
+    if duplicates:
+        pair_text = "; ".join(f"{a!r} / {b!r}" for a, b in duplicates)
+        raise DuplicatePlayerRowsError(
+            f"{len(duplicates)} likely duplicate player row pair(s) within the top "
+            f"{_DUPLICATE_CHECK_TOP_N} by overall_rank: {pair_text}. Same real player under "
+            "two name variants splits their projection/sources and shifts replacement level "
+            "for every player at that position -- fix via ids.mapping._NICKNAME_ALIASES "
+            "(a general formal/short pattern), projections.aggregate._PLAYER_NAME_ALIASES "
+            "(a one-off full-name spelling), or config/id_overrides.csv, then rebuild."
+        )
+    return result
 
 
 def _per_source_rank_columns(df: pl.DataFrame) -> list[str]:
@@ -814,6 +915,7 @@ __all__ = [
     "BOARD_COLUMNS",
     "POINT_SOURCE_NAMES",
     "RANK_SOURCE_NAMES",
+    "DuplicatePlayerRowsError",
     "NoRankingsSourcesAvailableError",
     "NotEnoughPicksError",
     "PickContext",
@@ -822,6 +924,7 @@ __all__ = [
     "draft_board_csv_path",
     "fetch_point_sources",
     "fetch_rank_sources",
+    "find_potential_duplicate_players",
     "finalize_draft_board",
     "resolve_pick_context",
     "source_rankings_csv_path",

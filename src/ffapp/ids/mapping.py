@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,37 @@ _NON_POSITION_SLOTS = {"BN", "IR", "TAXI", "FLEX", "SUPER_FLEX", "REC_FLEX"}
 
 _SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 _PUNCT_RE = re.compile(r"[^\w\s]")
+
+# Real, confirmed live: a source's own nickname/short-form spelling for a
+# player's first name normalizes to a different string than another
+# source's formal spelling of the same real person, so the two never share
+# a join_key downstream (`projections.aggregate.add_join_key`,
+# `dedupe_to_one_row_per_name_position`'s own join_key) and the same real
+# player shows up as two separate rows -- confirmed live on the 2026
+# draft board: Cam Skattebo (6 sources, keeper-locked) / Cameron Skattebo
+# (1 source) split a real keeper's own row in two, and 8 more real pairs
+# across RB/QB/TE/WR. Keyed on the FIRST TOKEN only (applied after
+# suffix-stripping/diacritic-stripping below), covering the general
+# formal/short pattern rather than one full-name entry per player -- a
+# genuinely different first name that happens to share this short form for
+# a DIFFERENT real person is an extremely rare real collision (would also
+# need an identical surname AND position), the same trade-off this
+# project already accepts for `_SUFFIXES` stripping (see
+# `dedupe_to_one_row_per_name_position`'s own docstring on the Marvin
+# Harrison Sr./Jr. collision).
+_NICKNAME_ALIASES = {
+    "cam": "cameron",
+    "ken": "kenneth",
+    "kenny": "kenneth",
+    "chris": "christopher",
+    "matt": "matthew",
+    "mitch": "mitchell",
+    "gabe": "gabriel",
+    # Not a general formal/short pattern (unlike the entries above) --
+    # confirmed live as a one-off: Chig Okonkwo (3 sources) / Chigoziem
+    # Okonkwo (4 sources), same real TE.
+    "chig": "chigoziem",
+}
 
 _BASE_COLUMNS = [
     "gsis_id",
@@ -57,12 +89,24 @@ SOURCE_ID_COLUMNS = {
 
 
 def normalize_name(name: str) -> str:
-    """Lowercase, strip punctuation and generational suffixes, collapse whitespace."""
-    lowered = name.lower()
+    """Lowercase, strip diacritics, strip punctuation and generational
+    suffixes, normalize common nickname/formal first-name spellings
+    (`_NICKNAME_ALIASES`), collapse whitespace.
+
+    Diacritic stripping (NFKD decompose + drop combining marks) is real,
+    confirmed-live-necessary: a source spelling a player "Estimé" and
+    another spelling him "Estime" previously normalized to two different
+    strings, splitting one real player into two board rows.
+    """
+    decomposed = unicodedata.normalize("NFKD", name)
+    without_diacritics = "".join(c for c in decomposed if not unicodedata.combining(c))
+    lowered = without_diacritics.lower()
     stripped = _PUNCT_RE.sub("", lowered)
     tokens = stripped.split()
     if tokens and tokens[-1] in _SUFFIXES:
         tokens = tokens[:-1]
+    if tokens:
+        tokens[0] = _NICKNAME_ALIASES.get(tokens[0], tokens[0])
     return " ".join(tokens)
 
 

@@ -72,6 +72,42 @@ def test_filter_board_with_empty_list_returns_everything_not_nothing() -> None:
     assert result.height == 4
 
 
+# --- sort_board ----------------------------------------------------------------
+
+
+def _sortable_board() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "player": ["A", "B", "C", "D"],
+            "overall_rank": [2, 1, 4, 3],
+            "opportunity_cost": [10.0, 30.0, None, 20.0],
+            "value_vs_adp": [-5.0, 15.0, 0.0, None],
+        }
+    )
+
+
+def test_sort_board_default_is_overall_rank_ascending() -> None:
+    result = draft_board_page.sort_board(_sortable_board())
+
+    assert result["player"].to_list() == ["B", "A", "D", "C"]
+
+
+def test_sort_board_opportunity_cost_is_descending_best_first() -> None:
+    result = draft_board_page.sort_board(_sortable_board(), sort_label="Opportunity Cost")
+
+    # Highest opportunity_cost (best value) first; the null (C) sinks last
+    # regardless of the descending direction.
+    assert result["player"].to_list() == ["B", "D", "A", "C"]
+
+
+def test_sort_board_value_vs_adp_is_descending_best_first() -> None:
+    result = draft_board_page.sort_board(_sortable_board(), sort_label="Value vs ADP")
+
+    # Highest value_vs_adp (falls furthest past ADP) first; the null (D)
+    # sinks last regardless of the descending direction.
+    assert result["player"].to_list() == ["B", "C", "A", "D"]
+
+
 # --- cap_rows ----------------------------------------------------------------------
 
 

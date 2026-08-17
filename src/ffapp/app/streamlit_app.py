@@ -32,13 +32,16 @@ import streamlit as st
 
 from ffapp.app.draft_board_page import (
     DEFAULT_ROW_CAP,
+    DEFAULT_SORT_LABEL,
     ROW_CAP_THRESHOLD,
+    SORT_OPTIONS,
     DraftBoardNotBuiltError,
     cap_rows,
     consensus_rankings,
     filter_board,
     load_board,
     single_source_rankings,
+    sort_board,
     source_rank_columns,
     style_tier_breaks,
 )
@@ -98,8 +101,17 @@ with board_tab:
         selected_positions = st.multiselect("Position", options=position_options, default=[])
         tier_options = board["tier"].unique(maintain_order=False).sort().to_list()
         selected_tiers = st.multiselect("Tier", options=tier_options, default=[])
+        st.header("Sort")
+        sort_label = st.selectbox(
+            "Sort by",
+            options=list(SORT_OPTIONS),
+            index=list(SORT_OPTIONS).index(DEFAULT_SORT_LABEL),
+        )
 
-    filtered = filter_board(board, positions=selected_positions, tiers=selected_tiers)
+    filtered = sort_board(
+        filter_board(board, positions=selected_positions, tiers=selected_tiers),
+        sort_label=sort_label,
+    )
 
     show_all = False
     if filtered.height > ROW_CAP_THRESHOLD:
@@ -116,7 +128,7 @@ with board_tab:
     )
     st.caption(
         f"{displayed.height} of {filtered.height} players shown{cap_note} -- "
-        "sorted by VOR descending."
+        f"sorted by {sort_label}."
     )
     st.dataframe(style_tier_breaks(displayed), use_container_width=True, height=700)
 

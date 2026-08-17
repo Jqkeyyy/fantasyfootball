@@ -42,6 +42,21 @@ draft:
   # entirely rather than just ranked low, so they don't clutter the
   # board's default view. See tools/streaming.py and TASKS.md 3.7.
   excluded_positions: ["DST", "K"]
+  # Real sensitivity analysis, 2026-08-17 (docs/JOURNAL.md's matching
+  # entry has the full numbers): the standard QB10/TE10 fixed-point
+  # baseline overvalues McBride/Bowers/Allen relative to expert consensus
+  # and ADP; a shallower replacement rank (higher real replacement points)
+  # moves them back toward consensus without disturbing RB/WR's own VOR
+  # (only the board's ordinal position shifts, mechanically, as QB/TE
+  # rows correctly become less competitive). QB8/TE8 barely moved
+  # anything (QB8/QB10 points are nearly identical); QB6/TE6 is the
+  # chosen setting -- closest to consensus at the top of the board
+  # without materially disturbing RB/WR (max 7-rank shift in the real
+  # top 60, mean ~1). This is a crude proxy for the real streaming
+  # argument, not the principled version -- see JOURNAL for why.
+  replacement_rank_offsets:
+    QB: -4
+    TE: -4
 
 waivers:
   playoff_weight: 1.5

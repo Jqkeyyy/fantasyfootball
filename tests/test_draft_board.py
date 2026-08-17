@@ -347,6 +347,81 @@ def test_finalize_draft_board_column_order_matches_spec_9_7() -> None:
     assert result.columns == board.BOARD_COLUMNS
 
 
+# --- find_potential_duplicate_players -----------------------------------------
+
+
+def _finalized_board(names_positions_ranks: list[tuple[str, str, int]]) -> pl.DataFrame:
+    """A minimal already-finalized-shaped board (just the two columns
+    `find_potential_duplicate_players` reads plus `overall_rank`), rather
+    than routing every test through the full `finalize_draft_board` VOR
+    pipeline -- this function's own real job is name/position matching,
+    not ranking."""
+    return pl.DataFrame(
+        {
+            "player": [n for n, _, _ in names_positions_ranks],
+            "position": [p for _, p, _ in names_positions_ranks],
+            "overall_rank": [r for _, _, r in names_positions_ranks],
+        }
+    )
+
+
+def test_find_potential_duplicate_players_catches_a_prefix_first_name_variant() -> None:
+    # A same-surname, same-position pair whose first names are a prefix
+    # of one another (a nickname/short-form spelling not yet in
+    # normalize_name's own alias table) -- the detector's backstop for
+    # exactly this real, previously-unhandled case class.
+    board_df = _finalized_board(
+        [("Jon Smith", "RB", 50), ("Jonathan Smith", "RB", 60), ("Other Guy", "WR", 10)]
+    )
+    pairs = board.find_potential_duplicate_players(board_df)
+    assert pairs == [("Jon Smith", "Jonathan Smith")]
+
+
+def test_find_potential_duplicate_players_catches_a_fuzzy_first_name_variant() -> None:
+    # A same-surname, same-position pair whose first names are close
+    # enough by edit-distance to be the same real person, but not a
+    # literal prefix of one another (e.g. a real typo/OCR-style
+    # misspelling from a source's own export).
+    board_df = _finalized_board([("Stephen Carter", "WR", 80), ("Stephan Carter", "WR", 90)])
+    pairs = board.find_potential_duplicate_players(board_df)
+    assert pairs == [("Stephen Carter", "Stephan Carter")]
+
+
+def test_find_potential_duplicate_players_does_not_flag_confirmed_non_duplicates() -> None:
+    # Real cases the project owner explicitly confirmed are NOT the same
+    # player -- different surnames or a suffix-driven different person,
+    # despite superficial name similarity.
+    board_df = _finalized_board(
+        [
+            ("Bijan Robinson", "RB", 1),
+            ("Brian Robinson Jr.", "RB", 40),
+            ("Keon Coleman", "WR", 30),
+            ("Kevin Coleman Jr.", "WR", 200),
+            ("Omar Cooper Jr.", "WR", 250),
+            ("Amari Cooper", "WR", 150),
+        ]
+    )
+    assert board.find_potential_duplicate_players(board_df) == []
+
+
+def test_find_potential_duplicate_players_scoped_to_top_n() -> None:
+    # The exact same pair as the prefix test above, but both rows sit
+    # outside the top_n cutoff -- deliberately not failed (see this
+    # function's own docstring: a duplicate this deep in the pool barely
+    # moves replacement level/VOR for anyone else).
+    board_df = _finalized_board([("Jon Smith", "TE", 500), ("Jonathan Smith", "TE", 501)])
+    assert board.find_potential_duplicate_players(board_df, top_n=300) == []
+
+
+def test_find_potential_duplicate_players_requires_same_position() -> None:
+    # Same normalized name, different position -- e.g. a real data error
+    # or a genuinely different real person -- must not be flagged; this
+    # function's whole contract is scoped to "same position" per its own
+    # docstring.
+    board_df = _finalized_board([("Ambiguous Name", "RB", 20), ("Ambiguous Name", "WR", 25)])
+    assert board.find_potential_duplicate_players(board_df) == []
+
+
 def test_finalize_draft_board_carries_is_keeper_through_and_never_excludes_a_keeper() -> None:
     """Keepers stay on the board (a real, later request) -- `is_keeper` is
     purely informational, not a filter, so a keeper still gets ranked

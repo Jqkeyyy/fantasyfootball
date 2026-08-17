@@ -189,17 +189,20 @@ def _canonicalize_dst_player_names(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-# A source's own nickname/given-name spelling for a player normalizes to a
-# different string than the spelling every other source uses, so the two
-# never share a join_key and the same real player shows up twice on the
-# board -- same root cause as the DST spelling problem above, just for an
-# individual player instead of all 32 teams. Confirmed live: one source
-# spells Kenneth Walker III as "Ken Walker III", which strips to "ken
-# walker" -- distinct from every other source's "kenneth walker". Keyed by
-# the alias's own normalized form; add one entry per confirmed case rather
-# than attempting general nickname resolution.
+# `ids.mapping.normalize_name` now handles the general formal/short
+# first-name pattern this dict originally existed for (see its own
+# `_NICKNAME_ALIASES` -- "Ken Walker III" and "Kenneth Walker III" both
+# normalize to "kenneth walker" there, so `add_join_key` already merges
+# them correctly without this dict's help). What THIS dict still controls:
+# which of two now-merged spellings becomes the row's DISPLAYED
+# `player_name` -- without an entry here, `aggregate_projections`'s
+# `.first()` picks whichever source happened to come first in
+# concatenation order (arbitrary but not wrong). Keyed by the alias's own
+# normalized form (post-`normalize_name`, so post-nickname-substitution
+# too); add an entry only when a specific display spelling actually
+# matters, not for every real merge (most don't need one).
 _PLAYER_NAME_ALIASES: dict[str, str] = {
-    "ken walker": "Kenneth Walker III",
+    "kenneth walker": "Kenneth Walker III",
 }
 
 

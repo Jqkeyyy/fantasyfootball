@@ -11,7 +11,7 @@ Layout (SPEC.md §5, superseded by SPEC-ADDENDUM-01.md §A.2 for multi-league):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,18 @@ class DraftSettings:
     tier_method: str
     adp_sd_fallback: float
     excluded_positions: tuple[str, ...] = ()
+    # Real, confirmed live (2026-08-17): the standard fixed-point replacement
+    # level (SPEC S9.4's "Nth-best preseason total") is a defensible proxy at
+    # RB/WR, where an injured starter's real backup is genuinely worse -- it
+    # produced board values (Gibbs #1, Chase #3) matching expert consensus
+    # almost exactly. At single-starter positions with a genuinely deep real
+    # waiver pool (131 real 2026 QBs, 213 real TEs, for 10 starting slots
+    # each in this league), the SAME proxy is too shallow -- see
+    # `tools.vor.replacement_rank_offset_overrides`. Empty by default (no
+    # offset, current behavior unchanged) -- a real per-position judgment
+    # call the project owner makes after reviewing the sensitivity report,
+    # never a guessed default.
+    replacement_rank_offsets: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -227,6 +239,10 @@ def load_settings(path: Path = SETTINGS_PATH, *, root: Path | None = None) -> Se
         tier_method=draft_raw.get("tier_method", "gap"),
         adp_sd_fallback=float(draft_raw.get("adp_sd_fallback", 8.0)),
         excluded_positions=tuple(draft_raw.get("excluded_positions", [])),
+        replacement_rank_offsets={
+            str(pos): int(offset)
+            for pos, offset in draft_raw.get("replacement_rank_offsets", {}).items()
+        },
     )
 
     seasons_raw = raw.get("seasons", {})

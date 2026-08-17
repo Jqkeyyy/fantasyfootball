@@ -44,6 +44,35 @@ OVERRIDES_CSV = FIXTURES / "overrides.csv"
         ("Amon Ra St Brown", "amon ra st brown"),
         ("  Odell   Beckham III ", "odell beckham"),
         ("D'Andre Swift", "dandre swift"),
+        # Real duplicate-board-row cases found live (2026-08-17): a
+        # diacritic mismatch and the common formal/short first-name
+        # pairs, both previously splitting one real player into two
+        # separate join_key groups downstream.
+        ("Audric Estime", "audric estime"),
+        ("Audric Estimé", "audric estime"),
+        ("Cam Skattebo", "cameron skattebo"),
+        ("Cameron Skattebo", "cameron skattebo"),
+        ("Cameron Ward", "cameron ward"),
+        ("Cam Ward", "cameron ward"),
+        ("Kenny Gainwell", "kenneth gainwell"),
+        ("Kenneth Gainwell", "kenneth gainwell"),
+        ("Chig Okonkwo", "chigoziem okonkwo"),
+        ("Chigoziem Okonkwo", "chigoziem okonkwo"),
+        ("Christopher Brooks", "christopher brooks"),
+        ("Chris Brooks", "christopher brooks"),
+        ("Matt Hibner", "matthew hibner"),
+        ("Matthew Hibner", "matthew hibner"),
+        ("Mitch Tinsley", "mitchell tinsley"),
+        ("Mitchell Tinsley", "mitchell tinsley"),
+        ("Gabe Davis", "gabriel davis"),
+        ("Gabriel Davis", "gabriel davis"),
+        ("Mitch Trubisky", "mitchell trubisky"),
+        ("Mitchell Trubisky", "mitchell trubisky"),
+        # Real player this project already handles (Ken Walker III via
+        # projections.aggregate._PLAYER_NAME_ALIASES) -- confirms the
+        # general nickname dict now covers this case too, not just the
+        # existing full-name-level alias.
+        ("Ken Walker III", "kenneth walker"),
     ],
 )
 def test_normalize_name(raw: str, expected: str) -> None:
