@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-16
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** `2243090` on `main` (pending push — will confirm sync next). Task 3.8 (in-season prediction logging, `SPEC-ADDENDUM-05.md` §B) built, evaluated, and verified live against real 2025 week-10 data — 445 rows, 0/7 sources failed, two real bugs found and fixed (a season-vs-weekly units mismatch across six of seven rankings sources, and a doubled GitHub API call that hit a real rate limit). Full account in `docs/JOURNAL.md`'s newest entry.
+**Last commit:** `d058527` on `main` (not yet pushed to origin — confirm before assuming remote is in sync). Mock draft keeper-source fix, manual Sleeper ADP baseline, and reach-temperature retune (see §1's newest entry and `docs/JOURNAL.md`'s matching entry for the real numbers).
 
 **Task 13 close-out (worktree `worktree-ros-rankings-pipeline`, 2026-08-16, later still):** the 13-task ROS rankings pipeline plan (task 1.21) is done — real end-to-end run against both real leagues, three more real bugs found live and fixed, local commit made (not pushed — see §1's newest entry below for the real commit SHA and every detail).
 
