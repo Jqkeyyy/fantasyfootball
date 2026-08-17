@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-08-17
 **Last machine:** `MAYBE` (Windows).
-**Last commit:** pending (this session's fix, about to be committed to `main` directly — no worktree needed, a small already-diagnosed fix). Anchor-week double-count/horizon-squeeze fix for the ROS pipeline, plus the two real acceptance numbers (variance ratio, per-source branch) — see §3's newest entry for full detail, `data/` rebuild needed before the next real run (§6).
+**Last commit:** `5d30beb` on `main` (pending push — will confirm sync next). Anchor-week double-count/horizon-squeeze fix for the ROS pipeline, plus the two real acceptance numbers (variance ratio, per-source branch) — see §3's newest entry for full detail, `data/` rebuild needed before the next real run (§6).
 
 **Task 13 close-out (worktree `worktree-ros-rankings-pipeline`, 2026-08-16, later still):** the 13-task ROS rankings pipeline plan (task 1.21) is done — real end-to-end run against both real leagues, three more real bugs found live and fixed, local commit made (not pushed — see §1's newest entry below for the real commit SHA and every detail).
 
