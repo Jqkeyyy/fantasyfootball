@@ -1,7 +1,7 @@
 # SPEC Addendum 05 — consensus as anchor, and the offseason model plan
 
 **Date:** 2026-08-16
-**Status:** extends `ADDENDUM-04`. Supersedes `SPEC.md` §11.3's framing of the model's job.
+**Status:**http://192.168.50.14:8501/Draft_Mobile extends `ADDENDUM-04`. Supersedes `SPEC.md` §11.3's framing of the model's job.
 
 Tasks 1.15 and 1.20 established that a from-scratch points model does not beat consensus (B3), and that B3 beats B2 robustly. `projection_source: consensus_b3` now ships.
 
