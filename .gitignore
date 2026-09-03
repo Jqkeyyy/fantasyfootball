@@ -39,3 +39,7 @@ htmlcov/
 Thumbs.db
 
 /image.png
+
+# Project docs/notes kept local-only, not shown on GitHub.
+*.md
+docs/
