@@ -979,7 +979,19 @@ def rankings_ros_command(
     # already correctly read the raw table via nflverse.fetch_*, not interim/.
     # Reading interim/injuries.parquet raised a real ColumnNotFoundError on
     # "gsis_id" the first time this command was run against real 2025 data.
-    train_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
+    # Real bug found live running this command for the first time against the
+    # genuinely current season (every prior real run used a past season as a
+    # backtest stand-in while settings.seasons.current already pointed past
+    # it, e.g. resolved_season=2025 with current=2026, which coincidentally
+    # kept the exclusive range below wide enough): an exclusive
+    # `range(train_start, current)` always excludes `current` itself, so
+    # `hazard_grid` (built from `rosters_table` below) has zero rows for any
+    # week of the real live season -- `hazard_target = hazard_grid.filter(
+    # anchor_row)` then has 0 rows and `predict_p_miss` crashes inside
+    # sklearn's `SimpleImputer` ("Found array with 0 sample(s)"). Range must
+    # include `current` so the anchor week's own season has real rows to
+    # filter down to.
+    train_season_range = list(range(settings.seasons.train_start, settings.seasons.current + 1))
     rosters_table = pl.read_parquet(
         nflverse.fetch_rosters(train_season_range, offline=offline, settings=settings)
     )

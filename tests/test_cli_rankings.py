@@ -268,6 +268,42 @@ def test_rankings_ros_threads_offline_flag_through_fetches(
     assert captured_offline == [False]
 
 
+def test_rankings_ros_hazard_fetch_range_includes_the_current_season(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """Real bug found live running this command for the first time against
+    the genuinely current season (`resolved_season == settings.seasons.
+    current`, never exercised before since every prior real run used a past
+    season as a backtest stand-in while `current` already pointed past it):
+    `train_season_range` used to be `range(train_start, current)`, an
+    exclusive bound that always excludes `current` itself. That range feeds
+    `nflverse.fetch_rosters`/`fetch_injuries`/`fetch_snap_counts`, whose
+    output becomes `hazard_grid` -- with `current` excluded, `hazard_grid`
+    has zero rows for any week of the real live season, so `hazard_target
+    = hazard_grid.filter(anchor_row)` is empty and `injury.predict_p_miss`
+    crashes inside sklearn's `SimpleImputer` ("Found array with 0
+    sample(s)"). `build_hazard_features` is mocked out here (same as every
+    other test in this module), so this asserts the real season list
+    reaching the fetch calls directly, not the crash itself."""
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+
+    captured_seasons: list[object] = []
+
+    def _spy_fetch_rosters(seasons: object, **kwargs: object) -> Path:
+        captured_seasons.append(seasons)
+        nflverse_rosters_path = tmp_path / "nflverse_rosters.parquet"
+        pl.DataFrame(schema={"player_id": pl.Utf8}).write_parquet(nflverse_rosters_path)
+        return nflverse_rosters_path
+
+    monkeypatch.setattr(cli.nflverse, "fetch_rosters", _spy_fetch_rosters)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured_seasons) == 1
+    assert fixture_settings.seasons.current in captured_seasons[0]  # type: ignore[operator]
+
+
 def test_rankings_ros_passes_positional_fallback_rates_to_aggregate_ros(
     monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
 ) -> None:
