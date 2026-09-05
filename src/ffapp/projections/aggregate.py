@@ -203,6 +203,7 @@ def _canonicalize_dst_player_names(df: pl.DataFrame) -> pl.DataFrame:
 # matters, not for every real merge (most don't need one).
 _PLAYER_NAME_ALIASES: dict[str, str] = {
     "kenneth walker": "Kenneth Walker III",
+    "joshua palmer": "Josh Palmer",
 }
 
 

@@ -432,6 +432,25 @@ def test_add_join_key_merges_a_known_player_nickname_alias() -> None:
     assert keyed["player_name"].to_list() == ["Kenneth Walker III", "Kenneth Walker III"]
 
 
+def test_add_join_key_merges_josh_and_joshua_palmer() -> None:
+    """Real bug found live rebuilding the BDFF Chopped board (2026-09-05):
+    one source spells the Chargers WR "Josh Palmer", another "Joshua
+    Palmer" -- the two names don't share a common nickname-stripped form,
+    so `join_key` (name+position) split him into two rows, each with
+    partial source coverage, distorting VOR/replacement level at WR."""
+    df = pl.DataFrame(
+        [
+            _source_row(player_name="Josh Palmer", position="WR"),
+            _source_row(player_name="Joshua Palmer", position="WR"),
+        ]
+    )
+
+    keyed = aggregate.add_join_key(df)
+
+    assert keyed["join_key"].n_unique() == 1
+    assert keyed["player_name"].to_list() == ["Josh Palmer", "Josh Palmer"]
+
+
 def test_aggregate_projections_merges_sources_that_spell_a_name_differently() -> None:
     """Real bug found via task 0.14's replay testing: one source spelling a
     player "James Cook" and another "James Cook III" both normalize to the

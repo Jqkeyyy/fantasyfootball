@@ -127,10 +127,13 @@ def build_export_bundle(
         league, settings, season=season, offline=offline
     )
 
-    adp_path = rankings.fetch_adp(
-        season, teams=league_format.n_teams, offline=offline, settings=settings
-    )
-    adp_age = _input_age("adp", adp_path)
+    try:
+        adp_path = rankings.fetch_adp(
+            season, teams=league_format.n_teams, offline=offline, settings=settings
+        )
+        adp_age = _input_age("adp", adp_path)
+    except Exception:
+        adp_age = InputAge(name="adp", fetched_at_utc=None, age_hours=None)
     rankings_ages = _collect_rankings_ages(
         season, league_format.n_teams, offline=offline, settings=settings
     )

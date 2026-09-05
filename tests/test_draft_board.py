@@ -544,6 +544,88 @@ def test_fetch_rank_sources_returns_empty_list_if_every_source_fails(
     assert result == []
 
 
+# --- fetch_adp_source: graceful degradation when the ADP source fails -------
+
+
+def test_fetch_adp_source_returns_real_data_when_the_fetch_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = {
+        "players": [
+            {
+                "name": "Elite RB",
+                "position": "RB",
+                "team": "DET",
+                "adp": 2.0,
+                "stdev": 1.0,
+                "high": 1,
+                "low": 4,
+                "times_drafted": 120,
+                "bye": 6,
+            }
+        ]
+    }
+    adp_path = tmp_path / "adp.json"
+    adp_path.write_text(json.dumps(payload))
+    monkeypatch.setattr(
+        board.rankings, "fetch_adp", lambda season, teams, offline, settings: adp_path
+    )
+
+    result = board.fetch_adp_source(2026, teams=18, offline=True, settings=None)
+
+    assert result.height == 1
+    assert result["adp"].to_list() == [2.0]
+
+
+def test_fetch_adp_source_degrades_to_empty_when_the_source_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(season, teams, offline, settings):
+        raise RuntimeError("400 Client Error: Bad Request")
+
+    monkeypatch.setattr(board.rankings, "fetch_adp", boom)
+
+    result = board.fetch_adp_source(2026, teams=18, offline=True, settings=None)
+
+    assert result.height == 0
+    assert set(result.columns) == {"join_key", *board.adp_tool.ADP_COLUMNS}
+
+
+def test_fetch_adp_source_degrades_to_empty_when_the_source_returns_zero_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    adp_path = tmp_path / "adp.json"
+    adp_path.write_text(json.dumps({"players": []}))
+    monkeypatch.setattr(
+        board.rankings, "fetch_adp", lambda season, teams, offline, settings: adp_path
+    )
+
+    result = board.fetch_adp_source(2026, teams=18, offline=True, settings=None)
+
+    assert result.height == 0
+    assert set(result.columns) == {"join_key", *board.adp_tool.ADP_COLUMNS}
+
+
+def test_fetch_adp_source_empty_result_still_joins_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of degrading instead of raising: a board with no ADP
+    coverage at all must still be joinable/usable downstream, not just a
+    correctly-shaped empty frame in isolation."""
+
+    def boom(season, teams, offline, settings):
+        raise RuntimeError("400 Client Error: Bad Request")
+
+    monkeypatch.setattr(board.rankings, "fetch_adp", boom)
+    empty_adp = board.fetch_adp_source(2026, teams=18, offline=True, settings=None)
+    projections = pl.DataFrame({"join_key": ["elite-rb|rb"], "player": ["Elite RB"]})
+
+    joined = board.adp_tool.join_adp(projections, empty_adp)
+
+    assert joined["adp"].to_list() == [None]
+    assert joined.height == 1
+
+
 # --- _current_git_commit -----------------------------------------------------
 
 

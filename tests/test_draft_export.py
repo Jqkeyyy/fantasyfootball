@@ -121,6 +121,35 @@ def test_build_export_bundle_skips_a_rankings_source_that_fails_to_fetch(
     assert [age.name for age in bundle.rankings_ages] == ["fantasypros"]
 
 
+def test_build_export_bundle_degrades_when_adp_source_fails(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    """A team count the ADP source doesn't support (confirmed live: FFC
+    400s for an 18-team league) must not sink the whole export -- the
+    board itself already degrades gracefully (board.fetch_adp_source);
+    this is the second, separate `fetch_adp` call the export bundle makes
+    just to report the source's own freshness."""
+    monkeypatch.setattr(draft_board, "build_draft_board", lambda league, settings, **kwargs: _BOARD)
+    monkeypatch.setattr(
+        draft_board,
+        "resolve_pick_context",
+        lambda league, settings, **kwargs: draft_board.PickContext(
+            my_roster_id=7, my_slot=3, my_picks=[3, 18]
+        ),
+    )
+
+    def boom(season, teams, offline, settings):
+        raise RuntimeError("400 Client Error: Bad Request")
+
+    monkeypatch.setattr(draft_export.rankings, "fetch_adp", boom)
+    monkeypatch.setattr(draft_export, "_RANKINGS_SOURCE_FETCHERS", {})
+
+    bundle = draft_export.build_export_bundle(_LEAGUE, fixture_settings, season=2026)
+
+    assert bundle.adp_age.name == "adp"
+    assert bundle.adp_age.age_hours is None
+
+
 # --- _input_age ----------------------------------------------------------------
 
 

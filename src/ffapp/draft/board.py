@@ -385,6 +385,35 @@ def fetch_rank_sources(
     return sources
 
 
+def fetch_adp_source(
+    season: int, *, teams: int, offline: bool | None, settings: Settings
+) -> pl.DataFrame:
+    """Fetch consensus ADP (+ spread) from fantasyfootballcalculator, joined
+    to the standard `join_key`. Same per-source graceful degradation as
+    `fetch_point_sources`/`fetch_rank_sources`: a team count the source
+    doesn't support (confirmed live: FFC's API 400s for an 18-team league)
+    or any other fetch failure degrades to an empty ADP table rather than
+    failing the whole board -- `adp_tool.join_adp`'s left join and
+    `adp_tool.p_available`'s own documented "no adp_mean -> certain to be
+    available" fallback already handle a player with no ADP coverage.
+    """
+    empty = pl.DataFrame({"join_key": []}, schema={"join_key": pl.Utf8}).with_columns(
+        [pl.lit(None, dtype=pl.Float64).alias(column) for column in adp_tool.ADP_COLUMNS]
+    )
+    try:
+        adp_raw = json.loads(
+            rankings.fetch_adp(season, teams=teams, offline=offline, settings=settings).read_text()
+        )
+        adp_df = aggregate.add_join_key(rankings.normalize_adp(adp_raw, season=season))
+    except Exception as exc:
+        logger.warning("skipping ADP source (teams=%s): %s", teams, exc)
+        return empty
+    if adp_df.height == 0:
+        logger.warning("skipping ADP source (teams=%s): returned 0 rows", teams)
+        return empty
+    return adp_df
+
+
 def _current_git_commit() -> str | None:
     try:
         result = subprocess.run(
@@ -633,12 +662,9 @@ def build_draft_board(
         pl.col("join_key").is_in(list(keeper_keys)).alias("is_keeper")
     )
 
-    adp_raw = json.loads(
-        rankings.fetch_adp(
-            season, teams=league_format.n_teams, offline=offline, settings=settings
-        ).read_text()
+    adp_df = fetch_adp_source(
+        season, teams=league_format.n_teams, offline=offline, settings=settings
     )
-    adp_df = aggregate.add_join_key(rankings.normalize_adp(adp_raw, season=season))
     with_adp = adp_tool.join_adp(with_keeper_flag, adp_df)
 
     pick_context = resolve_pick_context(league, settings, season=season, offline=offline)
