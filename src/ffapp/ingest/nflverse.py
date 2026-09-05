@@ -36,6 +36,7 @@ from pathlib import Path
 import nflreadpy as nfl
 import polars as pl
 import requests
+from nflreadpy.downloader import get_downloader
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -316,6 +317,46 @@ def fetch_depth_charts(
     )
 
 
+def _load_rosters_weekly_season_gate_safe(season_list: list[int]) -> pl.DataFrame:
+    """`nflreadpy.load_rosters_weekly` gates every season behind its own
+    `get_current_season()` heuristic (the year flips on the Thursday
+    following Labor Day) and raises for a season it doesn't consider
+    "started" yet -- even though the real preseason roster file already
+    exists upstream several days earlier (confirmed live 2026-09-05,
+    `get_current_season()` still returning 2025 with the real 2026 season
+    already underway). Split the request: seasons nflreadpy's own gate
+    accepts go through the normal, fully-supported call; a season it
+    rejects is fetched directly via nflreadpy's own downloader, bypassing
+    only its premature validation, not its actual data. Once the real
+    calendar catches up to nflreadpy's own heuristic (true for every
+    request from ~Sept 10 onward), `gated` is always empty and this is
+    exactly the plain `load_rosters_weekly(seasons=season_list)` call.
+    """
+    current = nfl.get_current_season()
+    accepted = [s for s in season_list if s <= current]
+    gated = [s for s in season_list if s > current]
+    frames: list[pl.DataFrame] = []
+    if accepted:
+        frames.append(nfl.load_rosters_weekly(seasons=accepted))
+    if gated:
+        downloader = get_downloader()
+        for season in gated:
+            logger.warning(
+                "season %s rejected by nflreadpy's own get_current_season() gate "
+                "(currently %s); bypassing via a direct roster_weekly download.",
+                season,
+                current,
+            )
+            frames.append(
+                downloader.download(
+                    "nflverse-data", f"weekly_rosters/roster_weekly_{season}", season=season
+                )
+            )
+    if len(frames) == 1:
+        return frames[0]
+    return pl.concat(frames, how="diagonal_relaxed")
+
+
 def fetch_rosters(
     seasons: int | list[int], *, offline: bool | None = None, settings: Settings | None = None
 ) -> Path:
@@ -339,7 +380,7 @@ def fetch_rosters(
         filename=f"rosters_{label}.parquet",
         call_desc=f"load_rosters_weekly(seasons={season_list})",
         cache_key="nflverse_rosters",
-        load=lambda: nfl.load_rosters_weekly(seasons=season_list),
+        load=lambda: _load_rosters_weekly_season_gate_safe(season_list),
         artifact="rosters",
         params=f"seasons={label}",
         offline=offline,

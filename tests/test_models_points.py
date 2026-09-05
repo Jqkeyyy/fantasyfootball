@@ -216,6 +216,39 @@ def test_predict_points_scores_every_row_regardless_of_its_own_played_flag() -> 
     assert preds[0] is not None
 
 
+# --- to_feature_frame: Boolean columns with nulls must survive the pandas handoff ------
+
+
+def test_to_feature_frame_casts_a_boolean_column_to_float() -> None:
+    """A row whose weather hasn't been fetched yet (a real, expected state
+    -- weather is only fetched within a near-term forecast horizon) has a
+    genuinely null `is_dome`. Real bug found live 2026-09-05 running this
+    against the current season for the first time: a polars Boolean
+    column with any nulls converts via `.to_pandas()` to `object` dtype,
+    which LightGBM rejects outright ("pandas dtypes must be int, float or
+    bool") -- a plain bool dtype can't represent "missing" at all. Casting
+    to Float64 first (True/False/null -> 1.0/0.0/NaN) is what fixes it."""
+    rows = pl.DataFrame(
+        {"is_dome": [True, False, None]}, schema={"is_dome": pl.Boolean}
+    )
+
+    frame = points.to_feature_frame(rows, ["is_dome"])
+
+    assert frame["is_dome"].dtype.kind == "f"
+    assert frame["is_dome"].tolist()[0] == 1.0
+    assert frame["is_dome"].tolist()[1] == 0.0
+    assert frame["is_dome"].isna().tolist()[2]
+
+
+def test_to_feature_frame_leaves_non_boolean_columns_untouched() -> None:
+    rows = pl.DataFrame({"wind_mph": [5.0, None], "report_status": ["Out", None]})
+
+    frame = points.to_feature_frame(rows, ["wind_mph", "report_status"])
+
+    assert frame["wind_mph"].dtype.kind == "f"
+    assert str(frame["report_status"].dtype) == "category"
+
+
 # --- PointsPredictor (evaluation.backtest.Predictor conformance) -----------------------
 
 

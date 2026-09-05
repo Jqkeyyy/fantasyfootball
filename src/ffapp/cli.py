@@ -996,11 +996,20 @@ def rankings_ros_command(
         nflverse.fetch_rosters(train_season_range, offline=offline, settings=settings)
     )
     schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
+    # injuries/snap_counts, unlike rosters, genuinely have no real data for the
+    # live current season yet (confirmed live 2026-09-05: PFR/the official
+    # injury report only start publishing once real games are played, days
+    # into the season at the earliest) -- requesting `current` here would
+    # raise or return nothing useful either way. build_hazard_features joins
+    # both onto `rosters_table`'s own grid (the base table) and is already
+    # null-safe for a row with no covariate match, so scoping this fetch to
+    # real history only costs nothing and avoids that failure mode entirely.
+    covariate_season_range = list(range(settings.seasons.train_start, settings.seasons.current))
     injuries = pl.read_parquet(
-        nflverse.fetch_injuries(train_season_range, offline=offline, settings=settings)
+        nflverse.fetch_injuries(covariate_season_range, offline=offline, settings=settings)
     )
     snap_counts = pl.read_parquet(
-        nflverse.fetch_snap_counts(train_season_range, offline=offline, settings=settings)
+        nflverse.fetch_snap_counts(covariate_season_range, offline=offline, settings=settings)
     )
     # `fetch_player_ids` returns a Path to the raw CSV (`data/raw/nflverse/player_ids.csv`),
     # not parquet -- `mapping.load_crosswalk_base` is the same already-tested loader

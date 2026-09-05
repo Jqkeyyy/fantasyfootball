@@ -288,6 +288,63 @@ def test_fetch_rosters_online_calls_load_rosters_weekly(
     assert json.loads(sidecar_path(path).read_text())["cache_key"] == "nflverse_rosters"
 
 
+def test_fetch_rosters_bypasses_nflreadpys_own_season_gate_for_a_future_season(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    """Real bug found live 2026-09-05: `load_rosters_weekly` raises for a
+    season past nflreadpy's own `get_current_season()` heuristic (it
+    flips on the Thursday following Labor Day), even though the real
+    preseason roster file already exists upstream days earlier. A season
+    the gate accepts should still go through the normal call; a season it
+    rejects should fall back to a direct downloader fetch, and the two
+    results should be concatenated into one table."""
+    accepted_df = pl.DataFrame({"gsis_id": ["1"], "team": ["KC"], "season": [2025]})
+    gated_df = pl.DataFrame({"gsis_id": ["2"], "team": ["DET"], "season": [2026]})
+    captured_accepted_seasons: list[object] = []
+    captured_downloads: list[tuple[str, str, int]] = []
+
+    monkeypatch.setattr(nflverse.nfl, "get_current_season", lambda: 2025)
+
+    def _load_rosters_weekly(seasons: object) -> pl.DataFrame:
+        captured_accepted_seasons.append(seasons)
+        return accepted_df
+
+    monkeypatch.setattr(nflverse.nfl, "load_rosters_weekly", _load_rosters_weekly)
+
+    class _FakeDownloader:
+        def download(self, repo: str, path: str, *, season: int) -> pl.DataFrame:
+            captured_downloads.append((repo, path, season))
+            return gated_df
+
+    monkeypatch.setattr(nflverse, "get_downloader", lambda: _FakeDownloader())
+
+    path = nflverse.fetch_rosters([2025, 2026], offline=False, settings=stats_settings)
+
+    result = pl.read_parquet(path)
+    assert captured_accepted_seasons == [[2025]]
+    assert captured_downloads == [("nflverse-data", "weekly_rosters/roster_weekly_2026", 2026)]
+    assert result.height == 2
+    assert set(result["season"].to_list()) == {2025, 2026}
+
+
+def test_fetch_rosters_takes_the_normal_path_when_every_season_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
+) -> None:
+    fixture_df = pl.DataFrame({"gsis_id": ["1"], "team": ["KC"], "season": [2024]})
+
+    monkeypatch.setattr(nflverse.nfl, "get_current_season", lambda: 2025)
+    monkeypatch.setattr(nflverse.nfl, "load_rosters_weekly", lambda seasons: fixture_df)
+
+    def _boom() -> object:
+        raise AssertionError("get_downloader should not be called when nothing is gated")
+
+    monkeypatch.setattr(nflverse, "get_downloader", _boom)
+
+    path = nflverse.fetch_rosters(2024, offline=False, settings=stats_settings)
+
+    assert pl.read_parquet(path).equals(fixture_df)
+
+
 def test_fetch_injuries_online_calls_load_injuries(
     monkeypatch: pytest.MonkeyPatch, stats_settings: Settings
 ) -> None:

@@ -176,8 +176,28 @@ def monotone_constraints(position: str) -> list[int]:
 
 def to_feature_frame(rows: pl.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Polars -> pandas only at this fit/predict boundary (CLAUDE.md's
-    own convention), same as `models.availability`."""
-    pdf = rows.select(columns).to_pandas()
+    own convention), same as `models.availability`.
+
+    Real bug found live 2026-09-05 running this against the genuinely
+    current season for the first time: `is_dome` (and any other Boolean
+    feature) is null for a row whose game has no weather fetched yet
+    (a real, expected state -- weather is only fetched within a near-term
+    forecast horizon, `notebooks/build_features_pipeline.py`). A polars
+    Boolean column with any nulls converts via `.to_pandas()` to a plain
+    `object` dtype, not a numpy bool array, and LightGBM rejects `object`
+    columns outright ("pandas dtypes must be int, float or bool") -- a
+    plain bool dtype has no way to represent "missing" at all, so object
+    is genuinely the only thing polars can produce here. Casting to
+    Float64 first (True/False/null -> 1.0/0.0/NaN) sidesteps this: NaN is
+    LightGBM's own native missing-value encoding for a numeric feature,
+    so this is a lossless, no-op change whenever every value is already
+    non-null.
+    """
+    selected = rows.select(columns)
+    bool_columns = [name for name, dtype in selected.schema.items() if dtype == pl.Boolean]
+    if bool_columns:
+        selected = selected.with_columns(pl.col(name).cast(pl.Float64) for name in bool_columns)
+    pdf = selected.to_pandas()
     for column in CATEGORICAL_COLUMNS:
         if column in pdf.columns:
             pdf[column] = pdf[column].astype("category")
