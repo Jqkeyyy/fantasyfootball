@@ -42,4 +42,5 @@ Thumbs.db
 
 # Project docs/notes kept local-only, not shown on GitHub.
 *.md
+!README.md
 docs/
