@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "${TAILSCALE_IP}:8501:8501"
+      - "${TAILSCALE_IP:?Set TAILSCALE_IP in .env before starting (see .env.example) - the app must not bind to all interfaces.}:8501:8501"
     env_file:
       - .env
     volumes:
