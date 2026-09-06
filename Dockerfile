@@ -23,5 +23,13 @@ RUN chmod +x weekly-refresh.sh
 RUN mkdir -p /root/.streamlit && printf '[general]\nemail = ""\n' > /root/.streamlit/credentials.toml
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
+# Without this, `uv run` reconciles the venv against the full lockfile
+# (including the dev dependency group) on every invocation -- requiring
+# network access and failing hard with no network, even though the image
+# was already built with `uv sync --locked --no-dev`. This skips that sync
+# and runs directly against the already-built venv (equivalent to `uv run
+# --no-sync` on every invocation of `uv run` in this container).
+ENV UV_NO_SYNC=1
+
 EXPOSE 8501
 CMD ["uv", "run", "streamlit", "run", "src/ffapp/app/streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--server.headless", "true"]
