@@ -1,13 +1,29 @@
 # fantasyfootball weekly automation.
-# Install with: crontab crontab.example
+# Install with: sudo crontab crontab.example
 # (edit the `cd` path first to match where the repo actually lives on
 # this machine, then re-save before installing.)
 #
-# Mirrors weekly-refresh.bat's old Windows Task Scheduler cadence.
-# Minute/hour (08:00) is a reasonable default, not load-bearing -- the
-# scripts themselves resolve the current NFL week live from Sleeper,
-# so running an hour or two later than this won't break anything.
+# Mirrors weekly-refresh.bat's real, previously-verified-working Windows
+# Task Scheduler cadence: Tuesday 07:00, Thursday 09:00, Sunday 10:00,
+# US Central time (see commit 63fd56d). The run time IS load-bearing: the
+# scripts resolve the current NFL week live from Sleeper, so the run time
+# directly determines which week gets operated on and logged. Running too
+# early (e.g. on a UTC host, if these times were misread as UTC) means
+# Sleeper's week hasn't rolled over yet and Monday Night Football's stats
+# haven't landed -- the script would silently overwrite the git-tracked
+# prediction log with a stale/wrong snapshot.
+#
+# CRON_TZ pins these times to US Central regardless of the host's system
+# timezone. This requires a cron implementation that supports per-line/file
+# CRON_TZ (Vixie-cron/cronie); most modern Linux cron daemons do.
+CRON_TZ=America/Chicago
+#
+# Cron runs jobs with a minimal PATH (typically /usr/bin:/bin), which can
+# miss `docker` on systems where it's installed elsewhere (e.g.
+# /usr/local/bin, or /snap/bin for snap-installed Docker on Ubuntu).
+PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+#
 # Day-of-week: 0=Sunday, 2=Tuesday, 4=Thursday.
-0 8 * * 2 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh tuesday >> data/outputs/logs/cron.log 2>&1
-0 8 * * 4 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh thursday >> data/outputs/logs/cron.log 2>&1
-0 8 * * 0 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh sunday >> data/outputs/logs/cron.log 2>&1
+0 7 * * 2 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh tuesday >> data/outputs/logs/cron.log 2>&1
+0 9 * * 4 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh thursday >> data/outputs/logs/cron.log 2>&1
+0 10 * * 0 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh sunday >> data/outputs/logs/cron.log 2>&1
