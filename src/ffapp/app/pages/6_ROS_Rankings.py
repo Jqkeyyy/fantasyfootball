@@ -13,13 +13,14 @@ from __future__ import annotations
 import polars as pl
 import streamlit as st
 
+from ffapp.app.league_selector import select_league
 from ffapp.app.ros_rankings_page import filter_board, style_rank_change
-from ffapp.config import load_primary_league, load_settings
+from ffapp.config import load_settings
 
 st.set_page_config(page_title="ROS Rankings", layout="wide")
 
 settings = load_settings()
-league = load_primary_league()
+league = select_league()
 
 st.title("Rest-of-Season Rankings")
 st.caption(league.display_name)

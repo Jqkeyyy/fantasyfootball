@@ -83,14 +83,25 @@ def _objective_value(player: PlayerProjection, objective: Objective) -> float:
     return player.ceiling
 
 
+def _cbc_solver() -> pulp.COIN_CMD:
+    """Prefer PuLP 4's supported CBC entry point, with a PuLP 3 bundle fallback."""
+    solver = pulp.COIN_CMD(msg=False)
+    if solver.available():
+        return solver
+    legacy_class = getattr(pulp, "PULP_CBC_CMD", None)
+    bundled_path = getattr(legacy_class, "pulp_cbc_path", None)
+    return pulp.COIN_CMD(path=bundled_path, msg=False)
+
+
 def optimal_lineup(
     players: list[PlayerProjection],
     fmt: LeagueFormat,
     objective: Objective = "mean",
 ) -> Lineup:
     """SPEC §13.1: binary variable per (player, slot), constraints that
-    each slot is filled exactly once, each player is used at most once,
-    and slot eligibility is respected."""
+    each slot is filled at most once, each player is used at most once,
+    and slot eligibility is respected. A short roster remains solvable;
+    positive projected values still fill every slot that can be filled."""
     slots = slot_instances(fmt)
 
     combos = [
@@ -99,12 +110,12 @@ def optimal_lineup(
         for player in players
         if player.position in eligible
     ]
+    problem = pulp.LpProblem("optimal_lineup", pulp.LpMaximize)
     variables = {
-        (player.player_id, slot_id): pulp.LpVariable(f"x{i}", cat="Binary")
+        (player.player_id, slot_id): problem.add_variable(f"x{i}", cat="Binary")
         for i, (player, slot_id) in enumerate(combos)
     }
 
-    problem = pulp.LpProblem("optimal_lineup", pulp.LpMaximize)
     problem += pulp.lpSum(
         _objective_value(player, objective) * variables[(player.player_id, slot_id)]
         for player, slot_id in combos
@@ -116,7 +127,7 @@ def optimal_lineup(
             for player in players
             if player.position in eligible
         ]
-        problem += pulp.lpSum(eligible_vars) == 1
+        problem += pulp.lpSum(eligible_vars) <= 1
 
     for player in players:
         player_vars = [
@@ -127,7 +138,7 @@ def optimal_lineup(
         if player_vars:
             problem += pulp.lpSum(player_vars) <= 1
 
-    problem.solve(pulp.PULP_CBC_CMD(msg=False))
+    problem.solve(_cbc_solver())
 
     assigned: dict[str, str] = {}
     total = 0.0

@@ -3,7 +3,7 @@
 Second page in SPEC §15's own build order, under `app/pages/` per
 Streamlit's own multipage convention (`streamlit_app.py`'s own docstring
 already named this as the reason `pages/` stayed empty until now).
-Reads the pre-built `outputs/projections.parquet` (`ffapp project`, task
+Reads the pre-built `outputs/<league>/projections.parquet` (`ffapp project`, task
 1.18) rather than recomputing anything on page load, per SPEC §15's own
 "fast to load... nothing trained on page load" constraint. Enrichment
 (opponent/matchup grade/owner status) and filtering live in
@@ -24,13 +24,14 @@ from typing import Any
 import polars as pl
 import streamlit as st
 
+from ffapp.app.league_selector import select_league
 from ffapp.app.weekly_rankings_page import (
     ProjectionsNotBuiltError,
     build_weekly_rankings,
     filter_rankings,
     load_projections,
 )
-from ffapp.config import load_primary_league, load_settings
+from ffapp.config import load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ids import mapping as ids_mapping
 from ffapp.ingest import nflverse, sleeper
@@ -98,12 +99,12 @@ def _load_roster_context(league_id: str, sleeper_username: str | None) -> tuple[
 
 
 settings = load_settings()
-league = load_primary_league()
+league = select_league()
 
 st.title("Weekly Rankings")
 st.caption(league.display_name)
 
-projections_path = settings.data_root / "outputs" / "projections.parquet"
+projections_path = settings.data_root / "outputs" / league.slug / "projections.parquet"
 if not projections_path.exists():
     st.error(f"No projections found at `{projections_path}`. Run `ffapp project --week N` first.")
     st.stop()

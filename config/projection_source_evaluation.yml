@@ -3,19 +3,20 @@
 # (app/model_health_page.py::load_projection_source_evaluation) to show
 # "which source is live and what its current margin over B2 is."
 #
-# Every number here comes from a real evaluation already run and
-# recorded in full in docs/JOURNAL.md's 2026-08-16 closing entry
-# (tasks 1.15/1.20) -- this file is a small, human-curated summary of
-# that entry, not a live computation (no real evaluation harness
+# Historical numbers here come from a real evaluation already run and
+# recorded in full in docs/JOURNAL.md's 2026-08-16 closing entry; the
+# ESPN operational status records the verified 2026-09-15 live fallback.
+# This file is a small, human-curated summary, not a live computation
+# (no historical batch evaluation harness
 # currently scores consensus_b3/anchored as walk-forward predictors
 # inside `ffapp evaluate` -- SPEC-ADDENDUM-04.md SS D's own rest-of-season
 # pipeline is the next place that would change). Refresh this file's
 # `as_of` and content whenever a new real evaluation supersedes it.
-as_of: "2026-08-16"
+as_of: "2026-09-15"
 
 sources:
   consensus_b3:
-    status: "shipped default (SPEC-ADDENDUM-04.md SS C)"
+    status: "historical shipped benchmark; feed currently lacks point estimates"
     margin_over_b2: >-
       Real lineup regret 3.1-5.7 pts/week BETTER than B2 (2021-2024, 20-seed
       robustness check; the advantage strengthens, not weakens, under a
@@ -50,3 +51,11 @@ sources:
   baseline_b2:
     status: "reference point"
     margin_over_b2: "The bar every other source is measured against -- margin is 0 by definition."
+
+  espn_weekly:
+    status: "operational fallback -- live since 2026-09-15"
+    margin_over_b2: >-
+      Not yet historically evaluated. Added after the FantasyPros weekly archive
+      stopped publishing point estimates; ESPN supplies real current-week stat
+      projections that are converted through each league's scoring rules. Keep
+      this status provisional until enough logged 2026 outcomes exist.

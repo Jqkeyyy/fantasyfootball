@@ -41,7 +41,7 @@ The application is designed for a personal, data-driven workflow: expensive inge
 - Produces weekly player projections with availability probabilities and configurable quantiles.
 - Produces multiweek rest-of-season projections and free-agent VOR rankings.
 - Shows positional strength of schedule, a schedule heatmap, and player matchup details.
-- Contains reusable simulation and decision modules for lineups, start/sit choices, trades, waivers, weekly outcomes, season outcomes, injuries, and score persistence.
+- Provides a weekly action cockpit for lineups, start/sit choices, multiweek waivers, K/DST streaming, and decision alerts, plus a lineup-aware trade analyzer.
 
 ### Data quality and evaluation
 
@@ -200,9 +200,10 @@ Windows users can instead double-click `start-app.bat`. It starts Streamlit on l
 | `waivers` | Playoff weighting and FAAB aggressiveness. |
 | `cache` | Cache root, default network mode, source freshness windows, and stale-data warning behavior. |
 
-The current live mean projection source is `consensus_b3`. Supported values are:
+The current live mean projection source is `espn_weekly`. Supported values are:
 
-- `consensus_b3` — historical/live FantasyPros consensus baseline and the current shipped default.
+- `espn_weekly` — current-week ESPN stat projections converted through each league's scoring rules.
+- `consensus_b3` — historical/live FantasyPros consensus baseline; use it only when the weekly feed contains point estimates.
 - `baseline_b2` — four-week exponentially weighted historical baseline.
 - `anchored` — residual model anchored to B2.
 - `direct` — direct learned points model.
@@ -286,16 +287,20 @@ uv run ffapp draft live --league rogan-radinator-league --stop
 Once the current week's feature rows exist:
 
 ```powershell
-uv run ffapp project --week 6 --season 2026 --league rogan-radinator-league --no-offline
+uv run ffapp refresh weekly --week 6 --season 2026 --league rogan-radinator-league --run-label tuesday --no-offline
 ```
 
-The command fits only on rows earlier than the target week and upserts results into `data/outputs/projections.parquet`. The output includes point estimates, availability, quantiles, model version, projection source, timestamp, feature hash, and Git commit.
+The refresh command incrementally ingests current-season results, rebuilds features, updates Sleeper context, builds projections, optionally preserves a pregame snapshot, safely attempts the prior-week actuals backfill, runs health checks and decision alerts, and writes an auditable JSON manifest beneath `data/outputs/<league>/refresh_runs/`. Generated parquet and manifest files use replace-on-success writes so interrupted runs do not expose partial artifacts. Use `ffapp project --week ...` when you only want to rebuild projections, or `ffapp refresh features --no-offline` for only the raw-to-feature stage.
 
-The default `consensus_b3` path also requires:
+Omit `--week` to select the next week with an unplayed kickoff automatically. On Windows, install the Tuesday/Thursday/Sunday jobs with `powershell -ExecutionPolicy Bypass -File scripts/install-weekly-tasks.ps1`. Scheduled runs write logs beneath `data/outputs/logs/` and display a local message when a refresh is degraded or failed, a starter is newly ruled out, a starter projection moves by at least three points, or a new waiver upgrade crosses the alert threshold.
+
+Weekly projections are namespaced at `data/outputs/<league>/projections.parquet`. The output includes point estimates, availability, quantiles, model version, projection source, timestamp, feature hash, and Git commit.
+
+The live `espn_weekly` path and optional `consensus_b3` path require:
 
 - `data/interim/b3_predictions.parquet`;
 - a current player-ID crosswalk;
-- a cached or live FantasyPros weekly archive snapshot.
+- a cached or live weekly source snapshot.
 
 ### Rest-of-season workflow
 
@@ -389,6 +394,8 @@ uv run ffapp <group> <command> --help
 | `ffapp draft live` | Start/stop a timed replay of a completed real draft. | `--replay`, `--pace-seconds`, `--stop`, `--league`. |
 | `ffapp evaluate` | Run walk-forward points and availability evaluation. | Required multi-value `--seasons`. |
 | `ffapp project` | Generate a weekly projection or a ROS week range. | Required `--week`; optional `--season`, `--league`, `--from-week`, `--through-week`, network override. |
+| `ffapp refresh weekly` | Refresh features, Sleeper context, projections, alerts, optional logging, prior actuals, health checks, and a run manifest. | Optional `--week` (auto-selected when omitted), `--season`, `--league`, `--run-label`, `--skip-backfill`, network override. |
+| `ffapp refresh features` | Incrementally fetch current-season partitions and rebuild interim/feature artifacts. | `--league`, network override. |
 | `ffapp rankings ros` | Build a current-free-agent ROS ranking board. | `--league`, `--season`, network override. |
 | `ffapp log week` | Preserve a real pregame projection snapshot. | Required `--week`, `--run-label`; optional `--season`, `--league`, network override. |
 | `ffapp log backfill` | Add actual points to a logged week. | Required `--week`; optional `--season`, `--league`. |
@@ -403,7 +410,9 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | Page | What it shows | Required artifact(s) |
 | --- | --- | --- |
 | **Draft Board** | Filters, tier breaks, VOR, ADP value, and opportunity cost. Includes Pure Rankings and Live Draft tabs. | `data/outputs/draft_board_<season>.csv`; source tab also uses `source_rankings_<season>.csv`. |
-| **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/projections.parquet` plus cached player/roster identity data. |
+| **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
+| **Weekly Actions** | Recommended lineup, projection explanations, matchup simulation, multiweek waiver bids with opponent competition, K/DST streamers, and pipeline health. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
+| **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
 | **Schedule Grid** | Positional SOS, bye-aware heatmap, and player matchup detail with usage context. | `data/interim/schedule.parquet`, `defense_position_allowed.parquet`, and `data/features/player_week_features.parquet`. |
 | **Model Health** | Active projection source and current/historical evaluation reports. | `config/projection_source_evaluation.yml` and `data/outputs/eval/*/report.md`. |
 | **Draft Mobile** | Phone-friendly best-available cards, position filters, tier depth, and live/replayed picks. | Draft board CSV plus live Sleeper access or an active replay session. |
@@ -431,12 +440,13 @@ data/
     ├── draft_board_<season>.csv
     ├── source_rankings_<season>.csv
     ├── draft_board_<season>_export.html
-    ├── projections.parquet
     ├── eval/<timestamp>/
     │   ├── predictions.parquet
     │   ├── availability_predictions.parquet
     │   └── report.md
     └── <league>/
+        ├── projections.parquet
+        ├── refresh_runs/latest.json
         ├── projections_ros.parquet
         ├── rankings_ros/
         │   ├── latest.parquet
@@ -642,7 +652,7 @@ Run `ffapp ids check`, inspect the unmatched players, and add only verified corr
 ## Known limitations
 
 - A fresh clone does not contain the large raw, interim, feature, ranking, or most output artifacts needed for every page.
-- There is not yet one public CLI command that performs the entire historical raw-to-feature build; some materialization is orchestrated through Python modules and scripts.
+- The supported feature refresh incrementally combines cached history with the current season; a completely empty clone still needs the historical caches described in the setup workflow.
 - Current feature generation focuses on QB, RB, WR, and TE. Draft/scoring support also understands K and DST, but the configured draft board excludes them.
 - Route participation and some proprietary charting metrics are unavailable from the chosen public sources.
 - Some team-context fields remain null when a reliable public source or validated method is unavailable; the project prefers missing values to fabricated precision.

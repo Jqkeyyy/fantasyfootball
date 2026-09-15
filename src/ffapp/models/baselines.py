@@ -24,7 +24,7 @@ from ffapp.config import Settings
 from ffapp.ids import mapping
 from ffapp.ingest import rankings
 from ffapp.interim.build import SKILL_POSITIONS
-from ffapp.projections.aggregate import add_join_key
+from ffapp.projections.aggregate import add_join_key, apply_league_scoring
 
 _B3_FOR_WEEK_SCHEMA = {
     "player_id": pl.String,
@@ -223,6 +223,39 @@ def fetch_b3_for_week(
     return add_b3_fp_weekly_consensus(fp_weekly, players_dim)
 
 
+def fetch_espn_weekly_for_week(
+    season: int,
+    week: int,
+    players_dim: pl.DataFrame,
+    scoring_settings: dict[str, float],
+    *,
+    offline: bool | None = None,
+    settings: Settings | None = None,
+) -> pl.DataFrame:
+    """Fetch and league-score ESPN's current weekly stat projections."""
+    path = rankings.fetch_espn(season, offline=offline, settings=settings)
+    weekly_stats = rankings.normalize_espn_weekly(
+        json.loads(path.read_text()), season=season, week=week
+    )
+    if weekly_stats.is_empty():
+        return pl.DataFrame(schema=_B3_FOR_WEEK_SCHEMA)
+    scored = apply_league_scoring(weekly_stats, scoring_settings)
+    with_key = add_join_key(scored)
+    resolved = mapping.dedupe_to_one_row_per_name_position(players_dim).select(
+        "join_key", "player_id"
+    )
+    return (
+        with_key.join(resolved, on="join_key", how="left")
+        .drop_nulls("player_id")
+        .select(
+            "player_id",
+            pl.lit(season).alias("season"),
+            pl.lit(week).alias("week"),
+            pl.col("points").alias("b3_points"),
+        )
+    )
+
+
 def empirical_error_quantiles(
     rows: pl.DataFrame,
     mean_column: str,
@@ -287,6 +320,7 @@ __all__ = [
     "apply_empirical_error_quantiles",
     "empirical_error_quantiles",
     "fetch_b3_for_week",
+    "fetch_espn_weekly_for_week",
     "pooled_rolling_mean",
     "positional_availability_base_rate",
 ]

@@ -3,7 +3,7 @@
 Pure, pytest-testable functions only -- enrichment, grading, filtering.
 The real Streamlit page (`app/pages/2_Weekly_Rankings.py`) is thin glue
 on top, matching `draft_board_page.py`'s own precedent (task 0.13): reads
-the pre-built `outputs/projections.parquet` (task 1.18) rather than
+the pre-built `outputs/<league>/projections.parquet` (task 1.18) rather than
 recomputing anything on page load (SPEC §15's own "fast to load...
 nothing trained on page load" constraint).
 
@@ -53,7 +53,7 @@ class ProjectionsNotBuiltError(Exception):
 
 def load_projections(path: Path) -> pl.DataFrame:
     """Read the pre-built projections parquet (task 1.18's own
-    `outputs/projections.parquet`). Raises `ProjectionsNotBuiltError`
+    `outputs/<league>/projections.parquet`). Raises `ProjectionsNotBuiltError`
     naming the fix (`ffapp project`), matching `draft_board_page
     .DraftBoardNotBuiltError`'s own convention."""
     if not path.exists():
@@ -152,6 +152,10 @@ def build_weekly_rankings(
     logic module in `app/`.
     """
     proj = projections.filter((pl.col("season") == season) & (pl.col("week") == week))
+    if "projection_source" not in proj.columns:
+        proj = proj.with_columns(pl.lit("unknown").alias("projection_source"))
+    if "as_of_utc" not in proj.columns:
+        proj = proj.with_columns(pl.lit(None, dtype=pl.String).alias("as_of_utc"))
     feature_columns = [f"def_adj_epa_allowed_{g.lower()}" for g in POSITION_TO_GROUPS_FLAT()] + [
         f"def_n_plays_{g.lower()}" for g in POSITION_TO_GROUPS_FLAT()
     ]
@@ -190,7 +194,9 @@ def build_weekly_rankings(
         owner_status,
         pl.col("mean").alias("proj_mean"),
         pl.col("q10").alias("floor"),
+        pl.col("q25").alias("lower_quartile"),
         pl.col("q50").alias("median"),
+        pl.col("q75").alias("upper_quartile"),
         pl.col("q90").alias("ceiling"),
     )
 
@@ -203,11 +209,15 @@ def build_weekly_rankings(
         "p_active",
         "proj_mean",
         "floor",
+        "lower_quartile",
         "median",
+        "upper_quartile",
         "ceiling",
         "matchup_grade",
         "n_plays_behind_matchup_grade",
         "owner_status",
+        "projection_source",
+        "as_of_utc",
     ).sort("proj_mean", descending=True)
 
 

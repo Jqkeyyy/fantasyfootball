@@ -4,8 +4,8 @@
 `models.availability` always, plus whichever conditional-mean source
 `projection_source` names (`SPEC-ADDENDUM-04.md` §C: `"direct"` task
 1.15's `models.points`, `"anchored"` task 1.20's `models.residual`,
-`"baseline_b2"`/`"consensus_b3"` real external/trailing point
-estimates) -- into SPEC §6.2's own `outputs/projections.parquet` schema:
+`"baseline_b2"`/`"consensus_b3"`/`"espn_weekly"` real external/trailing point
+estimates) -- into SPEC §6.2's own `outputs/<league>/projections.parquet` schema:
 real per-row `p_active`/`mean`/`q10`..`q90`/`projection_source`.
 
 For `"direct"`/`"anchored"`, `mean` is SPEC §11.2's hurdle formula
@@ -14,7 +14,7 @@ applied literally, `E[points] = P(plays) x E[points | plays]`, and
 unconditional output -- SPEC §11.5's mixture math, already proven
 correct by task 1.16's own acceptance bar, not re-derived here.
 
-For `"baseline_b2"`/`"consensus_b3"`, `mean` is already an unconditional
+For `"baseline_b2"`/`"consensus_b3"`/`"espn_weekly"`, `mean` is already an unconditional
 quantity by construction (no `p_active` re-multiplication -- see
 `project_week`'s own docstring), and `q10`..`q90` come from the real
 empirical distribution of that source's own historical error
@@ -84,6 +84,7 @@ from ffapp.config import (
 )
 from ffapp.interim.build import SKILL_POSITIONS
 from ffapp.models import availability, baselines, points, quantiles, residual
+from ffapp.tools.artifacts import atomic_write_parquet
 
 OUTPUT_COLUMNS = [
     "player_id",
@@ -200,6 +201,7 @@ def project_week(
     b3_historical: pl.DataFrame | None = None,
     offline: bool | None = None,
     settings: Settings | None = None,
+    scoring_settings: dict[str, float] | None = None,
 ) -> pl.DataFrame:
     """The real pipeline: fit availability + quantiles (task 1.14/1.16,
     always) plus whichever conditional-mean source `projection_source`
@@ -229,7 +231,7 @@ def project_week(
       weeks), so the hurdle formula's `p_active` multiplier is not
       reapplied on top of it (that would double-count the same
       playing-time signal B2's own history already reflects).
-    - `"consensus_b3"` (the real shipped default): `mean` is a real,
+    - `"consensus_b3"` (the historical shipping choice): `mean` is a real,
       live-fetched FantasyPros weekly consensus point estimate
       (`baselines.fetch_b3_for_week`) -- same reasoning, no `p_active`
       re-multiplication. Requires `players_dim` (to resolve FantasyPros'
@@ -265,13 +267,19 @@ def project_week(
         raise InvalidProjectionSourceError(
             f"projection_source={projection_source!r} is not one of {PROJECTION_SOURCES}"
         )
-    if projection_source == "consensus_b3":
+    if projection_source in ("consensus_b3", "espn_weekly"):
         if players_dim is None:
-            raise ValueError("players_dim is required when projection_source='consensus_b3'")
+            raise ValueError(
+                f"players_dim is required when projection_source={projection_source!r}"
+            )
         if b3_historical is None:
-            raise ValueError("b3_historical is required when projection_source='consensus_b3'")
+            raise ValueError(
+                f"b3_historical is required when projection_source={projection_source!r}"
+            )
+    if projection_source == "espn_weekly" and scoring_settings is None:
+        raise ValueError("scoring_settings is required when projection_source='espn_weekly'")
 
-    if projection_source in ("baseline_b2", "anchored"):
+    if projection_source in ("baseline_b2", "anchored", "consensus_b3", "espn_weekly"):
         features = baselines.add_b2_ewm_4(features)
     if projection_source == "anchored":
         features = residual.add_points_history_features(features)
@@ -305,6 +313,7 @@ def project_week(
     all_feature_names: set[str] = set(availability.FEATURE_COLUMNS)
     fitted_positions: set[str] = set()
     error_quantiles: dict[str, dict[float, float]] | None = None
+    fallback_error_quantiles: dict[str, dict[float, float]] | None = None
 
     if projection_source == "direct":
         points_model = points.fit_points_model(train_rows, lightgbm_params=lightgbm_params)
@@ -325,22 +334,61 @@ def project_week(
         error_quantiles = baselines.empirical_error_quantiles(
             train_rows, "b2_ewm_4", quantile_alphas
         )
-    else:  # consensus_b3
+    else:  # consensus_b3 or espn_weekly
         assert players_dim is not None  # validated above; narrows the type for mypy
         assert b3_historical is not None
         cutoff_utc = target_rows["as_of_utc"][0]
-        b3 = baselines.fetch_b3_for_week(
-            season, week, cutoff_utc, players_dim, offline=offline, settings=settings
-        )
+        if projection_source == "consensus_b3":
+            external = baselines.fetch_b3_for_week(
+                season, week, cutoff_utc, players_dim, offline=offline, settings=settings
+            )
+        else:
+            assert scoring_settings is not None
+            external = baselines.fetch_espn_weekly_for_week(
+                season,
+                week,
+                players_dim,
+                scoring_settings,
+                offline=offline,
+                settings=settings,
+            )
         # `.unique(keep="first")` guards the join against a real (if
         # unlikely) duplicate `player_id` in the external source --
         # without it, a duplicate on the join's right side would fan out
         # `work`'s own rows and silently change `result.height`.
-        b3_deduped = b3.unique(subset=["player_id"], keep="first")
+        primary_deduped = external.unique(subset=["player_id"], keep="first")
         work = work.join(
-            b3_deduped.select("player_id", pl.col("b3_points").alias("mean")),
+            primary_deduped.select("player_id", pl.col("b3_points").alias("_primary_mean")),
             on="player_id",
             how="left",
+        )
+        if projection_source == "espn_weekly":
+            consensus = baselines.fetch_b3_for_week(
+                season, week, cutoff_utc, players_dim, offline=offline, settings=settings
+            ).unique(subset=["player_id"], keep="first")
+            work = work.join(
+                consensus.select(
+                    "player_id", pl.col("b3_points").alias("_consensus_mean")
+                ),
+                on="player_id",
+                how="left",
+            )
+        else:
+            work = work.with_columns(pl.lit(None, dtype=pl.Float64).alias("_consensus_mean"))
+        work = work.join(
+            target_rows.select("player_id", pl.col("b2_ewm_4").alias("_b2_mean")),
+            on="player_id",
+            how="left",
+        ).with_columns(
+            pl.coalesce("_primary_mean", "_consensus_mean", "_b2_mean").alias("mean"),
+            pl.when(pl.col("_primary_mean").is_not_null())
+            .then(pl.lit(projection_source))
+            .when(pl.col("_consensus_mean").is_not_null())
+            .then(pl.lit("consensus_b3"))
+            .when(pl.col("_b2_mean").is_not_null())
+            .then(pl.lit("baseline_b2"))
+            .otherwise(pl.lit(projection_source))
+            .alias("mean_source"),
         )
         # Real historical B3 archive, joined onto strictly-prior rows --
         # this project's real materialized archive predates live-fetching
@@ -353,6 +401,9 @@ def project_week(
         )
         error_quantiles = baselines.empirical_error_quantiles(
             train_rows_with_b3, "b3_points", quantile_alphas
+        )
+        fallback_error_quantiles = baselines.empirical_error_quantiles(
+            train_rows, "b2_ewm_4", quantile_alphas
         )
 
     for position in fitted_positions:
@@ -375,6 +426,13 @@ def project_week(
             recentered = baselines.apply_empirical_error_quantiles(
                 work["mean"], work["position"], error_quantiles, tau
             )
+            if fallback_error_quantiles is not None and "mean_source" in work.columns:
+                fallback = baselines.apply_empirical_error_quantiles(
+                    work["mean"], work["position"], fallback_error_quantiles, tau
+                )
+                recentered = recentered.zip_with(
+                    work["mean_source"] != "baseline_b2", fallback
+                )
             work = work.with_columns(recentered.alias(column_name))
     else:
         quantile_model = quantiles.fit_quantile_models(
@@ -387,15 +445,27 @@ def project_week(
         for tau, column_name in _Q_COLUMN_NAMES.items():
             work = work.with_columns(unconditional[f"unconditional_q_{tau}"].alias(column_name))
 
+    source = (
+        pl.col("mean_source")
+        if "mean_source" in work.columns
+        else pl.lit(projection_source)
+    )
     result = (
         work.join(feature_hash_df, on="position", how="left")
         .with_columns(
             pl.lit(model_version).alias("model_version"),
-            pl.lit(projection_source).alias("projection_source"),
+            source.alias("projection_source"),
             pl.lit(now.isoformat()).alias("as_of_utc"),
             pl.lit(code_version).alias("git_commit"),
         )
-        .drop("position")
+        .drop(
+            "position",
+            "mean_source",
+            "_primary_mean",
+            "_consensus_mean",
+            "_b2_mean",
+            strict=False,
+        )
     )
 
     return result.select(OUTPUT_COLUMNS)
@@ -412,8 +482,7 @@ def write_projections(projections: pl.DataFrame, output_path: Path) -> pl.DataFr
         combined = pl.concat([existing, projections], how="vertical_relaxed")
     else:
         combined = projections
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.write_parquet(output_path)
+    atomic_write_parquet(combined, output_path)
     return combined
 
 

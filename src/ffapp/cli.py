@@ -20,6 +20,7 @@ from ffapp.config import (
 from ffapp.draft import board as draft_board
 from ffapp.draft import export as draft_export
 from ffapp.draft import replay as draft_replay
+from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.env import load_env
 from ffapp.evaluation import backtest
 from ffapp.evaluation import metrics as evaluation_metrics
@@ -29,8 +30,18 @@ from ffapp.ingest import nflverse, rankings, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
 from ffapp.models import availability, baselines, points, predict, predict_ros, ros_consensus
 from ffapp.scoring import golden
+from ffapp.scoring.targets import apply_league_scoring_target
 from ffapp.sim import injury
 from ffapp.tools import prediction_log, ros_aggregate, ros_rankings, sos, waivers
+from ffapp.tools.artifacts import atomic_write_parquet, atomic_write_text
+from ffapp.tools.feature_refresh import refresh_features
+from ffapp.tools.pipeline_health import inspect_weekly_pipeline
+from ffapp.tools.projection_coverage import (
+    build_projection_coverage,
+    write_projection_coverage,
+)
+from ffapp.tools.weekly_alerts import refresh_weekly_alerts
+from ffapp.tools.weekly_clock import current_projection_week
 
 load_env()
 
@@ -41,12 +52,14 @@ ids_app = typer.Typer(name="ids", help="Cross-source player id resolution (SPEC.
 scoring_app = typer.Typer(name="scoring", help="League scoring engine (SPEC.md §8).")
 draft_app = typer.Typer(name="draft", help="Draft board and draft-day support (SPEC.md §9).")
 log_app = typer.Typer(name="log", help="In-season prediction logging (SPEC-ADDENDUM-05.md §B).")
+refresh_app = typer.Typer(name="refresh", help="End-to-end refresh workflows.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
 app.add_typer(scoring_app, name="scoring")
 app.add_typer(draft_app, name="draft")
 app.add_typer(log_app, name="log")
+app.add_typer(refresh_app, name="refresh")
 
 
 def _version_callback(value: bool) -> None:
@@ -556,7 +569,7 @@ def evaluate_command(
     output_dir = settings.data_root / "outputs" / "eval" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "predictions.parquet"
-    predictions.write_parquet(output_path)
+    atomic_write_parquet(predictions, output_path)
     typer.echo(f"Wrote {predictions.height} predictions to {output_path}")
 
     availability_predictors: list[backtest.Predictor] = [
@@ -573,7 +586,7 @@ def evaluate_command(
         target_column="availability_flag",
     )
     availability_output_path = output_dir / "availability_predictions.parquet"
-    availability_predictions.write_parquet(availability_output_path)
+    atomic_write_parquet(availability_predictions, availability_output_path)
     typer.echo(
         f"Wrote {availability_predictions.height} availability predictions "
         f"to {availability_output_path}"
@@ -694,7 +707,7 @@ def project_command(
     docstring and `docs/JOURNAL.md`'s 2026-08-16 closing entry), on
     every row strictly before `(season, week)`, predict onto that week's
     own real row universe, and upsert into
-    `data/outputs/projections.parquet` -- every row carrying
+    `data/outputs/<league>/projections.parquet` -- every row carrying
     `model_version`, `projection_source`, `as_of_utc`, `feature_hash`,
     and `git_commit`.
 
@@ -715,22 +728,31 @@ def project_command(
     """
     settings = load_settings()
     resolved_season = season if season is not None else settings.seasons.current
+    league_config = load_league(league) if league is not None else load_primary_league()
+    typer.echo(f"Using league '{league_config.slug}'.")
 
     features_path = settings.data_root / "features" / "player_week_features.parquet"
-    if not features_path.exists():
+    player_week_stats_path = settings.data_root / "interim" / "player_week_stats.parquet"
+    if not features_path.exists() or not player_week_stats_path.exists():
+        missing = features_path if not features_path.exists() else player_week_stats_path
         typer.echo(
-            f"Missing {features_path}. Materialise the feature table first "
+            f"Missing required projection input: {missing}. "
+            "Materialise the feature and interim stat tables first "
             "(see HANDOFF.md for the real end-to-end build steps).",
             err=True,
         )
         raise typer.Exit(code=1)
     features = pl.read_parquet(features_path)
+    features = apply_league_scoring_target(
+        features,
+        pl.read_parquet(player_week_stats_path),
+        league_config.league_cache["scoring_settings"],
+    )
 
     if from_week is not None or through_week is not None:
         if from_week is None or through_week is None:
             typer.echo("--from-week and --through-week must be given together.", err=True)
             raise typer.Exit(code=1)
-        league_config = load_league(league) if league is not None else load_primary_league()
         scoring_settings = league_config.league_cache["scoring_settings"]
         schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
         dpa = pl.read_parquet(settings.data_root / "interim" / "defense_position_allowed.parquet")
@@ -824,7 +846,7 @@ def project_command(
 
     players_dim = None
     b3_historical = None
-    if settings.model.projection_source == "consensus_b3":
+    if settings.model.projection_source in ("consensus_b3", "espn_weekly"):
         crosswalk_path = nflverse.fetch_player_ids(offline=offline, settings=settings)
         sleeper_players_path = sleeper.fetch_players(offline=offline, settings=settings)
         players_dim = mapping.build_players_dim(
@@ -856,6 +878,7 @@ def project_command(
         b3_historical=b3_historical,
         offline=offline,
         settings=settings,
+        scoring_settings=league_config.league_cache["scoring_settings"],
     )
     if result.is_empty():
         typer.echo(
@@ -865,9 +888,46 @@ def project_command(
             err=True,
         )
         raise typer.Exit(code=1)
+    usable = result.filter(pl.col("mean").is_not_null()).height
+    if usable == 0:
+        typer.echo(
+            f"Projection source {settings.model.projection_source!r} returned no usable point "
+            "estimates; refusing to write an all-null artifact. Select a healthy projection "
+            "source and rerun.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if usable < result.height:
+        typer.echo(
+            f"WARNING: {result.height - usable} of {result.height} projection rows have no "
+            "point estimate.",
+            err=True,
+        )
 
-    output_path = settings.data_root / "outputs" / "projections.parquet"
+    output_path = settings.data_root / "outputs" / league_config.slug / "projections.parquet"
     combined = predict.write_projections(result, output_path)
+    if players_dim is not None and league_config.league_id is not None:
+        try:
+            roster_rows = json.loads(
+                sleeper.fetch_rosters(
+                    league_config.league_id, offline=offline, settings=settings
+                ).read_text()
+            )
+            rostered_ids = waivers.rostered_sleeper_ids(roster_rows)
+            coverage = build_projection_coverage(result, players_dim, rostered_ids)
+            coverage_path = (
+                settings.data_root / "outputs" / league_config.slug / "projection_coverage.parquet"
+            )
+            write_projection_coverage(coverage, coverage_path)
+            relevant_missing = coverage.filter(
+                ~pl.col("projected") & pl.col("fantasy_relevant")
+            ).height
+            typer.echo(
+                f"Projection coverage: {usable}/{result.height} total; "
+                f"{relevant_missing} fantasy-relevant player(s) missing."
+            )
+        except Exception as exc:
+            typer.echo(f"WARNING: could not write projection coverage audit ({exc}).", err=True)
     typer.echo(
         f"Wrote {result.height} projections for season {resolved_season} week {week} "
         f"to {output_path} ({combined.height} total rows)."
@@ -1087,8 +1147,8 @@ def rankings_ros_command(
     )
 
     board_path = run_dir / "board.parquet"
-    with_rank_change.write_parquet(board_path)
-    with_rank_change.write_parquet(latest_path)
+    atomic_write_parquet(with_rank_change, board_path)
+    atomic_write_parquet(with_rank_change, latest_path)
     typer.echo(
         f"Wrote {with_rank_change.height} ROS ranked players to {board_path} (and latest.parquet)."
     )
@@ -1134,9 +1194,10 @@ def log_week_command(
     league_slug, scoring_settings = _resolve_league_slug(league)
 
     features_path = settings.data_root / "features" / "player_week_features.parquet"
+    player_week_stats_path = settings.data_root / "interim" / "player_week_stats.parquet"
     schedule_path = settings.data_root / "interim" / "schedule.parquet"
     b3_historical_path = settings.data_root / "interim" / "b3_predictions.parquet"
-    for path in (features_path, schedule_path, b3_historical_path):
+    for path in (features_path, player_week_stats_path, schedule_path, b3_historical_path):
         if not path.exists():
             typer.echo(
                 f"Missing {path}. Materialise the interim/feature tables and the real B3 "
@@ -1144,7 +1205,11 @@ def log_week_command(
                 err=True,
             )
             raise typer.Exit(code=1)
-    features = pl.read_parquet(features_path)
+    features = apply_league_scoring_target(
+        pl.read_parquet(features_path),
+        pl.read_parquet(player_week_stats_path),
+        scoring_settings,
+    )
     schedule = pl.read_parquet(schedule_path)
     b3_historical = pl.read_parquet(b3_historical_path)
 
@@ -1173,6 +1238,7 @@ def log_week_command(
         now=now,
         offline=offline,
         settings=settings,
+        live_projection_source=settings.model.projection_source,
     )
     if rows.is_empty():
         typer.echo(
@@ -1181,6 +1247,41 @@ def log_week_command(
             err=True,
         )
         raise typer.Exit(code=1)
+
+    league_config = load_league(league_slug)
+    if league_config.league_id is not None and settings.sleeper_username is not None:
+        try:
+            roster_rows = json.loads(
+                sleeper.fetch_rosters(
+                    league_config.league_id, offline=offline, settings=settings
+                ).read_text()
+            )
+            user = json.loads(
+                sleeper.fetch_user(
+                    settings.sleeper_username, offline=offline, settings=settings
+                ).read_text()
+            )
+            roster_id = resolve_my_roster_id(str(user["user_id"]), roster_rows)
+            my_roster = next(row for row in roster_rows if row.get("roster_id") == roster_id)
+            sleeper_to_player = dict(
+                players_dim.select("sleeper_id", "player_id").drop_nulls().iter_rows()
+            )
+            my_ids = {
+                sleeper_to_player[player_id]
+                for player_id in my_roster.get("players", [])
+                if player_id in sleeper_to_player
+            }
+            starter_ids = {
+                sleeper_to_player[player_id]
+                for player_id in my_roster.get("starters", [])
+                if player_id in sleeper_to_player
+            }
+            rows = rows.with_columns(
+                pl.col("player_id").is_in(list(my_ids)).alias("is_my_roster"),
+                pl.col("player_id").is_in(list(starter_ids)).alias("was_starting"),
+            )
+        except Exception as exc:
+            typer.echo(f"WARNING: could not attach roster snapshot to prediction log ({exc}).")
 
     path = prediction_log.write_prediction_log(
         rows,
@@ -1216,19 +1317,25 @@ def log_backfill_command(
     """
     settings = load_settings()
     resolved_season = season if season is not None else settings.seasons.current
-    league_slug, _ = _resolve_league_slug(league)
+    league_slug, scoring_settings = _resolve_league_slug(league)
 
     features_path = settings.data_root / "features" / "player_week_features.parquet"
-    if not features_path.exists():
-        typer.echo(f"Missing {features_path}.", err=True)
+    player_week_stats_path = settings.data_root / "interim" / "player_week_stats.parquet"
+    if not features_path.exists() or not player_week_stats_path.exists():
+        missing = features_path if not features_path.exists() else player_week_stats_path
+        typer.echo(f"Missing {missing}.", err=True)
         raise typer.Exit(code=1)
-    features = pl.read_parquet(features_path)
+    features = apply_league_scoring_target(
+        pl.read_parquet(features_path),
+        pl.read_parquet(player_week_stats_path),
+        scoring_settings,
+    )
 
     try:
         filled = prediction_log.backfill_actual_points(
             features, resolved_season, week, league_slug=league_slug, settings=settings
         )
-    except prediction_log.MissingBackfillError as exc:
+    except (prediction_log.MissingBackfillError, prediction_log.InvalidActualsError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
@@ -1237,6 +1344,195 @@ def log_backfill_command(
         f"Backfilled actual_points for {n_filled} of {filled.height} logged rows, "
         f"season {resolved_season} week {week}. Remember: `git add` and commit (§B.3)."
     )
+
+
+def _write_refresh_manifest(
+    settings: Settings,
+    league_slug: str,
+    season: int,
+    week: int,
+    status: str,
+    steps: list[dict[str, str]],
+) -> Path:
+    """Write an auditable result for a weekly refresh and update its latest pointer."""
+    generated_at = datetime.now(UTC)
+    output_dir = settings.data_root / "outputs" / league_slug / "refresh_runs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "league_slug": league_slug,
+        "season": season,
+        "week": week,
+        "status": status,
+        "generated_at_utc": generated_at.isoformat(),
+        "steps": steps,
+    }
+    path = output_dir / f"{season}-w{week:02d}-{generated_at:%Y%m%dT%H%M%SZ}.json"
+    content = json.dumps(payload, indent=2) + "\n"
+    atomic_write_text(content, path)
+    atomic_write_text(content, output_dir / "latest.json")
+    return path
+
+
+@refresh_app.command("weekly")
+def refresh_weekly_command(
+    week: int | None = typer.Option(
+        None, "--week", help="NFL week. Defaults to the next week with an unplayed game."
+    ),
+    season: int | None = typer.Option(
+        None, "--season", help="Defaults to the selected league's season."
+    ),
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    run_label: str | None = typer.Option(
+        None,
+        "--run-label",
+        help="Also preserve a prediction snapshot: tuesday | thursday | sunday.",
+    ),
+    backfill_prior: bool = typer.Option(
+        True,
+        "--backfill-prior/--skip-backfill",
+        help="Backfill the preceding week's actuals when real outcomes exist.",
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Refresh the complete weekly decision stack and leave a structured manifest."""
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    resolved_season = season if season is not None else league_config.season
+    if week is None:
+        schedule_path = settings.data_root / "interim" / "schedule.parquet"
+        if not schedule_path.exists():
+            typer.echo(f"Cannot infer --week because {schedule_path} is missing.", err=True)
+            raise typer.Exit(code=1)
+        week = current_projection_week(pl.read_parquet(schedule_path), resolved_season)
+        typer.echo(f"Auto-selected season {resolved_season} week {week} from the schedule.")
+    steps: list[dict[str, str]] = []
+    failed = False
+    degraded = False
+
+    try:
+        feature_summary = refresh_features(
+            settings, league_config, offline=offline, now=datetime.now(UTC)
+        )
+        has_actuals = feature_summary["current_actual_rows"] > 0
+        feature_status = "healthy" if has_actuals else "degraded"
+        degraded = degraded or not has_actuals
+        steps.append(
+            {
+                "name": "features",
+                "status": feature_status,
+                "detail": json.dumps(feature_summary, sort_keys=True),
+            }
+        )
+    except Exception as exc:
+        degraded = True
+        steps.append({"name": "features", "status": "degraded", "detail": str(exc)})
+
+    try:
+        if league_config.league_id is None or settings.sleeper_username is None:
+            raise ValueError("Sleeper league ID and username must be configured")
+        sleeper.fetch_user(settings.sleeper_username, offline=offline, settings=settings)
+        sleeper.fetch_rosters(league_config.league_id, offline=offline, settings=settings)
+        sleeper.fetch_matchups(league_config.league_id, week, offline=offline, settings=settings)
+        steps.append({"name": "sleeper", "status": "healthy", "detail": "Cache refreshed"})
+    except Exception as exc:
+        degraded = True
+        steps.append({"name": "sleeper", "status": "degraded", "detail": str(exc)})
+
+    try:
+        project_command(
+            week=week,
+            season=resolved_season,
+            offline=offline,
+            from_week=None,
+            through_week=None,
+            league=league_config.slug,
+        )
+        steps.append({"name": "projections", "status": "healthy", "detail": "Artifact built"})
+    except Exception as exc:
+        failed = True
+        detail = str(exc) or type(exc).__name__
+        steps.append({"name": "projections", "status": "failed", "detail": detail})
+
+    if not failed:
+        try:
+            alert_path, alert_count = refresh_weekly_alerts(
+                settings, league_config, resolved_season, week
+            )
+            steps.append(
+                {
+                    "name": "decision_alerts",
+                    "status": "healthy",
+                    "detail": f"{alert_count} new alerts in {alert_path}",
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append({"name": "decision_alerts", "status": "degraded", "detail": str(exc)})
+
+    if backfill_prior and week > 1:
+        try:
+            log_backfill_command(week=week - 1, season=resolved_season, league=league_config.slug)
+            steps.append(
+                {"name": "prior_week_actuals", "status": "healthy", "detail": "Backfilled"}
+            )
+        except Exception as exc:
+            degraded = True
+            detail = str(exc) or type(exc).__name__
+            steps.append({"name": "prior_week_actuals", "status": "degraded", "detail": detail})
+
+    if run_label is not None:
+        try:
+            log_week_command(
+                week=week,
+                run_label=run_label,
+                season=resolved_season,
+                league=league_config.slug,
+                offline=offline,
+            )
+            steps.append({"name": "prediction_log", "status": "healthy", "detail": run_label})
+        except Exception as exc:
+            failed = True
+            detail = str(exc) or type(exc).__name__
+            steps.append({"name": "prediction_log", "status": "failed", "detail": detail})
+    else:
+        steps.append(
+            {"name": "prediction_log", "status": "skipped", "detail": "No run label given"}
+        )
+
+    health = inspect_weekly_pipeline(settings, league_config.slug, resolved_season, week)
+    steps.extend(
+        {"name": check.name, "status": check.status, "detail": check.detail}
+        for check in health.checks
+    )
+    failed = failed or health.status == "failed"
+    degraded = degraded or health.status == "degraded"
+    status = "failed" if failed else "degraded" if degraded else "healthy"
+    manifest = _write_refresh_manifest(
+        settings, league_config.slug, resolved_season, week, status, steps
+    )
+    typer.echo(f"Weekly refresh status: {status}. Manifest: {manifest}")
+    if failed:
+        raise typer.Exit(code=1)
+
+
+@refresh_app.command("features")
+def refresh_features_command(
+    league: str | None = typer.Option(
+        None, "--league", help="League slug. Defaults to the primary league."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Refresh current-season raw partitions and rebuild interim/features artifacts."""
+    settings = load_settings()
+    league_config = load_league(league) if league is not None else load_primary_league()
+    summary = refresh_features(settings, league_config, offline=offline, now=datetime.now(UTC))
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
 
 @log_app.command("check-sources")

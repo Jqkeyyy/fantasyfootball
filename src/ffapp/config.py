@@ -94,7 +94,7 @@ DEFAULT_LIGHTGBM_SETTINGS = LightGBMSettings(
 DEFAULT_QUANTILES = (0.10, 0.25, 0.50, 0.75, 0.90)
 
 
-PROJECTION_SOURCES = ("anchored", "direct", "baseline_b2", "consensus_b3")
+PROJECTION_SOURCES = ("anchored", "direct", "baseline_b2", "consensus_b3", "espn_weekly")
 DEFAULT_PROJECTION_SOURCE = "consensus_b3"
 
 
@@ -111,8 +111,9 @@ class ModelSettings:
     (`docs/JOURNAL.md`'s 2026-08-16 closing entry: three independent
     tests, including one tuned directly on the decisive metric, all
     found neither beats B2 robustly) -- `"consensus_b3"` is the real
-    default, per SPEC §12.3's own shipping rule ("ship B3, keep working
-    in the background") made explicit rather than an informal fallback.
+    historical shipping choice. `"espn_weekly"` is the operational
+    current-week fallback when FantasyPros does not publish point estimates;
+    its stat projections are scored through the selected league's own rules.
     `"baseline_b2"` exists for a direct, no-external-dependency
     comparison point, and for `SPEC-ADDENDUM-04.md` §E's cold-start
     schedule (weeks 1-3 default to `consensus_b3` specifically, not

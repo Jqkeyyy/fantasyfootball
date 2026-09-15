@@ -253,6 +253,48 @@ def test_normalize_espn_skips_players_with_no_season_total_row() -> None:
     assert df.height == 0
 
 
+def test_normalize_espn_weekly_extracts_only_the_requested_projection_week() -> None:
+    payload = {
+        "players": [
+            _espn_player(
+                full_name="Weekly Player",
+                default_position_id=2,
+                pro_team_id=8,
+                stats=[
+                    _espn_stat_row(
+                        scoring_period_id=2,
+                        stat_source_id=1,
+                        stat_split_type_id=1,
+                        stats={"24": 72.0, "25": 1.0, "41": 4.0},
+                    ),
+                    _espn_stat_row(
+                        scoring_period_id=3,
+                        stat_source_id=1,
+                        stat_split_type_id=1,
+                        stats={"24": 99.0},
+                    ),
+                    _espn_stat_row(
+                        scoring_period_id=2,
+                        stat_source_id=0,
+                        stat_split_type_id=1,
+                        stats={"24": 500.0},
+                    ),
+                ],
+            )
+        ]
+    }
+
+    df = rankings.normalize_espn_weekly(payload, season=2026, week=2)
+
+    assert df.height == 1
+    row = df.row(0, named=True)
+    assert row["source"] == "espn_weekly"
+    assert row["week"] == 2
+    assert row["rushing_yards"] == 72.0
+    assert row["rushing_tds"] == 1.0
+    assert row["receptions"] == 4.0
+
+
 def test_normalize_espn_maps_verified_real_position_ids() -> None:
     """cwendt94/espn-api's community PLAYER POSITION_MAP (0=QB, 4=WR, 6=TE,
     17=K) does not match ESPN's current live payload -- confirmed against a

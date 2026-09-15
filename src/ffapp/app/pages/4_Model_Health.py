@@ -32,6 +32,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from ffapp.app.league_selector import select_league
 from ffapp.app.model_health_page import (
     ModelHealthNotBuiltError,
     ProjectionSourceEvaluationNotFoundError,
@@ -41,6 +42,14 @@ from ffapp.app.model_health_page import (
     projection_source_summary,
 )
 from ffapp.config import CONFIG_DIR, load_settings
+from ffapp.evaluation.inseason import (
+    load_prediction_history,
+    recommend_projection_source,
+    summarize_inseason_performance,
+    summarize_interval_calibration,
+    summarize_lineup_regret,
+)
+from ffapp.league_format import parse_league_format
 
 st.set_page_config(page_title="Model Health", layout="wide")
 
@@ -57,7 +66,10 @@ def _load_report_cached(path_str: str, mtime: float) -> str:
 
 
 settings = load_settings()
-eval_dir = settings.data_root / "outputs" / "eval"
+league = select_league()
+league_eval_dir = settings.data_root / "outputs" / league.slug / "eval"
+legacy_eval_dir = settings.data_root / "outputs" / "eval"
+eval_dir = league_eval_dir if league_eval_dir.exists() else legacy_eval_dir
 
 st.title("Model Health")
 
@@ -77,9 +89,32 @@ except (ModelHealthNotBuiltError, ProjectionSourceEvaluationNotFoundError) as ex
     st.warning(str(exc))
 st.divider()
 
+st.subheader("In-season performance")
+history = load_prediction_history(
+    settings.data_root / "outputs" / league.slug / "prediction_log"
+)
+inseason = summarize_inseason_performance(history)
+if inseason.is_empty():
+    st.warning(
+        "No completed week with non-placeholder actual points is available yet. "
+        "All-zero backfills are deliberately excluded."
+    )
+else:
+    st.dataframe(inseason, width="stretch", hide_index=True)
+    st.info(recommend_projection_source(inseason, live_source))
+    calibration = summarize_interval_calibration(history)
+    if not calibration.is_empty():
+        st.caption("Prediction interval calibration")
+        st.dataframe(calibration, width="stretch", hide_index=True)
+    regret = summarize_lineup_regret(history, parse_league_format(league))
+    if not regret.is_empty():
+        st.caption("Roster lineup regret (lower is better)")
+        st.dataframe(regret, width="stretch", hide_index=True)
+st.divider()
+
 reports = list_reports(eval_dir)
 if not reports:
-    st.error(
+    st.info(
         f"No evaluation report found under `{eval_dir}`. Run `ffapp evaluate --seasons ...` first."
     )
     st.stop()

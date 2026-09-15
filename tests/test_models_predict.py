@@ -561,7 +561,7 @@ class TestProjectWeekConsensusB3Source:
         # empirical median is exactly 3.0, so q50 = mean + 3.0.
         assert p0_row["q50"] == pytest.approx(p0_row["mean"] + 3.0)
 
-    def test_a_real_player_with_no_b3_row_gets_an_honest_null_mean(self, monkeypatch) -> None:
+    def test_a_real_player_with_no_b3_row_falls_back_to_b2(self, monkeypatch) -> None:
         train = _training_frame()
         target = _target_week_frame(week=9)
         features = pl.concat([train, target], how="vertical_relaxed")
@@ -594,10 +594,56 @@ class TestProjectWeekConsensusB3Source:
             b3_historical=_EMPTY_B3_HISTORICAL,
         )
 
-        assert result["mean"].null_count() == 6
-        # honest null mean -> the recentered quantile grid is null too,
-        # not a guessed value.
-        assert result["q50"].null_count() == 6
+        assert result["mean"].null_count() == 0
+        assert set(result["projection_source"].to_list()) == {"baseline_b2"}
+        assert result["q50"].null_count() == 0
+
+
+class TestProjectWeekEspnWeeklySource:
+    def test_uses_league_scored_espn_weekly_mean(self, monkeypatch) -> None:
+        train = _training_frame()
+        target = _target_week_frame(week=9)
+        features = pl.concat([train, target], how="vertical_relaxed")
+        weekly = pl.DataFrame(
+            {
+                "player_id": ["p0"],
+                "season": [2025],
+                "week": [9],
+                "b3_points": [14.0],
+            }
+        )
+        monkeypatch.setattr(
+            baselines_module, "fetch_espn_weekly_for_week", lambda *args, **kwargs: weekly
+        )
+        consensus = pl.DataFrame(
+            {"player_id": ["p1"], "season": [2025], "week": [9], "b3_points": [21.0]}
+        )
+        monkeypatch.setattr(
+            baselines_module, "fetch_b3_for_week", lambda *args, **kwargs: consensus
+        )
+
+        result = predict.project_week(
+            features,
+            2025,
+            9,
+            train_start=2015,
+            min_train_rows=10,
+            lightgbm_params=_FAST_PARAMS,
+            code_version="abc123",
+            now=datetime(2025, 11, 1, tzinfo=UTC),
+            projection_source="espn_weekly",
+            players_dim=pl.DataFrame({"player_id": []}),
+            b3_historical=_EMPTY_B3_HISTORICAL,
+            scoring_settings={"rec": 1.0},
+        )
+
+        by_player = {row["player_id"]: row["mean"] for row in result.to_dicts()}
+        assert by_player["p0"] == pytest.approx(14.0)
+        assert by_player["p1"] == pytest.approx(21.0)
+        sources = dict(zip(result["player_id"], result["projection_source"], strict=True))
+        assert sources["p0"] == "espn_weekly"
+        assert sources["p1"] == "consensus_b3"
+        assert sources["p2"] == "baseline_b2"
 
 
 class TestWriteProjections:

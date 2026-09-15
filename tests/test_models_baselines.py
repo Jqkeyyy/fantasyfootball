@@ -324,6 +324,41 @@ def test_fetch_b3_for_week_is_honestly_empty_when_no_commit_precedes_the_cutoff(
     assert result.columns == ["player_id", "season", "week", "b3_points"]
 
 
+def test_fetch_espn_weekly_for_week_applies_league_scoring(tmp_path, monkeypatch) -> None:
+    from ffapp.ingest import rankings
+
+    payload_path = tmp_path / "espn.json"
+    payload_path.write_text(json.dumps({"players": []}))
+    monkeypatch.setattr(rankings, "fetch_espn", lambda *args, **kwargs: payload_path)
+    monkeypatch.setattr(
+        rankings,
+        "normalize_espn_weekly",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "source": ["espn_weekly"],
+                "season": [2026],
+                "week": [2],
+                "player_name": ["Joe Burrow"],
+                "position": ["QB"],
+                "team": ["CIN"],
+                "passing_yards": [250.0],
+                "passing_tds": [2.0],
+            }
+        ),
+    )
+
+    result = baselines.fetch_espn_weekly_for_week(
+        2026,
+        2,
+        pl.DataFrame([_players_dim_row()]),
+        {"pass_yd": 0.04, "pass_td": 4.0},
+        offline=True,
+    )
+
+    assert result["player_id"].item() == "00-0036442"
+    assert result["b3_points"].item() == pytest.approx(18.0)
+
+
 # --- empirical_error_quantiles / apply_empirical_error_quantiles -------------------------
 
 

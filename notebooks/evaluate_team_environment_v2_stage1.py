@@ -15,7 +15,9 @@ settings = load_settings()
 
 team_week_context = pl.read_parquet(settings.data_root / "interim" / "team_week_context.parquet")
 schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
-snap_counts = pl.read_parquet(settings.data_root / "raw" / "nflverse" / "snap_counts_2015-2025.parquet")
+snap_counts = pl.read_parquet(
+    settings.data_root / "raw" / "nflverse" / "snap_counts_2015-2025.parquet"
+)
 injuries = pl.read_parquet(settings.data_root / "interim" / "injuries.parquet")
 usage_features_path = settings.data_root / "features" / "player_week_features.parquet"
 usage_features = pl.read_parquet(usage_features_path).select(

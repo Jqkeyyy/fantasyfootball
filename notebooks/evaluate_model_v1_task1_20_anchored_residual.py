@@ -82,7 +82,9 @@ def _filter_startable(predictions: pl.DataFrame, startable_counts: dict[str, int
     startable_keys = ranked.filter(pl.col("_true_rank") <= max_rank).select(
         "player_id", "season", "week", "position"
     )
-    return predictions.join(startable_keys, on=["player_id", "season", "week", "position"], how="inner")
+    return predictions.join(
+        startable_keys, on=["player_id", "season", "week", "position"], how="inner"
+    )
 
 
 def _print_spearman(predictions: pl.DataFrame, label: str) -> None:

@@ -35,7 +35,7 @@ import polars as pl
 
 from ffapp.config import DEFAULT_QUANTILES, load_settings
 from ffapp.interim.build import SKILL_POSITIONS
-from ffapp.models import availability, points, quantiles
+from ffapp.models import availability, quantiles
 
 DEV_SEASONS = [2021, 2022]
 TEST_SEASONS = [2023, 2024]
@@ -127,7 +127,9 @@ def main() -> None:
 
     recentered: dict[float, np.ndarray] = {}
     for tau in DEFAULT_QUANTILES:
-        recentered[tau] = np.maximum(unconditional[f"unconditional_q_{tau}"].to_numpy() + delta, 0.0)
+        recentered[tau] = np.maximum(
+            unconditional[f"unconditional_q_{tau}"].to_numpy() + delta, 0.0
+        )
 
     test_positions = test["position"].to_numpy()
     actual_all = test["target"].to_numpy()
@@ -138,7 +140,9 @@ def main() -> None:
             mask = test_positions == position
             if not mask.any():
                 continue
-            cov = _coverage(actual_all[mask], recentered[lower_tau][mask], recentered[upper_tau][mask])
+            cov = _coverage(
+                actual_all[mask], recentered[lower_tau][mask], recentered[upper_tau][mask]
+            )
             print(
                 f"    {position}: coverage={cov * 100:.1f}% "
                 f"(nominal {int(nominal * 100)}%, off by {abs(cov - nominal) * 100:.1f}pp, "

@@ -382,6 +382,48 @@ def normalize_espn(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
     return pl.DataFrame(rows, infer_schema_length=None)
 
 
+def normalize_espn_weekly(payload: dict[str, Any], *, season: int, week: int) -> pl.DataFrame:
+    """Extract ESPN's real per-week projection stat rows.
+
+    The bulk ``kona_player_info`` payload carries weekly projections as
+    ``scoringPeriodId == week``, ``statSourceId == 1`` and
+    ``statSplitTypeId == 1``.  This is distinct from ``normalize_espn``'s
+    season-total row and must never be mixed with it.
+    """
+    rows: list[dict[str, Any]] = []
+    for entry in payload.get("players", []):
+        player = entry["player"]
+        position = ESPN_POSITION_MAP.get(player.get("defaultPositionId"))
+        if position is None:
+            continue
+        weekly = next(
+            (
+                stat_row
+                for stat_row in player.get("stats", [])
+                if stat_row.get("scoringPeriodId") == week
+                and stat_row.get("statSourceId") == 1
+                and stat_row.get("statSplitTypeId") == 1
+            ),
+            None,
+        )
+        if weekly is None:
+            continue
+        row: dict[str, Any] = {
+            "source": "espn_weekly",
+            "season": season,
+            "week": week,
+            "player_name": player["fullName"],
+            "position": position,
+            "team": ESPN_TEAM_MAP.get(player.get("proTeamId"), None),
+        }
+        stats = weekly.get("stats", {})
+        for stat_id, column in ESPN_STAT_ID_MAP.items():
+            if stat_id in stats:
+                row[column] = float(stats[stat_id])
+        rows.append(row)
+    return pl.DataFrame(rows, infer_schema_length=None)
+
+
 # --- FantasyPros -------------------------------------------------------------
 #
 # Ranks-only (SPEC §9.2's "ecr_type: ro" -- Expert Consensus Rank -- case, not
@@ -1627,6 +1669,7 @@ __all__ = [
     "normalize_cbs",
     "normalize_draftsharks",
     "normalize_espn",
+    "normalize_espn_weekly",
     "normalize_fantasypros",
     "normalize_fantasysharks",
     "normalize_fftoday",

@@ -322,6 +322,13 @@ def _mock_fetch_all_sources(monkeypatch: pytest.MonkeyPatch) -> None:
             {"player_id": ["p1"], "season": [2025], "week": [9], "b3_points": [18.0]}
         ),
     )
+    monkeypatch.setattr(
+        baselines_module,
+        "fetch_espn_weekly_for_week",
+        lambda *a, **k: pl.DataFrame(
+            {"player_id": ["p1"], "season": [2025], "week": [9], "b3_points": [16.0]}
+        ),
+    )
 
 
 def test_build_prediction_log_assembles_a_real_row_per_player(monkeypatch) -> None:
@@ -365,6 +372,7 @@ def test_build_prediction_log_assembles_a_real_row_per_player(monkeypatch) -> No
     assert p1_row["model_mean"] is not None
     assert p1_row["b2_mean"] is not None
     assert p1_row["b3_mean"] is not None
+    assert p1_row["live_mean"] == p1_row["b3_mean"]
     assert p1_row["league_slug"] == "test-league"
     assert p1_row["run_label"] == "tuesday"
     assert p1_row["actual_points"] is None
@@ -403,6 +411,35 @@ def test_build_prediction_log_is_honestly_empty_with_no_row_universe(monkeypatch
 
     assert rows.is_empty()
     assert fetch_df.is_empty()
+
+
+def test_build_prediction_log_captures_the_configured_live_source(monkeypatch) -> None:
+    _mock_fetch_all_sources(monkeypatch)
+
+    rows, _ = prediction_log.build_prediction_log(
+        _features(),
+        _schedule(),
+        2025,
+        9,
+        "tuesday",
+        league_slug="test-league",
+        scoring_settings={},
+        players_dim=_players_dim(),
+        train_start=2015,
+        min_train_rows=10,
+        lightgbm_params=_FAST_PARAMS,
+        quantile_alphas=(0.10, 0.25, 0.50, 0.75, 0.90),
+        b3_historical=_empty_b3_historical(),
+        code_version="abc123",
+        now=datetime(2025, 11, 1, tzinfo=UTC),
+        offline=True,
+        settings=None,
+        live_projection_source="espn_weekly",
+    )
+
+    p1 = rows.filter(pl.col("player_id") == "p1")
+    assert p1["projection_source"].item() == "espn_weekly"
+    assert p1["live_mean"].item() == 16.0
 
 
 # --- write_prediction_log / backfill_actual_points / check_sources -------------------------
@@ -511,6 +548,27 @@ def test_backfill_actual_points_raises_a_named_error_when_week_was_never_logged(
     features = pl.DataFrame({"player_id": ["p1"], "season": [2025], "week": [9], "target": [17.5]})
 
     with pytest.raises(prediction_log.MissingBackfillError):
+        prediction_log.backfill_actual_points(
+            features, 2025, 9, league_slug="test-league", settings=settings
+        )
+
+
+def test_backfill_actual_points_rejects_placeholder_zero_week(tmp_path) -> None:
+    settings = _FakeSettings(tmp_path)
+    prediction_log.write_prediction_log(
+        _sample_rows(player_id="p1"),
+        pl.DataFrame(schema=prediction_log.SOURCE_FETCH_SCHEMA),
+        2025,
+        9,
+        "tuesday",
+        league_slug="test-league",
+        settings=settings,
+    )
+    features = pl.DataFrame(
+        {"player_id": ["p1"], "season": [2025], "week": [9], "target": [0.0]}
+    )
+
+    with pytest.raises(prediction_log.InvalidActualsError, match="all zero"):
         prediction_log.backfill_actual_points(
             features, 2025, 9, league_slug="test-league", settings=settings
         )

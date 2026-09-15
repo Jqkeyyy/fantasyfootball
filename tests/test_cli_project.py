@@ -45,6 +45,32 @@ _DEFAULT_FEATURES.update(
     }
 )
 
+_WEEKLY_LEAGUE = LeagueConfig(
+    slug="weekly-test-league",
+    display_name="Weekly Test League",
+    is_primary=True,
+    league_id="1",
+    season=2021,
+    league_cache={"scoring_settings": {"rec": 1.0}},
+    overrides={},
+)
+
+_SECOND_WEEKLY_LEAGUE = LeagueConfig(
+    slug="second-weekly-league",
+    display_name="Second Weekly League",
+    is_primary=False,
+    league_id="2",
+    season=2021,
+    league_cache={"scoring_settings": {"rec": 0.5}},
+    overrides={},
+)
+
+
+@pytest.fixture(autouse=True)
+def _patch_weekly_league(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "load_primary_league", lambda: _WEEKLY_LEAGUE)
+    monkeypatch.setattr(cli, "load_league", lambda slug: _WEEKLY_LEAGUE)
+
 
 def _features() -> pl.DataFrame:
     rows = []
@@ -72,8 +98,14 @@ def _features() -> pl.DataFrame:
 @pytest.fixture
 def fixture_settings(tmp_path: Path) -> Settings:
     features_dir = tmp_path / "features"
+    interim_dir = tmp_path / "interim"
     features_dir.mkdir(parents=True)
+    interim_dir.mkdir(parents=True)
     _features().write_parquet(features_dir / "player_week_features.parquet")
+    _features().select("player_id", "season", "week").with_columns(
+        pl.lit(10).alias("receptions"),
+        pl.lit(0).alias("passing_yards"),
+    ).write_parquet(interim_dir / "player_week_stats.parquet")
     return Settings(
         data_root=tmp_path,
         sleeper_username="fixture_user",
@@ -103,7 +135,9 @@ def test_project_writes_projections_parquet_with_every_spec_column(
     result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
 
     assert result.exit_code == 0, result.output
-    output_path = fixture_settings.data_root / "outputs" / "projections.parquet"
+    output_path = (
+        fixture_settings.data_root / "outputs" / _WEEKLY_LEAGUE.slug / "projections.parquet"
+    )
     assert output_path.exists()
     written = pl.read_parquet(output_path)
     assert written.height == 3
@@ -135,8 +169,58 @@ def test_project_upserts_a_second_week_alongside_the_first(
     result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
 
     assert result.exit_code == 0, result.output
-    written = pl.read_parquet(fixture_settings.data_root / "outputs" / "projections.parquet")
+    written = pl.read_parquet(
+        fixture_settings.data_root / "outputs" / _WEEKLY_LEAGUE.slug / "projections.parquet"
+    )
     assert set(written["week"].to_list()) == {7, 8}
+
+
+def test_project_keeps_two_leagues_in_separate_projection_files(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    monkeypatch.setattr(
+        cli,
+        "load_league",
+        lambda slug: {
+            _WEEKLY_LEAGUE.slug: _WEEKLY_LEAGUE,
+            _SECOND_WEEKLY_LEAGUE.slug: _SECOND_WEEKLY_LEAGUE,
+        }[slug],
+    )
+
+    first = runner.invoke(
+        cli.app,
+        ["project", "--season", "2020", "--week", "8", "--league", _WEEKLY_LEAGUE.slug],
+    )
+    second = runner.invoke(
+        cli.app,
+        [
+            "project",
+            "--season",
+            "2020",
+            "--week",
+            "8",
+            "--league",
+            _SECOND_WEEKLY_LEAGUE.slug,
+        ],
+    )
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert "Using league 'weekly-test-league'" in first.output
+    assert "Using league 'second-weekly-league'" in second.output
+    assert (
+        fixture_settings.data_root
+        / "outputs"
+        / _WEEKLY_LEAGUE.slug
+        / "projections.parquet"
+    ).exists()
+    assert (
+        fixture_settings.data_root
+        / "outputs"
+        / _SECOND_WEEKLY_LEAGUE.slug
+        / "projections.parquet"
+    ).exists()
 
 
 def test_project_exits_nonzero_when_the_target_week_has_no_rows(
@@ -148,6 +232,32 @@ def test_project_exits_nonzero_when_the_target_week_has_no_rows(
 
     assert result.exit_code == 1
     assert "No projections generated" in result.output
+
+
+def test_project_refuses_to_write_an_all_null_projection_artifact(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    monkeypatch.setattr(cli, "load_settings", lambda: fixture_settings)
+    null_result = pl.DataFrame(
+        {
+            "player_id": ["p1"],
+            "season": [2020],
+            "week": [8],
+            "mean": [None],
+        }
+    )
+    monkeypatch.setattr(cli.predict, "project_week", lambda *args, **kwargs: null_result)
+
+    result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
+
+    assert result.exit_code == 1
+    assert "refusing to write an all-null artifact" in result.output
+    assert not (
+        fixture_settings.data_root
+        / "outputs"
+        / _WEEKLY_LEAGUE.slug
+        / "projections.parquet"
+    ).exists()
 
 
 def test_project_defaults_season_to_settings_seasons_current(
@@ -211,7 +321,9 @@ def test_project_wires_consensus_b3_source_end_to_end(
     result = runner.invoke(cli.app, ["project", "--season", "2020", "--week", "8"])
 
     assert result.exit_code == 0, result.output
-    written = pl.read_parquet(b3_source_settings.data_root / "outputs" / "projections.parquet")
+    written = pl.read_parquet(
+        b3_source_settings.data_root / "outputs" / _WEEKLY_LEAGUE.slug / "projections.parquet"
+    )
     assert set(written["projection_source"].to_list()) == {"consensus_b3"}
     by_player = {row["player_id"]: row["mean"] for row in written.to_dicts()}
     assert by_player["p1"] == pytest.approx(11.0)

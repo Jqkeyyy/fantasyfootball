@@ -106,6 +106,7 @@ from ffapp.projections.aggregate import (
     map_ranks_to_points,
     rank_within_position,
 )
+from ffapp.tools.artifacts import atomic_write_parquet, atomic_write_text
 
 SOURCE_NAMES: tuple[str, ...] = (
     "espn",
@@ -150,6 +151,12 @@ PREDICTION_LOG_SCHEMA = {
     "position": pl.String,
     "team": pl.String,
     "projection_source": pl.String,
+    "live_mean": pl.Float64,
+    "live_q10": pl.Float64,
+    "live_q25": pl.Float64,
+    "live_q50": pl.Float64,
+    "live_q75": pl.Float64,
+    "live_q90": pl.Float64,
     "b3_mean": pl.Float64,
     "b3_q10": pl.Float64,
     "b3_q25": pl.Float64,
@@ -166,6 +173,8 @@ PREDICTION_LOG_SCHEMA = {
     "b2_mean": pl.Float64,
     "p_active": pl.Float64,
     "actual_points": pl.Float64,
+    "is_my_roster": pl.Boolean,
+    "was_starting": pl.Boolean,
     "model_version": pl.String,
     "feature_hash": pl.String,
     "git_sha": pl.String,
@@ -205,7 +214,7 @@ def load_source_refresh_status(path: Path = _SOURCE_STATUS_PATH) -> dict[str, st
 
 def write_source_refresh_status(statuses: dict[str, str], path: Path = _SOURCE_STATUS_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump({"sources": statuses}, sort_keys=True), encoding="utf-8")
+    atomic_write_text(yaml.safe_dump({"sources": statuses}, sort_keys=True), path)
 
 
 @dataclass
@@ -478,6 +487,7 @@ def build_prediction_log(
     now: datetime,
     offline: bool | None,
     settings: Settings,
+    live_projection_source: str = "consensus_b3",
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """The real per-week log build: three real `models.predict.project_week`
     calls (`"direct"` for `model_mean` -- logged even though it isn't
@@ -541,7 +551,31 @@ def build_prediction_log(
         offline=offline,
         settings=settings,
     )
-    if direct.is_empty() or b2.is_empty() or b3.is_empty():
+    known_live = {
+        "direct": direct,
+        "baseline_b2": b2,
+        "consensus_b3": b3,
+    }
+    live = known_live.get(live_projection_source)
+    if live is None:
+        live = predict.project_week(
+            features,
+            season,
+            week,
+            train_start=train_start,
+            min_train_rows=min_train_rows,
+            lightgbm_params=lightgbm_params,
+            code_version=code_version,
+            now=now,
+            quantile_alphas=quantile_alphas,
+            projection_source=live_projection_source,
+            players_dim=players_dim,
+            b3_historical=b3_historical,
+            offline=offline,
+            settings=settings,
+            scoring_settings=scoring_settings,
+        )
+    if direct.is_empty() or b2.is_empty() or b3.is_empty() or live.is_empty():
         return pl.DataFrame(schema=PREDICTION_LOG_SCHEMA), pl.DataFrame(schema=SOURCE_FETCH_SCHEMA)
 
     per_source_points, fetch_df = fetch_all_sources(
@@ -578,7 +612,6 @@ def build_prediction_log(
                 "feature_hash",
                 pl.col("git_commit").alias("git_sha"),
                 "as_of_utc",
-                "projection_source",
             ),
             on="player_id",
             how="left",
@@ -589,6 +622,20 @@ def build_prediction_log(
             how="left",
         )
         .join(b2.select("player_id", pl.col("mean").alias("b2_mean")), on="player_id", how="left")
+        .join(
+            live.select(
+                "player_id",
+                pl.col("mean").alias("live_mean"),
+                pl.col("q10").alias("live_q10"),
+                pl.col("q25").alias("live_q25"),
+                pl.col("q50").alias("live_q50"),
+                pl.col("q75").alias("live_q75"),
+                pl.col("q90").alias("live_q90"),
+                "projection_source",
+            ),
+            on="player_id",
+            how="left",
+        )
     )
     for name in WEEKLY_SOURCES:
         work = work.join(
@@ -639,6 +686,8 @@ def build_prediction_log(
         pl.lit(week).alias("week"),
         pl.lit(run_label).alias("run_label"),
         pl.lit(None, dtype=pl.Float64).alias("actual_points"),
+        pl.lit(None, dtype=pl.Boolean).alias("is_my_roster"),
+        pl.lit(None, dtype=pl.Boolean).alias("was_starting"),
     )
 
     return work.select(list(PREDICTION_LOG_SCHEMA)), fetch_df
@@ -681,7 +730,7 @@ def write_prediction_log(
         combined = pl.concat([existing, rows], how="vertical_relaxed")
     else:
         combined = rows
-    combined.write_parquet(week_path)
+    atomic_write_parquet(combined, week_path)
 
     latest_path = _log_dir(settings, league_slug) / "latest.parquet"
     latest_path.write_bytes(week_path.read_bytes())
@@ -696,7 +745,7 @@ def write_prediction_log(
         combined_fetches = pl.concat([existing_fetches, fetch_rows], how="vertical_relaxed")
     else:
         combined_fetches = fetch_rows
-    combined_fetches.write_parquet(fetches_path)
+    atomic_write_parquet(combined_fetches, fetches_path)
 
     return week_path
 
@@ -706,6 +755,10 @@ class MissingBackfillError(Exception):
     loudly (SPEC-ADDENDUM-05.md §B.4: "should warn loudly at the next
     run rather than leaving silent nulls that look like zeros"), not
     silently skipped."""
+
+
+class InvalidActualsError(Exception):
+    """The source week contains no non-zero outcomes and is not ready to backfill."""
 
 
 def backfill_actual_points(
@@ -728,13 +781,19 @@ def backfill_actual_points(
     actuals = features.filter((pl.col("season") == season) & (pl.col("week") == week)).select(
         "player_id", pl.col("target").alias("_actual")
     )
+    actual_magnitude = actuals.select(pl.col("_actual").abs().sum()).item()
+    if actuals.is_empty() or actual_magnitude is None or float(actual_magnitude) <= 0:
+        raise InvalidActualsError(
+            f"Actual outcomes for season={season} week={week} are absent or all zero; "
+            "refusing to overwrite the prediction log with placeholder data."
+        )
     filled = (
         logged.drop("actual_points")
         .join(actuals, on="player_id", how="left")
         .rename({"_actual": "actual_points"})
         .select(logged.columns)
     )
-    filled.write_parquet(week_path)
+    atomic_write_parquet(filled, week_path)
 
     latest_path = _log_dir(settings, league_slug) / "latest.parquet"
     if latest_path.exists():

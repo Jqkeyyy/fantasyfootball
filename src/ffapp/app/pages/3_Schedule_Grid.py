@@ -32,8 +32,9 @@ from typing import Any
 import polars as pl
 import streamlit as st
 
+from ffapp.app.league_selector import select_league
 from ffapp.app.schedule_grid_page import resolve_my_teams, style_schedule_grid
-from ffapp.config import load_primary_league, load_settings
+from ffapp.config import load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.features.opponent import ALL_POSITION_GROUPS
 from ffapp.ids import mapping as ids_mapping
@@ -80,7 +81,7 @@ def _load_my_roster_ids(league_id: str, sleeper_username: str | None) -> set[str
 
 
 settings = load_settings()
-league = load_primary_league()
+league = select_league()
 league_format = parse_league_format(league)
 
 st.title("Schedule Grid")
