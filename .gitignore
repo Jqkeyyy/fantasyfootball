@@ -24,6 +24,10 @@ data/outputs/*/*
 rankings/
 vendor/
 
+# Private league data archives sent out-of-band (e.g. to the hosting
+# collaborator) -- never belongs in this public repo.
+*.zip
+
 __pycache__/
 *.py[cod]
 *.egg-info/
