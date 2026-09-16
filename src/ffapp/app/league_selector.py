@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from ffapp.app.data_status import render_league_data_controls
 from ffapp.config import LeagueConfig, load_all_leagues
 
 
@@ -24,7 +25,9 @@ def select_league() -> LeagueConfig:
         format_func=lambda slug: by_slug[slug].display_name,
         key="selected_league_slug",
     )
-    return by_slug[selected]
+    league = by_slug[selected]
+    render_league_data_controls(league)
+    return league
 
 
 __all__ = ["ordered_leagues", "select_league"]

@@ -74,6 +74,8 @@ def _current_week_rows(
     code_version: str | None,
     now: datetime,
     quantile_alphas: Sequence[float],
+    projection_source: str,
+    scoring_settings: dict[str, float],
     offline: bool | None,
     settings: Settings | None,
 ) -> pl.DataFrame:
@@ -87,9 +89,10 @@ def _current_week_rows(
         code_version=code_version,
         now=now,
         quantile_alphas=quantile_alphas,
-        projection_source="consensus_b3",
+        projection_source=projection_source,
         players_dim=players_dim,
         b3_historical=b3_historical,
+        scoring_settings=scoring_settings,
         offline=offline,
         settings=settings,
     )
@@ -151,6 +154,11 @@ def project_week_range(
     resolved_lightgbm_params = (
         lightgbm_params if lightgbm_params is not None else DEFAULT_LIGHTGBM_SETTINGS
     )
+    # Keep the ROS anchor week on the same live source as the normal
+    # weekly board.  This matters when an external feed degrades: the
+    # configured fallback (currently ESPN) must apply everywhere instead
+    # of leaving ROS pinned to an unusable historical default.
+    projection_source = settings.model.projection_source if settings is not None else "consensus_b3"
     current = _current_week_rows(
         features,
         season,
@@ -163,6 +171,8 @@ def project_week_range(
         code_version=code_version,
         now=now,
         quantile_alphas=quantile_alphas,
+        projection_source=projection_source,
+        scoring_settings=scoring_settings,
         offline=offline,
         settings=settings,
     )

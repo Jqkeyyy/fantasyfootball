@@ -61,6 +61,78 @@ def test_current_free_agent_projections_carries_player_name() -> None:
     assert by_id == {"p1": "Player One", "p2": "Player Two"}
 
 
+def test_all_player_projections_includes_rostered_and_available_players() -> None:
+    ros_points = pl.DataFrame({"player_id": ["p1", "p2"], "ros_points": [80.0, 60.0]})
+    players_dim = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "sleeper_id": ["s1", "s2"],
+            "position": ["RB", "WR"],
+            "active": [True, True],
+            "team": ["KC", "BUF"],
+            "full_name": ["Player One", "Player Two"],
+        }
+    )
+
+    result = ros_rankings.all_player_projections(
+        ros_points, players_dim, rostered_ids={"s1"}, eligible_positions={"RB", "WR"}
+    )
+
+    by_id = {row["player_id"]: row for row in result.iter_rows(named=True)}
+    assert set(by_id) == {"p1", "p2"}
+    assert by_id["p1"]["availability"] == "Rostered"
+    assert by_id["p1"]["is_available"] is False
+    assert by_id["p2"]["availability"] == "Available"
+    assert by_id["p2"]["is_available"] is True
+
+
+def test_fantasy_team_lookup_prefers_custom_team_name() -> None:
+    rosters = [{"roster_id": 1, "owner_id": "u1", "players": ["s1", "s2"]}]
+    users = [
+        {
+            "user_id": "u1",
+            "display_name": "Display Name",
+            "metadata": {"team_name": "Custom Team"},
+        }
+    ]
+    assert ros_rankings.fantasy_team_lookup(rosters, users) == {
+        "s1": "Custom Team",
+        "s2": "Custom Team",
+    }
+
+
+def test_build_ros_board_ranks_rostered_players_against_free_agent_replacement() -> None:
+    ros_points = pl.DataFrame({"player_id": ["p1", "p2", "p3"], "ros_points": [100.0, 60.0, 40.0]})
+    players_dim = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2", "p3"],
+            "sleeper_id": ["s1", "s2", "s3"],
+            "position": ["RB", "RB", "RB"],
+            "active": [True, True, True],
+            "team": ["KC", "BUF", "DEN"],
+            "full_name": ["Rostered Star", "Free Agent One", "Free Agent Two"],
+        }
+    )
+    fmt = LeagueFormat(
+        n_teams=1,
+        starters={"RB": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=0,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+
+    board = ros_rankings.build_ros_board(ros_points, players_dim, {"s1"}, {"RB"}, fmt)
+
+    by_id = {row["player_id"]: row for row in board.iter_rows(named=True)}
+    assert set(by_id) == {"p1", "p2", "p3"}
+    assert by_id["p1"]["vor_ros"] == 40.0
+    assert by_id["p2"]["vor_ros"] == 0.0
+    assert by_id["p1"]["availability"] == "Rostered"
+
+
 def test_build_ros_board_adds_vor_ros_and_differs_by_league_format() -> None:
     # 50 RBs + 50 WRs -- large enough that neither league format's dedicated
     # starter count (10-team RB2 = 20, 18-team RB2 = 36) exhausts the real

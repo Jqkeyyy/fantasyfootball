@@ -146,8 +146,16 @@ def _apply_common_mocks(
     monkeypatch.setattr(cli.mapping, "build_players_dim", lambda *args, **kwargs: _players_dim())
 
     rosters_json_path = tmp_path / "rosters.json"
-    rosters_json_path.write_text(json.dumps([{"players": ["s1"]}]), encoding="utf-8")
+    rosters_json_path.write_text(
+        json.dumps([{"roster_id": 1, "owner_id": "u1", "players": ["s1"]}]),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(cli.sleeper, "fetch_rosters", lambda league_id, **kwargs: rosters_json_path)
+    users_json_path = tmp_path / "users.json"
+    users_json_path.write_text(
+        json.dumps([{"user_id": "u1", "display_name": "Fixture Team"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(cli.sleeper, "fetch_users", lambda league_id, **kwargs: users_json_path)
 
     nflverse_rosters_path = tmp_path / "nflverse_rosters.parquet"
     pl.DataFrame(schema={"player_id": pl.Utf8}).write_parquet(nflverse_rosters_path)
@@ -204,7 +212,7 @@ def _apply_common_mocks(
         cli.ros_aggregate,
         "aggregate_ros",
         lambda *args, **kwargs: pl.DataFrame(
-            {"player_id": ["p2", "p3"], "ros_points": [120.0, 90.0]}
+            {"player_id": ["p1", "p2", "p3"], "ros_points": [150.0, 120.0, 90.0]}
         ),
     )
 
@@ -230,15 +238,18 @@ def test_rankings_ros_writes_board_and_latest_parquet(
     )
     assert latest_path.exists()
     board = pl.read_parquet(latest_path)
-    assert set(board["player_id"].to_list()) == {"p2", "p3"}
+    assert set(board["player_id"].to_list()) == {"p1", "p2", "p3"}
     assert "vor_ros" in board.columns
     assert "rank" in board.columns
     assert "rank_change" in board.columns
     # No prior real board exists yet on a first-ever run -- rank_change is
     # honestly null (SPEC-ADDENDUM-04.md §D.5), never a guessed value.
     assert board["rank_change"].is_null().all()
-    # p1 is rostered (see rosters.json) -- must never appear on the free-agent board.
-    assert "p1" not in board["player_id"].to_list()
+    by_id = {row["player_id"]: row for row in board.iter_rows(named=True)}
+    assert by_id["p1"]["availability"] == "Rostered"
+    assert by_id["p1"]["fantasy_team"] == "Fixture Team"
+    assert by_id["p2"]["availability"] == "Available"
+    assert board["artifact_schema_version"].unique().to_list() == [2]
 
 
 def test_rankings_ros_threads_offline_flag_through_fetches(
@@ -355,6 +366,58 @@ def test_rankings_ros_exits_nonzero_when_projections_ros_is_missing(
     assert "projections_ros.parquet" in result.output
 
 
+def test_rankings_ros_rejects_multiple_current_weeks(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+    path = fixture_settings.data_root / "outputs" / "ros-rank-league" / "projections_ros.parquet"
+    stale = pl.read_parquet(path).with_columns(pl.lit(7).alias("week"))
+    pl.concat([stale, pl.read_parquet(path)], how="vertical_relaxed").write_parquet(path)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 1
+    assert "expected exactly one current week, found [7, 8]" in result.output
+
+
+def test_rankings_ros_rejects_projection_week_before_anchor(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+    path = fixture_settings.data_root / "outputs" / "ros-rank-league" / "projections_ros.parquet"
+    stale = pl.read_parquet(path).with_columns(
+        pl.lit(7).alias("week"), pl.lit(False).alias("is_current_week")
+    )
+    pl.concat([stale, pl.read_parquet(path)], how="vertical_relaxed").write_parquet(path)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 1
+    assert "contains Week 7 before the Week 8 ROS anchor" in result.output
+
+
+def test_rankings_ros_uses_stable_season_week_seed(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+    draws: list[float] = []
+
+    def _spy_aggregate_ros(*args: object, **kwargs: object) -> pl.DataFrame:
+        rng = kwargs["rng"]
+        assert isinstance(rng, cli.np.random.Generator)
+        draws.append(float(rng.random()))
+        return pl.DataFrame({"player_id": ["p2", "p3"], "ros_points": [120.0, 90.0]})
+
+    monkeypatch.setattr(cli.ros_aggregate, "aggregate_ros", _spy_aggregate_ros)
+
+    first = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+    second = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert draws[0] == draws[1]
+
+
 def test_rankings_ros_records_rank_change_against_a_prior_run(
     monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
 ) -> None:
@@ -379,4 +442,4 @@ def test_rankings_ros_records_rank_change_against_a_prior_run(
     # A second real run against the same real prior board resolves a real,
     # non-null rank_change for every player who appeared in both.
     assert second_latest["rank_change"].is_null().sum() == 0
-    assert second_latest["rank_change"].to_list() == [0, 0]
+    assert second_latest["rank_change"].to_list() == [0, 0, 0]

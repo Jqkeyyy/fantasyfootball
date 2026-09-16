@@ -24,7 +24,9 @@ def _minimal_settings(tmp_path, *, season_end_week: int) -> Settings:
     )
 
 
-def test_project_week_range_current_week_matches_existing_project_week(monkeypatch) -> None:
+def test_project_week_range_current_week_matches_existing_project_week(
+    monkeypatch, tmp_path
+) -> None:
     """The anchor week's own row(s) must come from the real, unchanged
     `models.predict.project_week` (mocked here to isolate this test from
     needing real fitted models/network) -- this test's real job is
@@ -36,6 +38,8 @@ def test_project_week_range_current_week_matches_existing_project_week(monkeypat
 
     def fake_project_week(features, season, week, **kwargs):
         called_with["week"] = week
+        called_with["projection_source"] = kwargs["projection_source"]
+        called_with["scoring_settings"] = kwargs["scoring_settings"]
         return pl.DataFrame(
             {
                 "player_id": ["p1"],
@@ -91,7 +95,7 @@ def test_project_week_range_current_week_matches_existing_project_week(monkeypat
         from_week=5,
         through_week=5,
         league_slug="test-league",
-        scoring_settings={},
+        scoring_settings={"pass_yd": 0.04},
         players_dim=pl.DataFrame(
             schema={
                 "player_id": pl.String,
@@ -121,9 +125,25 @@ def test_project_week_range_current_week_matches_existing_project_week(monkeypat
         lightgbm_params=None,
         code_version="abc",
         offline=True,
-        settings=None,
+        settings=Settings(
+            data_root=tmp_path,
+            sleeper_username="fixture_user",
+            cache=CacheSettings(
+                root=tmp_path / "raw",
+                offline_default=True,
+                staleness_hours={},
+                warn_on_stale=True,
+            ),
+            model=ModelSettings(
+                min_train_rows=1,
+                retrain_cadence_weeks=1,
+                projection_source="espn_weekly",
+            ),
+        ),
     )
     assert called_with["week"] == 5
+    assert called_with["projection_source"] == "espn_weekly"
+    assert called_with["scoring_settings"] == {"pass_yd": 0.04}
     assert result.filter(pl.col("is_current_week"))["mean"].to_list() == [15.0]
 
 

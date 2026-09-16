@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1035,7 +1036,11 @@ def rankings_ros_command(
             league_config.league_id, offline=offline, settings=settings
         ).read_text()
     )
+    users = json.loads(
+        sleeper.fetch_users(league_config.league_id, offline=offline, settings=settings).read_text()
+    )
     rostered_ids = waivers.rostered_sleeper_ids(rosters)
+    fantasy_team_by_sleeper_id = ros_rankings.fantasy_team_lookup(rosters, users)
     # league_relevant_positions takes the real LeagueConfig (needs .league_cache/
     # .overrides), not LeagueFormat -- confirmed against its real signature. The
     # existing `mapping` import (ffapp.ids.mapping) is this file's own established
@@ -1044,12 +1049,29 @@ def rankings_ros_command(
     # here, so this reuses the one already in scope rather than adding a duplicate.
     eligible_positions = mapping.league_relevant_positions(league_config)
 
-    if projections_ros.filter(pl.col("is_current_week")).is_empty():
+    current_week_rows = projections_ros.filter(pl.col("is_current_week"))
+    if current_week_rows.is_empty():
         typer.echo(
             f"{ros_path} has no real current-week row -- was it built for this season?", err=True
         )
         raise typer.Exit(code=1)
-    anchor_week = int(projections_ros.filter(pl.col("is_current_week"))["week"].min())  # type: ignore[arg-type]
+    current_weeks = sorted(current_week_rows["week"].unique().to_list())
+    if len(current_weeks) != 1:
+        typer.echo(
+            f"{ros_path} is invalid: expected exactly one current week, found "
+            f"{current_weeks}. Rebuild ROS projections for the current week.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    anchor_week = int(current_weeks[0])
+    earliest_projection_week = int(projections_ros["week"].min())  # type: ignore[arg-type]
+    if earliest_projection_week != anchor_week:
+        typer.echo(
+            f"{ros_path} is invalid: it contains Week {earliest_projection_week} before "
+            f"the Week {anchor_week} ROS anchor. Rebuild ROS projections for the current week.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     features_path = settings.data_root / "features" / "player_week_features.parquet"
     features = pl.read_parquet(features_path)
@@ -1170,12 +1192,20 @@ def rankings_ros_command(
         ros_sims=settings.ros.ros_sims,
         default_recovery_prob=settings.ros.default_recovery_prob,
         correlation=settings.simulation.correlation,
-        rng=np.random.default_rng(),
+        # A stable seed makes unchanged inputs produce unchanged rankings;
+        # rank movement should represent new football data, not Monte Carlo
+        # noise. The season/week pair changes the stream at each refresh.
+        rng=np.random.default_rng(resolved_season * 100 + anchor_week),
         default_p_active_by_position=default_p_active_by_position,
         default_p_miss_by_position=default_p_miss_by_position,
     )
     board = ros_rankings.build_ros_board(
-        aggregated, players_dim, rostered_ids, eligible_positions, league_format
+        aggregated,
+        players_dim,
+        rostered_ids,
+        eligible_positions,
+        league_format,
+        fantasy_team_by_sleeper_id=fantasy_team_by_sleeper_id,
     )
 
     out_dir = settings.data_root / "outputs" / league_config.slug / "rankings_ros"
@@ -1186,7 +1216,7 @@ def rankings_ros_command(
     previous_board = pl.read_parquet(latest_path) if latest_path.exists() else None
     with_rank_change = board.join(
         ros_rankings.rank_change(board, previous_board), on="player_id", how="left"
-    )
+    ).with_columns(pl.lit(ros_rankings.ROS_BOARD_SCHEMA_VERSION).alias("artifact_schema_version"))
 
     board_path = run_dir / "board.parquet"
     atomic_write_parquet(with_rank_change, board_path)
@@ -1194,7 +1224,9 @@ def rankings_ros_command(
     typer.echo(
         f"Wrote {with_rank_change.height} ROS ranked players to {board_path} (and latest.parquet)."
     )
-    typer.echo(with_rank_change.head(20).to_pandas().to_string(index=False))
+    preview = with_rank_change.head(20).to_pandas().to_string(index=False)
+    output_encoding = sys.stdout.encoding or "utf-8"
+    typer.echo(preview.encode(output_encoding, errors="replace").decode(output_encoding))
 
 
 def _resolve_league_slug(league: str | None) -> tuple[str, dict[str, float]]:

@@ -15,6 +15,26 @@ from ffapp.league_format import LeagueFormat
 from ffapp.tools import vor
 from ffapp.tools.waivers import free_agent_pool
 
+ROS_BOARD_SCHEMA_VERSION = 2
+REQUIRED_ROS_BOARD_COLUMNS = {
+    "player_id",
+    "player_name",
+    "position",
+    "nfl_team",
+    "availability",
+    "fantasy_team",
+    "ros_points",
+    "ros_p10",
+    "ros_p50",
+    "ros_p90",
+    "expected_games",
+    "playoff_weeks_value",
+    "vor_ros",
+    "rank",
+    "rank_change",
+    "artifact_schema_version",
+}
+
 
 def current_free_agent_projections(
     ros_points_table: pl.DataFrame,
@@ -43,6 +63,69 @@ def current_free_agent_projections(
     return joined.select("player_id", "player_name", "position", *extra_columns)
 
 
+def all_player_projections(
+    ros_points_table: pl.DataFrame,
+    players_dim: pl.DataFrame,
+    rostered_ids: set[str],
+    eligible_positions: set[str],
+    fantasy_team_by_sleeper_id: dict[str, str] | None = None,
+) -> pl.DataFrame:
+    """Every active, league-relevant projected player with roster status."""
+    team_by_sleeper_id = fantasy_team_by_sleeper_id or {}
+    relevant = free_agent_pool(players_dim, set(), eligible_positions)
+    joined = relevant.join(ros_points_table, on="player_id", how="inner").rename(
+        {"full_name": "player_name"}
+    )
+    extra_columns = [c for c in ros_points_table.columns if c != "player_id"]
+    return (
+        joined.with_columns((~pl.col("sleeper_id").is_in(list(rostered_ids))).alias("is_available"))
+        .with_columns(
+            pl.when(pl.col("is_available"))
+            .then(pl.lit("Available"))
+            .otherwise(pl.lit("Rostered"))
+            .alias("availability")
+        )
+        .with_columns(
+            pl.col("team").alias("nfl_team"),
+            pl.col("sleeper_id")
+            .replace_strict(team_by_sleeper_id, default=None, return_dtype=pl.String)
+            .alias("fantasy_team"),
+        )
+        .select(
+            "player_id",
+            "player_name",
+            "position",
+            "nfl_team",
+            "is_available",
+            "availability",
+            "fantasy_team",
+            *extra_columns,
+        )
+    )
+
+
+def fantasy_team_lookup(
+    rosters: list[dict[str, object]], users: list[dict[str, object]]
+) -> dict[str, str]:
+    """Map each rostered Sleeper player ID to its fantasy-team name."""
+
+    def user_team_name(user: dict[str, object]) -> str:
+        metadata = user.get("metadata")
+        custom = metadata.get("team_name") if isinstance(metadata, dict) else None
+        return str(custom or user.get("display_name") or user.get("user_id"))
+
+    name_by_owner = {str(user.get("user_id")): user_team_name(user) for user in users}
+    result: dict[str, str] = {}
+    for roster in rosters:
+        roster_id = roster.get("roster_id")
+        fallback = f"Team {roster_id}" if roster_id is not None else "Rostered"
+        team_name = name_by_owner.get(str(roster.get("owner_id")), fallback)
+        players = roster.get("players")
+        if isinstance(players, list):
+            result.update({str(player_id): team_name for player_id in players})
+    return result
+
+
 def build_ros_board(
     ros_points_table: pl.DataFrame,
     players_dim: pl.DataFrame,
@@ -51,6 +134,7 @@ def build_ros_board(
     league_format: LeagueFormat,
     *,
     replacement_overrides: dict[str, float] | None = None,
+    fantasy_team_by_sleeper_id: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """SPEC §9.4's fixed point (`tools.vor.compute_vor`), replacement
     level computed over `ros_points_table`'s own real remaining-value
@@ -58,14 +142,38 @@ def build_ros_board(
     own explicit correction to using August's preseason pool. Ranked by
     `vor_ros` descending, never by raw `ros_points` (§D.3: "never by raw
     projected points")."""
-    scoped = current_free_agent_projections(
+    available = current_free_agent_projections(
         ros_points_table, players_dim, rostered_ids, eligible_positions
     )
-    with_vor = vor.compute_vor(
+    scoped = all_player_projections(
+        ros_points_table,
+        players_dim,
+        rostered_ids,
+        eligible_positions,
+        fantasy_team_by_sleeper_id,
+    )
+    # Apply current free-agent replacement levels to every player. The full
+    # pool is only a fallback for a position with no projected free agents.
+    replacement = vor.replacement_level(
         scoped,
         league_format,
         points_column="ros_points",
         replacement_overrides=replacement_overrides,
+    )
+    if not available.is_empty():
+        replacement.update(
+            vor.replacement_level(
+                available,
+                league_format,
+                points_column="ros_points",
+                replacement_overrides=replacement_overrides,
+            )
+        )
+    with_vor = vor.compute_vor(
+        scoped,
+        league_format,
+        points_column="ros_points",
+        replacement_overrides=replacement,
     ).rename({"vor": "vor_ros"})
     return with_vor.sort("vor_ros", descending=True)
 
@@ -95,4 +203,12 @@ def rank_change(current_board: pl.DataFrame, previous_board: pl.DataFrame | None
     )
 
 
-__all__ = ["build_ros_board", "current_free_agent_projections", "rank_change"]
+__all__ = [
+    "REQUIRED_ROS_BOARD_COLUMNS",
+    "ROS_BOARD_SCHEMA_VERSION",
+    "all_player_projections",
+    "build_ros_board",
+    "current_free_agent_projections",
+    "fantasy_team_lookup",
+    "rank_change",
+]

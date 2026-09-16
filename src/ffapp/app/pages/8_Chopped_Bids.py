@@ -10,6 +10,7 @@ import polars as pl
 import streamlit as st
 
 from ffapp.app.chopped_calculator_page import build_player_values, is_chopped_league
+from ffapp.app.data_status import render_league_data_controls
 from ffapp.app.league_selector import ordered_leagues
 from ffapp.config import load_all_leagues, load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
@@ -38,6 +39,7 @@ selected_slug = st.sidebar.selectbox(
     key="selected_chopped_league_slug",
 )
 league = by_slug[selected_slug]
+render_league_data_controls(league)
 fmt = parse_league_format(league)
 
 st.title("Chopped Player Bid Calculator")
@@ -61,9 +63,7 @@ if not projections_path.exists():
 
 weekly_projections = pl.read_parquet(projections_path)
 season = cast(int, weekly_projections["season"].max())
-week = int(
-    cast(int, weekly_projections.filter(pl.col("season") == season)["week"].max())
-)
+week = int(cast(int, weekly_projections.filter(pl.col("season") == season)["week"].max()))
 ros_projections = pl.read_parquet(ros_path) if ros_path.exists() else None
 
 with st.sidebar:
