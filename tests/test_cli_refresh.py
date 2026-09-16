@@ -71,6 +71,9 @@ def _patch_refresh_dependencies(
     monkeypatch.setattr(
         cli.sleeper, "fetch_matchups", lambda *args, **kwargs: Path("matchups.json")
     )
+    monkeypatch.setattr(
+        cli.sleeper, "fetch_transactions", lambda *args, **kwargs: Path("transactions.json")
+    )
     monkeypatch.setattr(cli, "project_command", lambda **kwargs: None)
     monkeypatch.setattr(cli, "rankings_ros_command", lambda **kwargs: None)
     monkeypatch.setattr(cli.sos, "full_season_weeks", lambda *args, **kwargs: [1, 2, 3])
@@ -209,3 +212,33 @@ def test_weekly_refresh_rejects_league_with_all_leagues(
 
     assert result.exit_code == 1
     assert "cannot be combined" in result.output
+
+
+def test_weekly_refresh_caches_recent_chopped_transactions(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    _patch_refresh_dependencies(monkeypatch, fixture_settings)
+    chopped = LeagueConfig(
+        slug=_LEAGUE.slug,
+        display_name=_LEAGUE.display_name,
+        is_primary=True,
+        league_id=_LEAGUE.league_id,
+        season=2026,
+        league_cache={"scoring_settings": {}, "league_type": 3},
+        overrides={},
+    )
+    monkeypatch.setattr(cli, "load_primary_league", lambda: chopped)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        cli.sleeper,
+        "fetch_transactions",
+        lambda league_id, week, **kwargs: calls.append(week) or Path("transactions.json"),
+    )
+
+    result = runner.invoke(
+        cli.app,
+        ["refresh", "weekly", "--week", "2", "--skip-backfill", "--skip-ros", "--offline"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [1, 2]

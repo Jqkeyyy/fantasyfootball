@@ -42,6 +42,7 @@ The application is designed for a personal, data-driven workflow: expensive inge
 - Produces multiweek rest-of-season projections and free-agent VOR rankings.
 - Shows positional strength of schedule, a schedule heatmap, and player matchup details.
 - Provides a weekly action cockpit for lineups, start/sit choices, multiweek waivers, K/DST streaming, and decision alerts, plus a lineup-aware trade analyzer.
+- Detects real Sleeper `chopped` transactions and calculates league-specific FAAB bids from roster need, opponent demand, remaining budgets, and a configurable future-chop reserve.
 
 ### Data quality and evaluation
 
@@ -417,7 +418,7 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 
 | Page | What it shows | Required artifact(s) |
 | --- | --- | --- |
-| **Draft Board** | Filters, tier breaks, VOR, ADP value, and opportunity cost. Includes Pure Rankings and Live Draft tabs. | `data/outputs/draft_board_<season>.csv`; source tab also uses `source_rankings_<season>.csv`. |
+| **Draft Board** | Filters, tier breaks, VOR, ADP value, and opportunity cost. Includes Pure Rankings and Live Draft tabs. | `data/outputs/<league>/draft/draft_board_<season>.csv`; source tab also uses `source_rankings_<season>.csv`. |
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
 | **Weekly Actions** | Recommended lineup, projection explanations, matchup simulation, multiweek waiver bids with opponent competition, K/DST streamers, and pipeline health. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
@@ -426,6 +427,7 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | **Draft Mobile** | Phone-friendly best-available cards, position filters, tier depth, and live/replayed picks. | Draft board CSV plus live Sleeper access or an active replay session. |
 | **Mock Draft** | Sleeper-style draft grid and repeated practice against ADP-driven bots using real keepers and pick order. | Draft board CSV, league config, and keeper config where applicable. |
 | **ROS Rankings** | Current free-agent ROS rank, movement, expected games, quantile totals, VOR, and playoff value. | `data/outputs/<league>/rankings_ros/latest.parquet`. |
+| **Chopped Bids** | Available players from completed chopped transactions, roster-relative starter/depth value, opponent market estimate, recommended bid, and hard ceiling. | Weekly/ROS projections plus cached Sleeper rosters and transactions for the selected chopped league. |
 
 Streamlit discovers numbered files in `src/ffapp/app/pages/` automatically. Internal `*_page.py` modules contain testable transformation and rendering helpers; numbered files contain the Streamlit UI glue.
 

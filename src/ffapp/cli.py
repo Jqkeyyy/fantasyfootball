@@ -1551,6 +1551,14 @@ def refresh_weekly_command(
         sleeper.fetch_user(settings.sleeper_username, offline=offline, settings=settings)
         sleeper.fetch_rosters(league_config.league_id, offline=offline, settings=settings)
         sleeper.fetch_matchups(league_config.league_id, week, offline=offline, settings=settings)
+        if league_config.league_cache.get("league_type") == 3:
+            for transaction_week in sorted({max(1, week - 1), week}):
+                sleeper.fetch_transactions(
+                    league_config.league_id,
+                    transaction_week,
+                    offline=offline,
+                    settings=settings,
+                )
         steps.append({"name": "sleeper", "status": "healthy", "detail": "Cache refreshed"})
     except Exception as exc:
         degraded = True
