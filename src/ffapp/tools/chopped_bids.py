@@ -137,6 +137,7 @@ def build_chopped_bid_board(
     reserve_chops: int = 3,
     aggressiveness: float = 1.0,
     season_end_week: int = 17,
+    opponent_aggression: dict[int, float] | None = None,
 ) -> pl.DataFrame:
     """Estimate value, market pressure, and a bid range for chopped drops.
 
@@ -225,6 +226,7 @@ def build_chopped_bid_board(
         values_by_roster[roster_id] = roster_values
 
     reserve_discount = 1.0 / (1.0 + 0.15 * reserve_chops)
+    aggression_by_roster = opponent_aggression or {}
     raw_bids: dict[int, dict[str, int]] = {}
     reserved_bids: dict[int, dict[str, int]] = {}
     for roster_id, values in values_by_roster.items():
@@ -240,8 +242,11 @@ def build_chopped_bid_board(
                 aggressiveness=aggressiveness,
             )
             raw_bids[roster_id][sleeper_id] = raw
+            learned_multiplier = aggression_by_roster.get(roster_id, 1.0)
             reserved_bids[roster_id][sleeper_id] = (
-                min(budget, max(1, round(raw * reserve_discount))) if raw > 0 else 0
+                min(budget, max(1, round(raw * reserve_discount * learned_multiplier)))
+                if raw > 0
+                else 0
             )
 
     my_budget = remaining_faab(roster_by_id[my_roster_id], total_budget)

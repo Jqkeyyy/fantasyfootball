@@ -2,6 +2,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -33,7 +34,16 @@ from ffapp.models import availability, baselines, points, predict, predict_ros, 
 from ffapp.scoring import golden
 from ffapp.scoring.targets import apply_league_scoring_target
 from ffapp.sim import injury
-from ffapp.tools import automation, prediction_log, ros_aggregate, ros_rankings, sos, waivers
+from ffapp.tools import (
+    automation,
+    discord_notifications,
+    prediction_log,
+    ros_aggregate,
+    ros_rankings,
+    sos,
+    waiver_history,
+    waivers,
+)
 from ffapp.tools.artifacts import atomic_write_parquet, atomic_write_text
 from ffapp.tools.feature_refresh import refresh_features
 from ffapp.tools.news_refresh import refresh_news as refresh_news_events
@@ -56,6 +66,7 @@ draft_app = typer.Typer(name="draft", help="Draft board and draft-day support (S
 log_app = typer.Typer(name="log", help="In-season prediction logging (SPEC-ADDENDUM-05.md §B).")
 refresh_app = typer.Typer(name="refresh", help="End-to-end refresh workflows.")
 automation_app = typer.Typer(name="automation", help="Manage scheduled weekly refreshes.")
+notifications_app = typer.Typer(name="notifications", help="Test external notifications.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
@@ -64,6 +75,18 @@ app.add_typer(draft_app, name="draft")
 app.add_typer(log_app, name="log")
 app.add_typer(refresh_app, name="refresh")
 app.add_typer(automation_app, name="automation")
+app.add_typer(notifications_app, name="notifications")
+
+
+@notifications_app.command("discord-test")
+def discord_test_command() -> None:
+    """Send a safe test message to the configured Discord webhook."""
+    result = discord_notifications.send_discord_message(
+        "✅ Fantasy Football Assistant Discord notifications are connected."
+    )
+    typer.echo(result.detail)
+    if result.status != "sent":
+        raise typer.Exit(code=1)
 
 
 @automation_app.command("install")
@@ -1620,11 +1643,15 @@ def refresh_weekly_command(
     else:
         steps.append({"name": "news", "status": "skipped", "detail": "--skip-news"})
 
+    live_roster_rows: list[dict[str, Any]] = []
     try:
         if league_config.league_id is None or settings.sleeper_username is None:
             raise ValueError("Sleeper league ID and username must be configured")
         sleeper.fetch_user(settings.sleeper_username, offline=offline, settings=settings)
-        sleeper.fetch_rosters(league_config.league_id, offline=offline, settings=settings)
+        rosters_path = sleeper.fetch_rosters(
+            league_config.league_id, offline=offline, settings=settings
+        )
+        live_roster_rows = json.loads(rosters_path.read_text())
         sleeper.fetch_matchups(league_config.league_id, week, offline=offline, settings=settings)
         if league_config.league_cache.get("league_type") == 3:
             for transaction_week in sorted({max(1, week - 1), week}):
@@ -1638,6 +1665,30 @@ def refresh_weekly_command(
     except Exception as exc:
         degraded = True
         steps.append({"name": "sleeper", "status": "degraded", "detail": str(exc)})
+
+    is_chopped = bool(
+        league_config.league_cache.get("league_type") == 3
+        or league_config.league_cache.get("disable_trades")
+    )
+    if is_chopped and live_roster_rows:
+        try:
+            history_path, outcome_count = waiver_history.refresh_waiver_history(
+                settings,
+                league_config,
+                week,
+                [int(roster["roster_id"]) for roster in live_roster_rows],
+                offline=offline,
+            )
+            steps.append(
+                {
+                    "name": "waiver_history",
+                    "status": "healthy",
+                    "detail": f"{outcome_count} completed outcomes in {history_path}",
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append({"name": "waiver_history", "status": "degraded", "detail": str(exc)})
 
     try:
         project_command(
@@ -1765,6 +1816,42 @@ def refresh_weekly_command(
     )
     failed = failed or health.status == "failed"
     degraded = degraded or health.status == "degraded"
+    status = "failed" if failed else "degraded" if degraded else "healthy"
+    alert_payload_path = (
+        settings.data_root / "outputs" / league_config.slug / "alerts" / "latest.json"
+    )
+    alert_rows: list[dict[str, Any]] = []
+    if alert_payload_path.exists():
+        try:
+            loaded_alerts = json.loads(alert_payload_path.read_text()).get("alerts", [])
+            if isinstance(loaded_alerts, list):
+                alert_rows = loaded_alerts
+        except (OSError, json.JSONDecodeError):
+            pass
+    if status == "healthy" and not alert_rows:
+        notification = discord_notifications.NotificationResult(
+            "skipped", "Healthy refresh with no decision alerts"
+        )
+    else:
+        notification = discord_notifications.send_discord_message(
+            discord_notifications.format_refresh_message(
+                league_config.display_name,
+                resolved_season,
+                week,
+                status,
+                steps,
+                alert_rows,
+            )
+        )
+    if notification.status == "failed":
+        degraded = True
+    steps.append(
+        {
+            "name": "discord_notification",
+            "status": "degraded" if notification.status == "failed" else notification.status,
+            "detail": notification.detail,
+        }
+    )
     status = "failed" if failed else "degraded" if degraded else "healthy"
     manifest = _write_refresh_manifest(
         settings, league_config.slug, resolved_season, week, status, steps

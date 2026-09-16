@@ -54,6 +54,10 @@ def _patch_refresh_dependencies(
     schedule_path = settings.data_root / "interim" / "schedule.parquet"
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({"week": [1, 2, 3]}).write_parquet(schedule_path)
+    user_path = settings.data_root / "user.json"
+    user_path.write_text('{"user_id": "manager"}')
+    rosters_path = settings.data_root / "rosters.json"
+    rosters_path.write_text('[{"roster_id": 1, "owner_id": "manager", "players": ["p1"]}]')
     monkeypatch.setattr(cli, "load_settings", lambda: settings)
     monkeypatch.setattr(cli, "load_primary_league", lambda: _LEAGUE)
     monkeypatch.setattr(cli, "load_league", lambda slug: _LEAGUE)
@@ -66,8 +70,8 @@ def _patch_refresh_dependencies(
             "features": 200,
         },
     )
-    monkeypatch.setattr(cli.sleeper, "fetch_user", lambda *args, **kwargs: Path("user.json"))
-    monkeypatch.setattr(cli.sleeper, "fetch_rosters", lambda *args, **kwargs: Path("rosters.json"))
+    monkeypatch.setattr(cli.sleeper, "fetch_user", lambda *args, **kwargs: user_path)
+    monkeypatch.setattr(cli.sleeper, "fetch_rosters", lambda *args, **kwargs: rosters_path)
     monkeypatch.setattr(
         cli.sleeper, "fetch_matchups", lambda *args, **kwargs: Path("matchups.json")
     )
@@ -81,6 +85,11 @@ def _patch_refresh_dependencies(
         cli,
         "refresh_weekly_alerts",
         lambda *args, **kwargs: (settings.data_root / "alerts.json", 0),
+    )
+    monkeypatch.setattr(
+        cli.waiver_history,
+        "refresh_waiver_history",
+        lambda *args, **kwargs: (settings.data_root / "waivers.parquet", 0),
     )
     monkeypatch.setattr(
         cli,

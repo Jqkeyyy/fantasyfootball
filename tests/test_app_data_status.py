@@ -7,6 +7,7 @@ from ffapp.app.data_status import (
     artifact_freshness,
     build_refresh_command,
     load_latest_alerts,
+    load_refresh_manifest,
     run_label_for_date,
 )
 
@@ -57,3 +58,9 @@ def test_load_latest_alerts_is_resilient(tmp_path: Path) -> None:
     assert load_latest_alerts(path)[0]["message"] == "Replace injured starter"
     path.write_text("not-json")
     assert load_latest_alerts(path) == []
+
+
+def test_load_refresh_manifest_returns_structured_status(tmp_path: Path) -> None:
+    path = tmp_path / "latest.json"
+    path.write_text('{"status": "degraded", "steps": []}')
+    assert load_refresh_manifest(path) == {"status": "degraded", "steps": []}

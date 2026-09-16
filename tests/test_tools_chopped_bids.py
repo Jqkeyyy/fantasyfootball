@@ -239,3 +239,55 @@ def test_elite_backup_gets_smaller_depth_insurance_value() -> None:
     assert row["depth_gain_ppg"] == 1.95
     assert row["value_basis"] == "depth upgrade"
     assert row["drop_player"] == "Weak Bench"
+
+
+def test_learned_opponent_aggression_changes_market_estimate() -> None:
+    candidates = pl.DataFrame(
+        {
+            "sleeper_id": ["candidate"],
+            "chopped_week": [2],
+            "chopped_at_ms": [200],
+            "source_roster_id": [3],
+            "transaction_id": ["tx"],
+        }
+    )
+    values = pl.DataFrame(
+        {
+            "sleeper_id": ["mine", "theirs", "candidate"],
+            "player_id": ["mine", "theirs", "candidate"],
+            "player_name": ["Mine", "Theirs", "Candidate"],
+            "position": ["QB", "QB", "QB"],
+            "team": ["A", "B", "C"],
+            "current_week_projection": [10.0, 10.0, 20.0],
+            "projection_ppg": [10.0, 10.0, 20.0],
+        }
+    )
+    rosters = [
+        {"roster_id": 1, "players": ["mine"], "settings": {}},
+        {"roster_id": 2, "players": ["theirs"], "settings": {}},
+        {"roster_id": 3, "players": [], "settings": {}},
+    ]
+    neutral = build_chopped_bid_board(
+        candidates,
+        values,
+        rosters,
+        1,
+        _format(),
+        current_week=2,
+        total_budget=100,
+        reserve_chops=3,
+        season_end_week=2,
+    )
+    aggressive = build_chopped_bid_board(
+        candidates,
+        values,
+        rosters,
+        1,
+        _format(),
+        current_week=2,
+        total_budget=100,
+        reserve_chops=3,
+        season_end_week=2,
+        opponent_aggression={2: 1.5},
+    )
+    assert aggressive["market_bid"].item() > neutral["market_bid"].item()

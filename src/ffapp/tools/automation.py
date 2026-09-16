@@ -58,7 +58,13 @@ def task_xml(
     settings = ET.SubElement(task, f"{{{ns}}}Settings")
     ET.SubElement(settings, f"{{{ns}}}MultipleInstancesPolicy").text = "IgnoreNew"
     ET.SubElement(settings, f"{{{ns}}}StartWhenAvailable").text = "true"
+    ET.SubElement(settings, f"{{{ns}}}DisallowStartIfOnBatteries").text = "false"
+    ET.SubElement(settings, f"{{{ns}}}StopIfGoingOnBatteries").text = "false"
+    ET.SubElement(settings, f"{{{ns}}}WakeToRun").text = "true"
     ET.SubElement(settings, f"{{{ns}}}ExecutionTimeLimit").text = "PT2H"
+    retry = ET.SubElement(settings, f"{{{ns}}}RestartOnFailure")
+    ET.SubElement(retry, f"{{{ns}}}Interval").text = "PT5M"
+    ET.SubElement(retry, f"{{{ns}}}Count").text = "3"
     actions = ET.SubElement(task, f"{{{ns}}}Actions", Context="Author")
     action = ET.SubElement(actions, f"{{{ns}}}Exec")
     ET.SubElement(action, f"{{{ns}}}Command").text = str(executable)

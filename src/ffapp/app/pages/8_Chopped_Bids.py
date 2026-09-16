@@ -17,10 +17,16 @@ from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ids import mapping
 from ffapp.ingest import nflverse, sleeper
 from ffapp.league_format import parse_league_format
+from ffapp.sim.chopped_survival import simulate_chopped_survival
 from ffapp.tools.chopped_bids import (
     build_chopped_bid_board,
     chopped_candidates,
     remaining_faab,
+)
+from ffapp.tools.waiver_history import (
+    build_manager_bid_profiles,
+    extract_waiver_outcomes,
+    profile_multipliers,
 )
 from ffapp.tools.waivers import rostered_sleeper_ids
 
@@ -98,6 +104,25 @@ except Exception as exc:
     st.error(f"Could not load Sleeper rosters: {exc}")
     st.stop()
 
+try:
+    league_users: list[dict[str, Any]] = json.loads(
+        sleeper.fetch_users(
+            league.league_id, offline=not refresh_live, settings=settings
+        ).read_text()
+    )
+except Exception:
+    league_users = []
+display_name_by_user = {
+    str(row.get("user_id")): str(row.get("display_name") or row.get("user_id"))
+    for row in league_users
+}
+manager_by_roster = {
+    int(roster["roster_id"]): display_name_by_user.get(
+        str(roster.get("owner_id")), str(roster.get("owner_id") or f"Roster {roster['roster_id']}")
+    )
+    for roster in rosters
+}
+
 transactions: list[dict[str, Any]] = []
 missing_weeks: list[int] = []
 for transaction_week in range(1, week + 1):
@@ -146,6 +171,18 @@ player_values = build_player_values(
 total_budget = fmt.waiver_budget or 0
 my_roster = next(row for row in rosters if int(row["roster_id"]) == my_roster_id)
 my_remaining = remaining_faab(my_roster, total_budget)
+waiver_outcomes = extract_waiver_outcomes(transactions)
+bid_profiles = build_manager_bid_profiles(
+    waiver_outcomes, [int(roster["roster_id"]) for roster in rosters]
+)
+survival_table, survival_impacts = simulate_chopped_survival(
+    rosters,
+    player_values,
+    my_roster_id,
+    fmt,
+    candidates["sleeper_id"].to_list(),
+    n_sims=settings.simulation.week_sims,
+)
 
 try:
     board = build_chopped_bid_board(
@@ -158,18 +195,88 @@ try:
         total_budget=total_budget,
         reserve_chops=reserve_chops,
         aggressiveness=aggressiveness,
+        opponent_aggression=profile_multipliers(bid_profiles),
     )
 except Exception as exc:
     st.error(f"Could not calculate chopped bids: {exc}")
     st.stop()
+board = board.join(survival_impacts, on="sleeper_id", how="left").with_columns(
+    (pl.col("survival_probability_gain") * 100.0).alias("survival_gain_pct")
+)
 
 unresolved = candidates.height - board.height
 active_teams = sum(bool(roster.get("players")) for roster in rosters)
-metric_a, metric_b, metric_c, metric_d = st.columns(4)
+my_survival = survival_table.filter(pl.col("roster_id") == my_roster_id)[
+    "survival_probability"
+].item()
+metric_a, metric_b, metric_c, metric_d, metric_e = st.columns(5)
 metric_a.metric("Your remaining FAAB", f"${my_remaining}")
 metric_b.metric("Available chopped players", candidates.height)
 metric_c.metric("Teams remaining", active_teams)
 metric_d.metric("Projection week", week)
+metric_e.metric("Survive this chop", f"{my_survival:.0%}")
+
+with st.expander("This week's elimination risk"):
+    survival_display = survival_table.with_columns(
+        pl.col("roster_id")
+        .replace_strict(manager_by_roster, default=None, return_dtype=pl.String)
+        .alias("manager")
+    ).select(
+        "manager",
+        "projected_score",
+        "elimination_probability",
+        "survival_probability",
+    )
+    st.dataframe(
+        survival_display,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "projected_score": st.column_config.NumberColumn("Projected lineup", format="%.1f"),
+            "elimination_probability": st.column_config.ProgressColumn(
+                "Chop risk", min_value=0.0, max_value=1.0, format="percent"
+            ),
+            "survival_probability": st.column_config.ProgressColumn(
+                "Survival", min_value=0.0, max_value=1.0, format="percent"
+            ),
+        },
+    )
+    st.caption(
+        "Monte Carlo estimate from current optimized lineups and projection uncertainty; "
+        "it is decision support, not a guarantee."
+    )
+
+with st.expander("League bidding tendencies"):
+    if waiver_outcomes.is_empty():
+        st.caption("No completed FAAB waivers are available yet; neutral manager behavior is used.")
+    else:
+        profile_display = bid_profiles.with_columns(
+            pl.col("roster_id")
+            .replace_strict(manager_by_roster, default=None, return_dtype=pl.String)
+            .alias("manager")
+        ).select(
+            "manager",
+            "n_winning_bids",
+            "mean_bid",
+            "median_bid",
+            "p75_bid",
+            "max_bid",
+            "aggression_multiplier",
+        )
+        st.dataframe(
+            profile_display,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "mean_bid": st.column_config.NumberColumn("Average win", format="$%.1f"),
+                "median_bid": st.column_config.NumberColumn("Median win", format="$%.1f"),
+                "p75_bid": st.column_config.NumberColumn("75th percentile", format="$%.1f"),
+                "max_bid": st.column_config.NumberColumn("Largest win", format="$%d"),
+                "aggression_multiplier": st.column_config.NumberColumn(
+                    "Learned multiplier", format="%.2fx"
+                ),
+            },
+        )
 
 if unresolved:
     st.warning(
@@ -190,6 +297,8 @@ st.dataframe(
         "aggressive_bid",
         "recommended_win_probability",
         "survival_urgency",
+        "survival_probability_after",
+        "survival_gain_pct",
         "faab_after_recommended",
         "value_bid",
         "market_bid",
@@ -216,6 +325,10 @@ st.dataframe(
         "survival_urgency": st.column_config.ProgressColumn(
             "Survival urgency", min_value=0.0, max_value=1.0, format="percent"
         ),
+        "survival_probability_after": st.column_config.ProgressColumn(
+            "Survival after add", min_value=0.0, max_value=1.0, format="percent"
+        ),
+        "survival_gain_pct": st.column_config.NumberColumn("Survival gain", format="%+.1f%%"),
         "faab_after_recommended": st.column_config.NumberColumn("FAAB after bid", format="$%d"),
         "value_bid": st.column_config.NumberColumn("Value bid", format="$%d"),
         "market_bid": st.column_config.NumberColumn("Market estimate", format="$%d"),

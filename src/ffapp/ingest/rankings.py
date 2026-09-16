@@ -39,6 +39,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -1490,9 +1491,12 @@ def _get_fp_weekly_commits_page(page: int) -> list[dict[str, Any]]:
     """One page (100) of commit history for `fp_latest_weekly.csv`, newest
     first (GitHub's own default order). The only network call this
     function makes."""
+    token = os.getenv("GITHUB_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     response = _get_session().get(
         FP_WEEKLY_COMMITS_API,
         params={"path": FP_WEEKLY_ARCHIVE_PATH, "per_page": "100", "page": str(page)},
+        headers=headers,
         timeout=30,
     )
     response.raise_for_status()

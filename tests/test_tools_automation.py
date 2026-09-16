@@ -22,3 +22,5 @@ def test_task_xml_uses_project_executable_and_weekly_label(tmp_path: Path) -> No
     assert str(tmp_path) in values
     assert "refresh weekly --all-leagues --run-label thursday --no-offline" in values
     assert any(node.tag.endswith("Thursday") for node in root.iter())
+    assert "PT5M" in values
+    assert "3" in values

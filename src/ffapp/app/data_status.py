@@ -115,6 +115,16 @@ def load_latest_alerts(path: Path) -> list[dict[str, object]]:
     return alerts if isinstance(alerts, list) else []
 
 
+def load_refresh_manifest(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def build_refresh_command(
     league_slug: str, *, executable: str = "uv", run_label: str | None = None
 ) -> list[str]:
@@ -176,6 +186,23 @@ def render_league_data_controls(league: LeagueConfig) -> None:
             for alert in alerts[:5]:
                 st.warning(str(alert.get("message", "Actionable lineup change detected.")))
 
+        manifest = load_refresh_manifest(
+            settings.data_root / "outputs" / league.slug / "refresh_runs" / "latest.json"
+        )
+        if manifest is not None:
+            refresh_status = str(manifest.get("status", "unknown"))
+            generated = str(manifest.get("generated_at_utc", "unknown time"))
+            st.caption(f"Last refresh: {refresh_status} · {generated}")
+            steps = manifest.get("steps", [])
+            if isinstance(steps, list):
+                problems = [
+                    step
+                    for step in steps
+                    if isinstance(step, dict) and step.get("status") in {"degraded", "failed"}
+                ]
+                for step in problems[:3]:
+                    st.warning(f"{step.get('name')}: {step.get('detail')}")
+
         result_key = f"refresh_result_{league.slug}"
         if result_key in st.session_state:
             st.caption(str(st.session_state.pop(result_key)))
@@ -202,6 +229,7 @@ __all__ = [
     "build_refresh_command",
     "league_data_status",
     "load_latest_alerts",
+    "load_refresh_manifest",
     "render_league_data_controls",
     "run_label_for_date",
     "run_weekly_refresh",
