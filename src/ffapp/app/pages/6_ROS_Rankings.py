@@ -16,9 +16,11 @@ from ffapp.app.ros_rankings_page import (
     player_week_schedule,
     prepare_board,
     style_rank_change,
+    team_specific_recommendations,
     validate_board_schema,
 )
 from ffapp.config import load_settings
+from ffapp.league_format import parse_league_format
 
 st.set_page_config(page_title="ROS Rankings", layout="wide")
 
@@ -116,6 +118,30 @@ st.caption(
     "Rank change always compares VOR rank with the prior run. Click a column header for "
     "an additional table sort, or select a player row for the full breakdown."
 )
+
+with st.expander("Best fits for my roster", expanded=True):
+    recommendations = team_specific_recommendations(board, parse_league_format(league))
+    if recommendations.is_empty():
+        st.info("My roster could not be resolved, or no projected free agents are available.")
+    else:
+        st.caption(
+            "Lineup gain compares each free agent with your projection-optimal current lineup. "
+            "Playoff impact uses the same comparison over playoff-week value."
+        )
+        st.dataframe(
+            recommendations.drop("player_id"),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "lineup_gain_ppg": st.column_config.NumberColumn(
+                    "Lineup Gain / Game", format="+%.2f"
+                ),
+                "playoff_lineup_gain": st.column_config.NumberColumn(
+                    "Playoff Gain", format="+%.1f"
+                ),
+                "vor_ros": st.column_config.NumberColumn("VOR", format="%.1f"),
+            },
+        )
 
 selected_rows = cast(Any, event).selection.rows
 if selected_rows:

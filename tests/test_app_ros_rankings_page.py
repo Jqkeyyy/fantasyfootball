@@ -12,8 +12,10 @@ from ffapp.app.ros_rankings_page import (
     player_week_schedule,
     prepare_board,
     style_rank_change,
+    team_specific_recommendations,
     validate_board_schema,
 )
+from ffapp.league_format import LeagueFormat
 
 
 def test_style_rank_change_formats_signed_movement() -> None:
@@ -123,3 +125,36 @@ def test_explain_ros_player_reports_replacement_and_rank_change() -> None:
 def test_validate_board_schema_rejects_old_artifact() -> None:
     with pytest.raises(RosBoardSchemaError, match="older artifact schema"):
         validate_board_schema(pl.DataFrame({"player_id": ["p1"]}))
+
+
+def test_team_specific_recommendations_reports_lineup_gain_and_drop() -> None:
+    board = pl.DataFrame(
+        {
+            "player_id": ["mine1", "mine2", "fa1"],
+            "player_name": ["My Starter", "My Bench", "Free Star"],
+            "position": ["RB", "RB", "RB"],
+            "nfl_team": ["A", "B", "C"],
+            "is_my_roster": [True, True, False],
+            "is_available": [False, False, True],
+            "ros_points": [100.0, 50.0, 150.0],
+            "expected_games": [10.0, 10.0, 10.0],
+            "playoff_weeks_value": [30.0, 15.0, 45.0],
+            "vor_ros": [30.0, -20.0, 80.0],
+        }
+    )
+    fmt = LeagueFormat(
+        n_teams=1,
+        starters={"RB": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=1,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    result = team_specific_recommendations(board, fmt)
+    row = result.row(0, named=True)
+    assert row["player_name"] == "Free Star"
+    assert row["lineup_gain_ppg"] == 5.0
+    assert row["playoff_lineup_gain"] == 15.0
+    assert row["drop_player"] == "My Bench"

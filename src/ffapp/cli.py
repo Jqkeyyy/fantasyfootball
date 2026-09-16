@@ -23,7 +23,7 @@ from ffapp.draft import export as draft_export
 from ffapp.draft import replay as draft_replay
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.env import load_env
-from ffapp.evaluation import backtest
+from ffapp.evaluation import backtest, inseason
 from ffapp.evaluation import metrics as evaluation_metrics
 from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
@@ -33,7 +33,7 @@ from ffapp.models import availability, baselines, points, predict, predict_ros, 
 from ffapp.scoring import golden
 from ffapp.scoring.targets import apply_league_scoring_target
 from ffapp.sim import injury
-from ffapp.tools import prediction_log, ros_aggregate, ros_rankings, sos, waivers
+from ffapp.tools import automation, prediction_log, ros_aggregate, ros_rankings, sos, waivers
 from ffapp.tools.artifacts import atomic_write_parquet, atomic_write_text
 from ffapp.tools.feature_refresh import refresh_features
 from ffapp.tools.news_refresh import refresh_news as refresh_news_events
@@ -55,6 +55,7 @@ scoring_app = typer.Typer(name="scoring", help="League scoring engine (SPEC.md �
 draft_app = typer.Typer(name="draft", help="Draft board and draft-day support (SPEC.md §9).")
 log_app = typer.Typer(name="log", help="In-season prediction logging (SPEC-ADDENDUM-05.md §B).")
 refresh_app = typer.Typer(name="refresh", help="End-to-end refresh workflows.")
+automation_app = typer.Typer(name="automation", help="Manage scheduled weekly refreshes.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(cache_app, name="cache")
 app.add_typer(ids_app, name="ids")
@@ -62,6 +63,28 @@ app.add_typer(scoring_app, name="scoring")
 app.add_typer(draft_app, name="draft")
 app.add_typer(log_app, name="log")
 app.add_typer(refresh_app, name="refresh")
+app.add_typer(automation_app, name="automation")
+
+
+@automation_app.command("install")
+def automation_install_command() -> None:
+    """Install Tuesday, Thursday, and Sunday 9 AM local refresh tasks."""
+    for name in automation.install_tasks(Path.cwd()):
+        typer.echo(f"Installed {name}")
+
+
+@automation_app.command("status")
+def automation_status_command() -> None:
+    """Show whether each scheduled refresh task is installed."""
+    for label, installed in automation.task_statuses().items():
+        typer.echo(f"{label}: {'installed' if installed else 'not installed'}")
+
+
+@automation_app.command("remove")
+def automation_remove_command() -> None:
+    """Remove the project's scheduled refresh tasks."""
+    removed = automation.remove_tasks()
+    typer.echo(f"Removed {len(removed)} scheduled refresh task(s).")
 
 
 def _version_callback(value: bool) -> None:
@@ -1041,6 +1064,25 @@ def rankings_ros_command(
     )
     rostered_ids = waivers.rostered_sleeper_ids(rosters)
     fantasy_team_by_sleeper_id = ros_rankings.fantasy_team_lookup(rosters, users)
+    my_roster_sleeper_ids: set[str] = set()
+    if settings.sleeper_username is not None:
+        sleeper_user = json.loads(
+            sleeper.fetch_user(
+                settings.sleeper_username, offline=offline, settings=settings
+            ).read_text()
+        )
+        my_roster = next(
+            (
+                roster
+                for roster in rosters
+                if str(roster.get("owner_id")) == str(sleeper_user.get("user_id"))
+            ),
+            None,
+        )
+        if my_roster is not None:
+            my_roster_sleeper_ids = {
+                str(player_id) for player_id in (my_roster.get("players") or [])
+            }
     # league_relevant_positions takes the real LeagueConfig (needs .league_cache/
     # .overrides), not LeagueFormat -- confirmed against its real signature. The
     # existing `mapping` import (ffapp.ids.mapping) is this file's own established
@@ -1206,6 +1248,7 @@ def rankings_ros_command(
         eligible_positions,
         league_format,
         fantasy_team_by_sleeper_id=fantasy_team_by_sleeper_id,
+        my_roster_sleeper_ids=my_roster_sleeper_ids,
     )
 
     out_dir = settings.data_root / "outputs" / league_config.slug / "rankings_ros"
@@ -1342,12 +1385,12 @@ def log_week_command(
             )
             my_ids = {
                 sleeper_to_player[player_id]
-                for player_id in my_roster.get("players", [])
+                for player_id in (my_roster.get("players") or [])
                 if player_id in sleeper_to_player
             }
             starter_ids = {
                 sleeper_to_player[player_id]
-                for player_id in my_roster.get("starters", [])
+                for player_id in (my_roster.get("starters") or [])
                 if player_id in sleeper_to_player
             }
             rows = rows.with_columns(
@@ -1670,14 +1713,27 @@ def refresh_weekly_command(
 
     if run_label is not None:
         try:
-            log_week_command(
-                week=week,
-                run_label=run_label,
-                season=resolved_season,
-                league=league_config.slug,
-                offline=offline,
-            )
-            steps.append({"name": "prediction_log", "status": "healthy", "detail": run_label})
+            try:
+                log_week_command(
+                    week=week,
+                    run_label=run_label,
+                    season=resolved_season,
+                    league=league_config.slug,
+                    offline=offline,
+                )
+                detail = run_label
+            except Exception as live_exc:
+                if offline is True:
+                    raise
+                log_week_command(
+                    week=week,
+                    run_label=run_label,
+                    season=resolved_season,
+                    league=league_config.slug,
+                    offline=True,
+                )
+                detail = f"{run_label}; cached-source fallback after: {live_exc}"
+            steps.append({"name": "prediction_log", "status": "healthy", "detail": detail})
         except Exception as exc:
             failed = True
             detail = str(exc) or type(exc).__name__
@@ -1686,6 +1742,21 @@ def refresh_weekly_command(
         steps.append(
             {"name": "prediction_log", "status": "skipped", "detail": "No run label given"}
         )
+
+    try:
+        summary = inseason.materialize_inseason_report(
+            settings, league_config, parse_league_format(league_config)
+        )
+        steps.append(
+            {
+                "name": "model_accuracy",
+                "status": "healthy",
+                "detail": json.dumps(summary, sort_keys=True),
+            }
+        )
+    except Exception as exc:
+        degraded = True
+        steps.append({"name": "model_accuracy", "status": "degraded", "detail": str(exc)})
 
     health = inspect_weekly_pipeline(settings, league_config.slug, resolved_season, week)
     steps.extend(

@@ -174,12 +174,12 @@ def refresh_weekly_alerts(
     rostered_ids = {
         sleeper_to_player[player]
         for roster in rosters
-        for player in roster.get("players", [])
+        for player in (roster.get("players") or [])
         if player in sleeper_to_player
     }
     starter_ids = {
         sleeper_to_player[player]
-        for player in my_roster.get("starters", [])
+        for player in (my_roster.get("starters") or [])
         if player in sleeper_to_player
     }
     output_dir = settings.data_root / "outputs" / league.slug / "alerts"

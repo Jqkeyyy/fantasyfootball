@@ -135,6 +135,14 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
     assert star["market_bid"] == 50
     assert star["recommended_bid"] == 91
     assert star["recommended_bid"] <= star["max_bid"]
+    assert star["conservative_bid"] <= star["recommended_bid"] <= star["aggressive_bid"]
+    assert (
+        star["conservative_win_probability"]
+        <= star["recommended_win_probability"]
+        <= star["aggressive_win_probability"]
+    )
+    assert star["survival_urgency"] == 1.0
+    assert star["faab_after_recommended"] == 9
     assert small["competing_teams"] == 0
     assert small["recommended_bid"] == 9
 
@@ -183,6 +191,8 @@ def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
     assert row["market_bid"] == 100
     assert row["recommended_bid"] == 0
     assert row["recommendation"] == "Pass above max"
+    assert row["survival_urgency"] == 0.0
+    assert row["faab_after_recommended"] == 10
 
 
 def test_elite_backup_gets_smaller_depth_insurance_value() -> None:

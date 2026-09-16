@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import streamlit as st
 
 from ffapp.app.league_selector import select_league
@@ -45,9 +46,11 @@ from ffapp.config import CONFIG_DIR, load_settings
 from ffapp.evaluation.inseason import (
     load_prediction_history,
     recommend_projection_source,
+    source_reliability_weights,
     summarize_inseason_performance,
     summarize_interval_calibration,
     summarize_lineup_regret,
+    weekly_accuracy,
 )
 from ffapp.league_format import parse_league_format
 
@@ -90,9 +93,7 @@ except (ModelHealthNotBuiltError, ProjectionSourceEvaluationNotFoundError) as ex
 st.divider()
 
 st.subheader("In-season performance")
-history = load_prediction_history(
-    settings.data_root / "outputs" / league.slug / "prediction_log"
-)
+history = load_prediction_history(settings.data_root / "outputs" / league.slug / "prediction_log")
 inseason = summarize_inseason_performance(history)
 if inseason.is_empty():
     st.warning(
@@ -102,6 +103,19 @@ if inseason.is_empty():
 else:
     st.dataframe(inseason, width="stretch", hide_index=True)
     st.info(recommend_projection_source(inseason, live_source))
+    trends = weekly_accuracy(history)
+    if not trends.is_empty():
+        st.caption("Weekly MAE trend (lower is better)")
+        trend_chart = trends.with_columns(
+            (pl.col("season").cast(pl.String) + " W" + pl.col("week").cast(pl.String)).alias(
+                "period"
+            )
+        ).pivot(on="source", index="period", values="mae")
+        st.line_chart(trend_chart.to_pandas().set_index("period"))
+    weights = source_reliability_weights(inseason)
+    if not weights.is_empty():
+        st.caption("Evidence-based source weights")
+        st.dataframe(weights, width="stretch", hide_index=True)
     calibration = summarize_interval_calibration(history)
     if not calibration.is_empty():
         st.caption("Prediction interval calibration")

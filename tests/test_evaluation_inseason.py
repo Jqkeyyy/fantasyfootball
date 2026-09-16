@@ -4,10 +4,12 @@ import polars as pl
 
 from ffapp.evaluation.inseason import (
     recommend_projection_source,
+    source_reliability_weights,
     summarize_inseason_performance,
     summarize_interval_calibration,
     summarize_lineup_regret,
     valid_scored_history,
+    weekly_accuracy,
 )
 from ffapp.league_format import LeagueFormat
 
@@ -50,9 +52,7 @@ def test_summary_reports_accuracy_and_rank_metrics() -> None:
     assert direct["weekly_spearman"].item() == 1.0
     assert direct["n_obs"].item() == 3
     assert b2["mae"].item() == 0.0
-    espn = result.filter(
-        (pl.col("source") == "espn_weekly") & (pl.col("position") == "ALL")
-    )
+    espn = result.filter((pl.col("source") == "espn_weekly") & (pl.col("position") == "ALL"))
     assert espn["mae"].item() == 0.5
 
 
@@ -72,9 +72,7 @@ def test_latest_run_label_is_used_once_per_player_week() -> None:
 def test_interval_calibration_scores_the_logged_live_distribution() -> None:
     result = summarize_interval_calibration(_history([5.0, 10.0, 20.0]))
 
-    live_80 = result.filter(
-        (pl.col("source") == "espn_weekly") & (pl.col("interval") == "80%")
-    )
+    live_80 = result.filter((pl.col("source") == "espn_weekly") & (pl.col("interval") == "80%"))
     assert live_80["observed_coverage"].item() == 1.0
     assert live_80["mean_width"].item() == 4.0
 
@@ -100,3 +98,24 @@ def test_source_recommendation_waits_for_enough_evidence() -> None:
     result = summarize_inseason_performance(_history([5.0, 10.0, 20.0]))
 
     assert recommend_projection_source(result, "espn_weekly").startswith("Insufficient")
+
+
+def test_reliability_weights_favor_lower_error_sources() -> None:
+    performance = summarize_inseason_performance(_history([5.0, 10.0, 20.0]))
+    weights = source_reliability_weights(performance, min_observations=1, min_weeks=1)
+
+    all_positions = weights.filter(pl.col("position") == "ALL")
+    b2 = all_positions.filter(pl.col("source") == "baseline_b2")["weight"].item()
+    direct = all_positions.filter(pl.col("source") == "direct")["weight"].item()
+    assert b2 > direct
+    assert all_positions["weight"].sum() == 1.0
+
+
+def test_weekly_accuracy_preserves_completed_week_trend() -> None:
+    history = pl.concat([_history([5.0, 10.0], week=1), _history([7.0, 11.0], week=2)])
+
+    trend = weekly_accuracy(history)
+
+    direct = trend.filter(pl.col("source") == "direct")
+    assert direct["week"].to_list() == [1, 2]
+    assert direct["mae"].to_list() == [2.0, 2.0]

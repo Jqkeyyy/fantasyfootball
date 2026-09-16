@@ -71,6 +71,16 @@ def _percentile(values: list[int], percentile: float) -> int:
     return int(round(ordered[lower] * (1.0 - weight) + ordered[upper] * weight))
 
 
+def _estimated_win_probability(bid: int, opponent_bids: list[int]) -> float:
+    """Smoothed empirical chance that a bid clears modeled opponents."""
+    if bid <= 0:
+        return 0.0
+    if not opponent_bids:
+        return 0.95
+    cleared = sum(opponent_bid < bid for opponent_bid in opponent_bids)
+    return (cleared + 1.0) / (len(opponent_bids) + 2.0)
+
+
 def _roster_players(
     roster: dict[str, Any], by_sleeper_id: dict[str, dict[str, Any]]
 ) -> list[PlayerProjection]:
@@ -164,10 +174,15 @@ def build_chopped_bid_board(
         roster_id: _fast_lineup_points(lineup, fmt) for roster_id, lineup in lineups.items()
     }
     my_baseline = optimal_lineup(lineups[my_roster_id], fmt)
+    opponent_count = max(1, len(baseline_points) - 1)
+    weaker_teams = sum(
+        points < baseline_points[my_roster_id]
+        for roster_id, points in baseline_points.items()
+        if roster_id != my_roster_id
+    )
+    survival_urgency = 1.0 - weaker_teams / opponent_count
     weeks_left = max(1, season_end_week - current_week + 1)
-    values_by_roster: dict[
-        int, dict[str, tuple[float, float, float, str | None]]
-    ] = {}
+    values_by_roster: dict[int, dict[str, tuple[float, float, float, str | None]]] = {}
     for roster_id, lineup in lineups.items():
         roster_values: dict[str, tuple[float, float, float, str | None]] = {}
         weakest = min(lineup, key=lambda player: player.mean) if lineup else None
@@ -188,8 +203,7 @@ def build_chopped_bid_board(
                 drop = min(benched, key=lambda player: player.mean).player_id if benched else None
             else:
                 weekly_added = (
-                    _fast_lineup_points([*lineup, candidate], fmt)
-                    - baseline_points[roster_id]
+                    _fast_lineup_points([*lineup, candidate], fmt) - baseline_points[roster_id]
                 )
                 drop = None
             lineup_gain = max(0.0, weekly_added) if weekly_added > 1e-6 else 0.0
@@ -238,28 +252,44 @@ def build_chopped_bid_board(
     output: list[dict[str, Any]] = []
     for row in candidate_values.iter_rows(named=True):
         sleeper_id = str(row["sleeper_id"])
-        my_ros_value, lineup_gain, depth_gain, drop_id = values_by_roster[my_roster_id][
-            sleeper_id
-        ]
+        my_ros_value, lineup_gain, depth_gain, drop_id = values_by_roster[my_roster_id][sleeper_id]
         value_bid = reserved_bids[my_roster_id][sleeper_id]
         max_bid = min(my_budget, raw_bids[my_roster_id][sleeper_id])
         opponent_bids = [
             reserved_bids[roster_id][sleeper_id]
             for roster_id in roster_by_id
-            if roster_id != my_roster_id
-            and values_by_roster[roster_id][sleeper_id][0] > 0
+            if roster_id != my_roster_id and values_by_roster[roster_id][sleeper_id][0] > 0
         ]
         market_bid = _percentile(opponent_bids, 0.75)
+        median_market_bid = _percentile(opponent_bids, 0.50)
         competing_teams = len(opponent_bids)
         if my_ros_value <= 0:
             recommendation = "No lineup upgrade"
+            conservative_bid = 0
             recommended_bid = 0
+            aggressive_bid = 0
         elif market_bid + 1 > max_bid:
             recommendation = "Pass above max"
+            conservative_bid = 0
             recommended_bid = 0
+            aggressive_bid = 0
         else:
             recommendation = "Bid"
-            recommended_bid = min(max_bid, max(value_bid, market_bid + 1))
+            conservative_bid = min(
+                max_bid,
+                max(1, round(value_bid * 0.8), median_market_bid + 1),
+            )
+            base_recommendation = min(max_bid, max(value_bid, market_bid + 1))
+            urgency_buffer = round((max_bid - base_recommendation) * survival_urgency * 0.15)
+            recommended_bid = min(max_bid, base_recommendation + urgency_buffer)
+            aggressive_bid = min(
+                max_bid,
+                max(
+                    recommended_bid,
+                    max(opponent_bids, default=0) + 1,
+                    round(value_bid * (1.0 + 0.20 * survival_urgency)),
+                ),
+            )
         output.append(
             {
                 "sleeper_id": sleeper_id,
@@ -275,8 +305,21 @@ def build_chopped_bid_board(
                 "ros_lineup_value": my_ros_value,
                 "value_bid": value_bid,
                 "market_bid": market_bid,
+                "conservative_bid": conservative_bid,
                 "recommended_bid": recommended_bid,
+                "aggressive_bid": aggressive_bid,
                 "max_bid": max_bid,
+                "conservative_win_probability": _estimated_win_probability(
+                    conservative_bid, opponent_bids
+                ),
+                "recommended_win_probability": _estimated_win_probability(
+                    recommended_bid, opponent_bids
+                ),
+                "aggressive_win_probability": _estimated_win_probability(
+                    aggressive_bid, opponent_bids
+                ),
+                "survival_urgency": survival_urgency,
+                "faab_after_recommended": max(0, my_budget - recommended_bid),
                 "competing_teams": competing_teams,
                 "highest_opponent_estimate": max(opponent_bids, default=0),
                 "drop_player": name_by_player_id.get(str(drop_id)) if drop_id else None,
@@ -309,8 +352,15 @@ _BID_SCHEMA = {
     "ros_lineup_value": pl.Float64,
     "value_bid": pl.Int64,
     "market_bid": pl.Int64,
+    "conservative_bid": pl.Int64,
     "recommended_bid": pl.Int64,
+    "aggressive_bid": pl.Int64,
     "max_bid": pl.Int64,
+    "conservative_win_probability": pl.Float64,
+    "recommended_win_probability": pl.Float64,
+    "aggressive_win_probability": pl.Float64,
+    "survival_urgency": pl.Float64,
+    "faab_after_recommended": pl.Int64,
     "competing_teams": pl.Int64,
     "highest_opponent_estimate": pl.Int64,
     "drop_player": pl.String,

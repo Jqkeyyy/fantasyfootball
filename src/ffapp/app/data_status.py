@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -94,7 +95,29 @@ def league_data_status(settings: Settings, league: LeagueConfig) -> LeagueDataSt
     return LeagueDataStatus(artifacts, season, week, source, schema_version)
 
 
-def build_refresh_command(league_slug: str, *, executable: str = "uv") -> list[str]:
+def run_label_for_date(value: datetime) -> str:
+    """Choose the nearest standard snapshot for a manual refresh."""
+    if value.weekday() <= 1:
+        return "tuesday"
+    if value.weekday() <= 3:
+        return "thursday"
+    return "sunday"
+
+
+def load_latest_alerts(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    alerts = payload.get("alerts", [])
+    return alerts if isinstance(alerts, list) else []
+
+
+def build_refresh_command(
+    league_slug: str, *, executable: str = "uv", run_label: str | None = None
+) -> list[str]:
     if Path(executable).name.lower().startswith("uv"):
         prefix = [executable, "run", "ffapp"]
     else:
@@ -105,6 +128,8 @@ def build_refresh_command(league_slug: str, *, executable: str = "uv") -> list[s
         "weekly",
         "--league",
         league_slug,
+        "--run-label",
+        run_label or run_label_for_date(datetime.now().astimezone()),
         "--no-offline",
     ]
 
@@ -143,6 +168,14 @@ def render_league_data_controls(league: LeagueConfig) -> None:
             else:
                 st.success(f"{artifact.label}: {artifact.age_hours:.1f}h old")
 
+        alerts = load_latest_alerts(
+            settings.data_root / "outputs" / league.slug / "alerts" / "latest.json"
+        )
+        if alerts:
+            st.caption(f"Latest decision alerts ({len(alerts)})")
+            for alert in alerts[:5]:
+                st.warning(str(alert.get("message", "Actionable lineup change detected.")))
+
         result_key = f"refresh_result_{league.slug}"
         if result_key in st.session_state:
             st.caption(str(st.session_state.pop(result_key)))
@@ -168,6 +201,8 @@ __all__ = [
     "artifact_freshness",
     "build_refresh_command",
     "league_data_status",
+    "load_latest_alerts",
     "render_league_data_controls",
+    "run_label_for_date",
     "run_weekly_refresh",
 ]

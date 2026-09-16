@@ -156,6 +156,9 @@ def _apply_common_mocks(
         json.dumps([{"user_id": "u1", "display_name": "Fixture Team"}]), encoding="utf-8"
     )
     monkeypatch.setattr(cli.sleeper, "fetch_users", lambda league_id, **kwargs: users_json_path)
+    sleeper_user_path = tmp_path / "user.json"
+    sleeper_user_path.write_text(json.dumps({"user_id": "u1"}), encoding="utf-8")
+    monkeypatch.setattr(cli.sleeper, "fetch_user", lambda username, **kwargs: sleeper_user_path)
 
     nflverse_rosters_path = tmp_path / "nflverse_rosters.parquet"
     pl.DataFrame(schema={"player_id": pl.Utf8}).write_parquet(nflverse_rosters_path)
@@ -248,8 +251,9 @@ def test_rankings_ros_writes_board_and_latest_parquet(
     by_id = {row["player_id"]: row for row in board.iter_rows(named=True)}
     assert by_id["p1"]["availability"] == "Rostered"
     assert by_id["p1"]["fantasy_team"] == "Fixture Team"
+    assert by_id["p1"]["is_my_roster"] is True
     assert by_id["p2"]["availability"] == "Available"
-    assert board["artifact_schema_version"].unique().to_list() == [2]
+    assert board["artifact_schema_version"].unique().to_list() == [3]
 
 
 def test_rankings_ros_threads_offline_flag_through_fetches(

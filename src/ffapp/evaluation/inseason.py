@@ -7,8 +7,10 @@ from pathlib import Path
 
 import polars as pl
 
+from ffapp.config import LeagueConfig, Settings
 from ffapp.league_format import LeagueFormat
 from ffapp.sim.lineup import PlayerProjection, optimal_lineup
+from ffapp.tools.artifacts import atomic_write_json, atomic_write_parquet
 
 _REFERENCE_SOURCE_COLUMNS = {
     "direct": "model_mean",
@@ -92,9 +94,7 @@ def summarize_inseason_performance(history: pl.DataFrame) -> pl.DataFrame:
             available = available.filter(pl.col("projection_source") == source)
         for position in positions:
             rows = (
-                available
-                if position == "ALL"
-                else available.filter(pl.col("position") == position)
+                available if position == "ALL" else available.filter(pl.col("position") == position)
             )
             if rows.is_empty():
                 continue
@@ -111,9 +111,7 @@ def summarize_inseason_performance(history: pl.DataFrame) -> pl.DataFrame:
                     "source": source,
                     "position": position,
                     "mae": sum(abs(value) for value in error_values) / len(error_values),
-                    "rmse": math.sqrt(
-                        sum(value**2 for value in error_values) / len(error_values)
-                    ),
+                    "rmse": math.sqrt(sum(value**2 for value in error_values) / len(error_values)),
                     "weekly_spearman": sum(rho_values) / len(rho_values) if rho_values else None,
                     "n_obs": rows.height,
                     "n_weeks": rows.select("season", "week").unique().height,
@@ -266,11 +264,113 @@ def recommend_projection_source(
     return f"Keep {current_source}: no alternative clears the promotion threshold."
 
 
+def source_reliability_weights(
+    performance: pl.DataFrame, *, min_observations: int = 50, min_weeks: int = 2
+) -> pl.DataFrame:
+    """Turn scored MAE into transparent ensemble weights after enough evidence exists."""
+    schema = {
+        "source": pl.String,
+        "position": pl.String,
+        "weight": pl.Float64,
+        "mae": pl.Float64,
+        "n_obs": pl.Int64,
+        "n_weeks": pl.Int64,
+    }
+    eligible = performance.filter(
+        (pl.col("n_obs") >= min_observations)
+        & (pl.col("n_weeks") >= min_weeks)
+        & pl.col("mae").is_not_null()
+    )
+    if eligible.is_empty():
+        return pl.DataFrame(schema=schema)
+    return (
+        eligible.with_columns((1.0 / pl.col("mae").clip(lower_bound=0.25)).alias("_score"))
+        .with_columns((pl.col("_score") / pl.col("_score").sum().over("position")).alias("weight"))
+        .select("source", "position", "weight", "mae", "n_obs", "n_weeks")
+        .sort(["position", "weight"], descending=[False, True])
+    )
+
+
+def weekly_accuracy(history: pl.DataFrame) -> pl.DataFrame:
+    """Return one rolling trend point per completed week and source."""
+    scored = valid_scored_history(history)
+    schema = {
+        "season": pl.Int64,
+        "week": pl.Int64,
+        "source": pl.String,
+        "mae": pl.Float64,
+        "n_obs": pl.Int64,
+    }
+    if scored.is_empty():
+        return pl.DataFrame(schema=schema)
+    rows: list[pl.DataFrame] = []
+    source_columns = list(_REFERENCE_SOURCE_COLUMNS.items())
+    if {"live_mean", "projection_source"}.issubset(scored.columns):
+        source_columns.extend(
+            (str(source), "live_mean")
+            for source in scored["projection_source"].drop_nulls().unique().to_list()
+            if str(source) not in _REFERENCE_SOURCE_COLUMNS
+        )
+    for source, column in source_columns:
+        if column not in scored.columns:
+            continue
+        available = scored.filter(pl.col(column).is_not_null())
+        if column == "live_mean":
+            available = available.filter(pl.col("projection_source") == source)
+        if not available.is_empty():
+            rows.append(
+                available.group_by("season", "week")
+                .agg(
+                    (pl.col(column) - pl.col("actual_points")).abs().mean().alias("mae"),
+                    pl.len().alias("n_obs"),
+                )
+                .with_columns(pl.lit(source).alias("source"))
+                .select("season", "week", "source", "mae", "n_obs")
+            )
+    return (
+        pl.concat(rows).sort(["season", "week", "source"]) if rows else pl.DataFrame(schema=schema)
+    )
+
+
+def materialize_inseason_report(
+    settings: Settings, league: LeagueConfig, fmt: LeagueFormat
+) -> dict[str, object]:
+    """Persist accuracy artifacts after refresh so the UI stays fast and auditable."""
+    history = load_prediction_history(
+        settings.data_root / "outputs" / league.slug / "prediction_log"
+    )
+    performance = summarize_inseason_performance(history)
+    weights = source_reliability_weights(performance)
+    calibration = summarize_interval_calibration(history)
+    regret = summarize_lineup_regret(history, fmt)
+    trends = weekly_accuracy(history)
+    output = settings.data_root / "outputs" / league.slug / "model_health"
+    for name, frame in (
+        ("performance", performance),
+        ("source_weights", weights),
+        ("calibration", calibration),
+        ("lineup_regret", regret),
+        ("weekly_accuracy", trends),
+    ):
+        atomic_write_parquet(frame, output / f"{name}.parquet")
+    recommendation = recommend_projection_source(performance, settings.model.projection_source)
+    summary = {
+        "league_slug": league.slug,
+        "scored_weeks": int(trends.select("season", "week").unique().height),
+        "recommendation": recommendation,
+    }
+    atomic_write_json(summary, output / "latest.json")
+    return summary
+
+
 __all__ = [
     "load_prediction_history",
+    "materialize_inseason_report",
     "recommend_projection_source",
+    "source_reliability_weights",
     "summarize_interval_calibration",
     "summarize_inseason_performance",
     "summarize_lineup_regret",
     "valid_scored_history",
+    "weekly_accuracy",
 ]

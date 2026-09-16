@@ -15,7 +15,7 @@ from ffapp.league_format import LeagueFormat
 from ffapp.tools import vor
 from ffapp.tools.waivers import free_agent_pool
 
-ROS_BOARD_SCHEMA_VERSION = 2
+ROS_BOARD_SCHEMA_VERSION = 3
 REQUIRED_ROS_BOARD_COLUMNS = {
     "player_id",
     "player_name",
@@ -23,6 +23,7 @@ REQUIRED_ROS_BOARD_COLUMNS = {
     "nfl_team",
     "availability",
     "fantasy_team",
+    "is_my_roster",
     "ros_points",
     "ros_p10",
     "ros_p50",
@@ -69,9 +70,11 @@ def all_player_projections(
     rostered_ids: set[str],
     eligible_positions: set[str],
     fantasy_team_by_sleeper_id: dict[str, str] | None = None,
+    my_roster_sleeper_ids: set[str] | None = None,
 ) -> pl.DataFrame:
     """Every active, league-relevant projected player with roster status."""
     team_by_sleeper_id = fantasy_team_by_sleeper_id or {}
+    my_ids = my_roster_sleeper_ids or set()
     relevant = free_agent_pool(players_dim, set(), eligible_positions)
     joined = relevant.join(ros_points_table, on="player_id", how="inner").rename(
         {"full_name": "player_name"}
@@ -90,6 +93,7 @@ def all_player_projections(
             pl.col("sleeper_id")
             .replace_strict(team_by_sleeper_id, default=None, return_dtype=pl.String)
             .alias("fantasy_team"),
+            pl.col("sleeper_id").is_in(list(my_ids)).alias("is_my_roster"),
         )
         .select(
             "player_id",
@@ -99,6 +103,7 @@ def all_player_projections(
             "is_available",
             "availability",
             "fantasy_team",
+            "is_my_roster",
             *extra_columns,
         )
     )
@@ -135,6 +140,7 @@ def build_ros_board(
     *,
     replacement_overrides: dict[str, float] | None = None,
     fantasy_team_by_sleeper_id: dict[str, str] | None = None,
+    my_roster_sleeper_ids: set[str] | None = None,
 ) -> pl.DataFrame:
     """SPEC §9.4's fixed point (`tools.vor.compute_vor`), replacement
     level computed over `ros_points_table`'s own real remaining-value
@@ -151,6 +157,7 @@ def build_ros_board(
         rostered_ids,
         eligible_positions,
         fantasy_team_by_sleeper_id,
+        my_roster_sleeper_ids,
     )
     # Apply current free-agent replacement levels to every player. The full
     # pool is only a fallback for a position with no projected free agents.

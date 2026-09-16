@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ffapp.app.data_status import artifact_freshness, build_refresh_command
+from ffapp.app.data_status import (
+    artifact_freshness,
+    build_refresh_command,
+    load_latest_alerts,
+    run_label_for_date,
+)
 
 
 def test_artifact_freshness_reports_missing(tmp_path: Path) -> None:
@@ -25,7 +30,7 @@ def test_artifact_freshness_marks_old_file_stale(tmp_path: Path) -> None:
 
 
 def test_build_refresh_command_is_argument_safe_and_live() -> None:
-    command = build_refresh_command("bdff-chopped", executable="uv")
+    command = build_refresh_command("bdff-chopped", executable="uv", run_label="thursday")
     assert command == [
         "uv",
         "run",
@@ -34,5 +39,21 @@ def test_build_refresh_command_is_argument_safe_and_live() -> None:
         "weekly",
         "--league",
         "bdff-chopped",
+        "--run-label",
+        "thursday",
         "--no-offline",
     ]
+
+
+def test_run_label_for_date_uses_standard_weekly_windows() -> None:
+    assert run_label_for_date(datetime(2026, 9, 15, tzinfo=UTC)) == "tuesday"
+    assert run_label_for_date(datetime(2026, 9, 16, tzinfo=UTC)) == "thursday"
+    assert run_label_for_date(datetime(2026, 9, 19, tzinfo=UTC)) == "sunday"
+
+
+def test_load_latest_alerts_is_resilient(tmp_path: Path) -> None:
+    path = tmp_path / "latest.json"
+    path.write_text('{"alerts": [{"message": "Replace injured starter"}]}')
+    assert load_latest_alerts(path)[0]["message"] == "Replace injured starter"
+    path.write_text("not-json")
+    assert load_latest_alerts(path) == []

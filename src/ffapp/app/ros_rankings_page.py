@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import polars as pl
 
+from ffapp.league_format import LeagueFormat
+from ffapp.sim.lineup import PlayerProjection
 from ffapp.tools import tiers
 from ffapp.tools.ros_rankings import REQUIRED_ROS_BOARD_COLUMNS, ROS_BOARD_SCHEMA_VERSION
+from ffapp.tools.waivers import value_added
 
 SORT_OPTIONS = {
     "Value over replacement": "vor_ros",
@@ -171,6 +174,94 @@ def explain_ros_player(row: dict[str, object], *, remaining_weeks: int) -> list[
     ]
 
 
+def team_specific_recommendations(
+    board: pl.DataFrame, fmt: LeagueFormat, *, limit: int = 25
+) -> pl.DataFrame:
+    """Rank free agents by their actual lineup impact on the user's roster."""
+    schema = {
+        "player_id": pl.String,
+        "player_name": pl.String,
+        "position": pl.String,
+        "nfl_team": pl.String,
+        "lineup_gain_ppg": pl.Float64,
+        "playoff_lineup_gain": pl.Float64,
+        "drop_player": pl.String,
+        "fit": pl.String,
+        "vor_ros": pl.Float64,
+    }
+    enriched = board.with_columns(
+        pl.when(pl.col("expected_games") > 0)
+        .then(pl.col("ros_points") / pl.col("expected_games"))
+        .otherwise(None)
+        .alias("_ppg")
+    )
+    roster_rows = enriched.filter(pl.col("is_my_roster") & pl.col("_ppg").is_not_null())
+    candidates = enriched.filter(pl.col("is_available") & pl.col("_ppg").is_not_null())
+    if roster_rows.is_empty() or candidates.is_empty():
+        return pl.DataFrame(schema=schema)
+
+    roster = [
+        PlayerProjection(
+            str(row["player_id"]),
+            str(row["position"]),
+            _number(row["_ppg"]),
+            _number(row["_ppg"]),
+            _number(row["_ppg"]),
+        )
+        for row in roster_rows.iter_rows(named=True)
+    ]
+    playoff_roster = [
+        PlayerProjection(
+            str(row["player_id"]),
+            str(row["position"]),
+            _number(row["playoff_weeks_value"]),
+            _number(row["playoff_weeks_value"]),
+            _number(row["playoff_weeks_value"]),
+        )
+        for row in roster_rows.iter_rows(named=True)
+    ]
+    name_by_id = {
+        str(row["player_id"]): str(row["player_name"]) for row in roster_rows.iter_rows(named=True)
+    }
+    recommendations: list[dict[str, object]] = []
+    for row in candidates.iter_rows(named=True):
+        candidate = PlayerProjection(
+            str(row["player_id"]),
+            str(row["position"]),
+            _number(row["_ppg"]),
+            _number(row["_ppg"]),
+            _number(row["_ppg"]),
+        )
+        lineup_gain, drop_id = value_added(roster, candidate, fmt)
+        playoff_value = _number(row["playoff_weeks_value"])
+        playoff_candidate = PlayerProjection(
+            candidate.player_id,
+            candidate.position,
+            playoff_value,
+            playoff_value,
+            playoff_value,
+        )
+        playoff_gain, _ = value_added(playoff_roster, playoff_candidate, fmt)
+        recommendations.append(
+            {
+                "player_id": candidate.player_id,
+                "player_name": str(row["player_name"]),
+                "position": candidate.position,
+                "nfl_team": str(row["nfl_team"]),
+                "lineup_gain_ppg": max(0.0, lineup_gain),
+                "playoff_lineup_gain": max(0.0, playoff_gain),
+                "drop_player": name_by_id.get(str(drop_id)) if drop_id else None,
+                "fit": "Starter upgrade" if lineup_gain > 0 else "Depth only",
+                "vor_ros": _number(row["vor_ros"]),
+            }
+        )
+    return (
+        pl.DataFrame(recommendations, schema=schema)
+        .sort(["lineup_gain_ppg", "playoff_lineup_gain", "vor_ros"], descending=True)
+        .head(limit)
+    )
+
+
 __all__ = [
     "RosBoardSchemaError",
     "SORT_OPTIONS",
@@ -179,5 +270,6 @@ __all__ = [
     "player_week_schedule",
     "prepare_board",
     "style_rank_change",
+    "team_specific_recommendations",
     "validate_board_schema",
 ]

@@ -185,7 +185,12 @@ st.dataframe(
         "position",
         "team",
         "recommendation",
+        "conservative_bid",
         "recommended_bid",
+        "aggressive_bid",
+        "recommended_win_probability",
+        "survival_urgency",
+        "faab_after_recommended",
         "value_bid",
         "market_bid",
         "max_bid",
@@ -202,7 +207,16 @@ st.dataframe(
     width="stretch",
     hide_index=True,
     column_config={
+        "conservative_bid": st.column_config.NumberColumn("Conservative", format="$%d"),
         "recommended_bid": st.column_config.NumberColumn("Recommended", format="$%d"),
+        "aggressive_bid": st.column_config.NumberColumn("Aggressive", format="$%d"),
+        "recommended_win_probability": st.column_config.ProgressColumn(
+            "Est. win chance", min_value=0.0, max_value=1.0, format="percent"
+        ),
+        "survival_urgency": st.column_config.ProgressColumn(
+            "Survival urgency", min_value=0.0, max_value=1.0, format="percent"
+        ),
+        "faab_after_recommended": st.column_config.NumberColumn("FAAB after bid", format="$%d"),
         "value_bid": st.column_config.NumberColumn("Value bid", format="$%d"),
         "market_bid": st.column_config.NumberColumn("Market estimate", format="$%d"),
         "max_bid": st.column_config.NumberColumn("Do not exceed", format="$%d"),
@@ -227,6 +241,11 @@ with st.expander("How the bid is calculated"):
   player's remaining-season lineup value, discounted by your future-chop reserve.
 - **Market estimate** is the 75th percentile of the same calculation across surviving opponents,
   using each opponent's roster needs and remaining FAAB.
+- **Conservative** and **aggressive** bracket the recommended bid while staying under the same
+  value ceiling; aggressive aims to clear the strongest estimated competitor.
+- **Estimated win chance** compares the bid with each opponent's roster-specific estimate.
+- **Survival urgency** rises as your optimized lineup falls behind the active rosters and adds a
+  small premium to the recommended bid.
 - **Recommended** is enough to clear that market estimate when it remains below your
   value-based **do not exceed** ceiling. “Pass above max” means the estimated market is richer
   than the player is worth to your roster.
