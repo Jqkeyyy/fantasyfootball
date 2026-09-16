@@ -522,6 +522,40 @@ def test_write_prediction_log_upserts_by_run_label_not_duplicating(tmp_path) -> 
     assert written.height == 2
 
 
+def test_write_prediction_log_migrates_legacy_schema(tmp_path) -> None:
+    settings = _FakeSettings(tmp_path)
+    week_path = (
+        tmp_path / "outputs" / "test-league" / "prediction_log" / "season=2025" / "week=09.parquet"
+    )
+    week_path.parent.mkdir(parents=True)
+    legacy = _sample_rows(run_label="tuesday").drop(
+        "live_mean",
+        "live_q10",
+        "live_q25",
+        "live_q50",
+        "live_q75",
+        "live_q90",
+        "is_my_roster",
+        "was_starting",
+    )
+    legacy.write_parquet(week_path)
+
+    prediction_log.write_prediction_log(
+        _sample_rows(run_label="sunday"),
+        pl.DataFrame(schema=prediction_log.SOURCE_FETCH_SCHEMA),
+        2025,
+        9,
+        "sunday",
+        league_slug="test-league",
+        settings=settings,
+    )
+
+    written = pl.read_parquet(week_path)
+    assert written.columns == list(prediction_log.PREDICTION_LOG_SCHEMA)
+    assert set(written["run_label"]) == {"tuesday", "sunday"}
+    assert written.filter(pl.col("run_label") == "tuesday")["live_mean"].item() is None
+
+
 def test_backfill_actual_points_fills_from_real_target(tmp_path) -> None:
     settings = _FakeSettings(tmp_path)
     fetch_rows = pl.DataFrame(schema=prediction_log.SOURCE_FETCH_SCHEMA)
@@ -564,9 +598,7 @@ def test_backfill_actual_points_rejects_placeholder_zero_week(tmp_path) -> None:
         league_slug="test-league",
         settings=settings,
     )
-    features = pl.DataFrame(
-        {"player_id": ["p1"], "season": [2025], "week": [9], "target": [0.0]}
-    )
+    features = pl.DataFrame({"player_id": ["p1"], "season": [2025], "week": [9], "target": [0.0]})
 
     with pytest.raises(prediction_log.InvalidActualsError, match="all zero"):
         prediction_log.backfill_actual_points(

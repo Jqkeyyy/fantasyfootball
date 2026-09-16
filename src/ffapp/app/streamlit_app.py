@@ -45,7 +45,8 @@ from ffapp.app.draft_board_page import (
     source_rank_columns,
     style_tier_breaks,
 )
-from ffapp.config import load_primary_league, load_settings
+from ffapp.app.league_selector import select_league
+from ffapp.config import load_settings
 from ffapp.draft import live
 from ffapp.draft.board import draft_board_csv_path, source_rankings_csv_path
 from ffapp.draft.pick_order import resolve_my_roster_id
@@ -69,9 +70,11 @@ def _load_board_cached(csv_path_str: str, mtime: float) -> pl.DataFrame:
 
 
 settings = load_settings()
-league = load_primary_league()
-csv_path = draft_board_csv_path(settings, season=league.season)
-source_rankings_path = source_rankings_csv_path(settings, season=league.season)
+league = select_league()
+csv_path = draft_board_csv_path(settings, season=league.season, league_slug=league.slug)
+source_rankings_path = source_rankings_csv_path(
+    settings, season=league.season, league_slug=league.slug
+)
 
 st.title("Draft Board")
 st.caption(f"{league.display_name} -- {league.season}")

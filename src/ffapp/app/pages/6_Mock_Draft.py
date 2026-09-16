@@ -18,18 +18,16 @@ import random
 
 import streamlit as st
 
+from ffapp.app.league_selector import select_league
 from ffapp.app.mock_draft_page import (
     available_pool_display,
     render_draft_grid_html,
     roster_table,
 )
-from ffapp.config import load_primary_league, load_settings
+from ffapp.config import load_settings
 from ffapp.draft import mock
 
 st.set_page_config(page_title="Mock Draft", layout="wide")
-
-STATE_KEY = "mock_draft_state"
-RNG_KEY = "mock_draft_rng"
 
 # Real Sleeper draft board layout (teams as fixed columns, rounds as rows) --
 # the reference the project owner asked this to look like. Colors are
@@ -62,7 +60,9 @@ st.markdown(
 )
 
 settings = load_settings()
-league = load_primary_league()
+league = select_league()
+STATE_KEY = f"mock_draft_state:{league.slug}"
+RNG_KEY = f"mock_draft_rng:{league.slug}"
 
 st.title("Mock Draft")
 st.caption(

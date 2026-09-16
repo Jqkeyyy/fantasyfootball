@@ -287,3 +287,10 @@ def test_export_html_and_csv_paths(fixture_settings: Settings) -> None:
     assert draft_export.export_csv_path(fixture_settings, season=2026) == (
         fixture_settings.data_root / "outputs" / "draft_board_2026_export.csv"
     )
+    assert draft_export.export_html_path(fixture_settings, season=2026, league_slug="league-a") == (
+        fixture_settings.data_root
+        / "outputs"
+        / "league-a"
+        / "draft"
+        / "draft_board_2026_export.html"
+    )

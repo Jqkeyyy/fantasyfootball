@@ -68,6 +68,9 @@ league_cache:
   waiver_type: 2
   waiver_budget: 1000
   playoff_week_start: 0
+  league_type: 3
+  disable_trades: 1
+  last_chopped_leg: 1
 overrides:
   flex_eligible:
   - RB

@@ -26,7 +26,7 @@ sampled, possibly-zeroed-by-injury actuals.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,6 +35,15 @@ from ffapp.config import CorrelationSettings
 from ffapp.league_format import LeagueFormat
 from ffapp.sim.lineup import Lineup, PlayerProjection, optimal_lineup
 from ffapp.sim.week import PlayerMarginal, marginal_ppf, simulate_week
+
+
+@dataclass(frozen=True)
+class WeekProjection:
+    """One player's week-specific distribution used by ROS simulations."""
+
+    mean: float
+    quantile_values: Sequence[float]
+    opponent_team: str | None
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,7 @@ class SimPlayer:
     alphas: Sequence[float]
     quantile_values: Sequence[float]
     p_miss: float
+    weekly: Mapping[int, WeekProjection] | None = None
 
 
 # `to_projection`/`to_marginal` are public (not `_`-prefixed) because
@@ -106,6 +116,24 @@ def to_marginal(player: SimPlayer) -> PlayerMarginal:
         opponent_team=player.opponent_team,
         alphas=player.alphas,
         quantile_values=player.quantile_values,
+    )
+
+
+def player_for_week(player: SimPlayer, week: int) -> SimPlayer:
+    """Resolve a player's week-specific projection, retaining legacy fallback values."""
+    projection = player.weekly.get(week) if player.weekly is not None else None
+    if projection is None:
+        return player
+    return SimPlayer(
+        player_id=player.player_id,
+        position=player.position,
+        team=player.team,
+        opponent_team=projection.opponent_team,
+        mean=projection.mean,
+        alphas=player.alphas,
+        quantile_values=projection.quantile_values,
+        p_miss=player.p_miss,
+        weekly=player.weekly,
     )
 
 
@@ -176,7 +204,6 @@ def simulate_team_week_totals(
     """
     all_players = [player for team in teams for player in team.players]
     player_index = {player.player_id: i for i, player in enumerate(all_players)}
-    marginals = [to_marginal(player) for player in all_players]
 
     n_weeks = len(remaining_weeks)
     p_miss = np.tile(np.array([player.p_miss for player in all_players]), (n_weeks, 1))
@@ -184,13 +211,20 @@ def simulate_team_week_totals(
         p_miss, season_sims=season_sims, recovery_prob=recovery_prob, rng=rng
     )
 
-    lineups = {
-        team.team_id: optimal_lineup([to_projection(p) for p in team.players], fmt)
-        for team in teams
-    }
-
     totals = {team.team_id: np.zeros((season_sims, n_weeks)) for team in teams}
-    for week_idx in range(n_weeks):
+    reported_lineups: dict[str, Lineup] = {}
+    for week_idx, week in enumerate(remaining_weeks):
+        week_players = [player_for_week(player, week) for player in all_players]
+        marginals = [to_marginal(player) for player in week_players]
+        week_by_id = {player.player_id: player for player in week_players}
+        lineups = {
+            team.team_id: optimal_lineup(
+                [to_projection(week_by_id[player.player_id]) for player in team.players], fmt
+            )
+            for team in teams
+        }
+        if week_idx == 0:
+            reported_lineups = lineups
         week_scores = simulate_week(marginals, correlation, week_sims=season_sims, rng=rng)
         week_available = availability[:, week_idx, :]
         actual_scores = np.where(week_available, week_scores, 0.0)
@@ -199,7 +233,7 @@ def simulate_team_week_totals(
             if starter_idx:
                 totals[team.team_id][:, week_idx] = actual_scores[:, starter_idx].sum(axis=1)
 
-    return totals, lineups
+    return totals, reported_lineups
 
 
 def _seed_order(wins: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -222,6 +256,8 @@ def simulate_season(
     n_playoff_teams: int,
     season_sims: int,
     recovery_prob: float = 0.5,
+    initial_wins: Mapping[str, float] | None = None,
+    initial_points: Mapping[str, float] | None = None,
     rng: np.random.Generator,
 ) -> SeasonSimResult:
     """SPEC §13.4's full pseudocode. `n_playoff_teams` must be a power of
@@ -245,7 +281,11 @@ def simulate_season(
     week_to_idx = {week: i for i, week in enumerate(remaining_weeks)}
     team_ids = [team.team_id for team in teams]
 
-    wins = {team_id: np.zeros(season_sims, dtype=int) for team_id in team_ids}
+    initial_wins = initial_wins or {}
+    initial_points = initial_points or {}
+    wins = {
+        team_id: np.full(season_sims, float(initial_wins.get(team_id, 0.0))) for team_id in team_ids
+    }
     for matchup in schedule:
         if matchup.week >= playoff_week_start or matchup.week not in week_to_idx:
             continue
@@ -258,9 +298,10 @@ def simulate_season(
 
     regular_idx = [i for week, i in week_to_idx.items() if week < playoff_week_start]
     points = {
-        team_id: totals[team_id][:, regular_idx].sum(axis=1)
-        if regular_idx
-        else np.zeros(season_sims)
+        team_id: (
+            totals[team_id][:, regular_idx].sum(axis=1) if regular_idx else np.zeros(season_sims)
+        )
+        + float(initial_points.get(team_id, 0.0))
         for team_id in team_ids
     }
 
@@ -310,6 +351,8 @@ __all__ = [
     "Roster",
     "SeasonSimResult",
     "SimPlayer",
+    "WeekProjection",
+    "player_for_week",
     "simulate_availability",
     "simulate_season",
     "simulate_team_week_totals",

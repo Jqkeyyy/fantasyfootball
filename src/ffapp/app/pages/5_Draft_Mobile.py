@@ -40,7 +40,8 @@ from ffapp.app.draft_mobile_page import (
     filter_pool_by_position,
     top_line_summary,
 )
-from ffapp.config import LeagueConfig, Settings, load_primary_league, load_settings
+from ffapp.app.league_selector import select_league
+from ffapp.config import LeagueConfig, Settings, load_settings
 from ffapp.draft import live
 from ffapp.draft import replay as draft_replay
 from ffapp.draft.board import draft_board_csv_path
@@ -91,8 +92,8 @@ def _resolve_current_draft_id(league: LeagueConfig, settings: Settings) -> str |
 
 
 settings = load_settings()
-league = load_primary_league()
-csv_path = draft_board_csv_path(settings, season=league.season)
+league = select_league()
+csv_path = draft_board_csv_path(settings, season=league.season, league_slug=league.slug)
 
 st.title("Draft Mobile")
 st.caption(f"{league.display_name} — {league.season}")
@@ -137,9 +138,9 @@ def _live_board() -> None:
                 picks_path = sleeper.fetch_draft_picks(draft_id, offline=False, settings=settings)
                 picks = json.loads(picks_path.read_text())
         except Exception as exc:
-            picks = st.session_state.get("mobile_last_picks", [])
+            picks = st.session_state.get(f"mobile_last_picks:{league.slug}", [])
             st.error(f"Could not fetch live picks ({exc}) — showing last known state.")
-    st.session_state.mobile_last_picks = picks
+    st.session_state[f"mobile_last_picks:{league.slug}"] = picks
 
     pool = live.available_pool(board, picks)
     filtered_pool = filter_pool_by_position(pool, position)

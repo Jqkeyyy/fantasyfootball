@@ -35,6 +35,7 @@ from ffapp.sim import injury
 from ffapp.tools import prediction_log, ros_aggregate, ros_rankings, sos, waivers
 from ffapp.tools.artifacts import atomic_write_parquet, atomic_write_text
 from ffapp.tools.feature_refresh import refresh_features
+from ffapp.tools.news_refresh import refresh_news as refresh_news_events
 from ffapp.tools.pipeline_health import inspect_weekly_pipeline
 from ffapp.tools.projection_coverage import (
     build_projection_coverage,
@@ -173,6 +174,34 @@ def ingest_rankings(
             err=True,
         )
         raise typer.Exit(code=1)
+
+
+@ingest_app.command("news")
+def ingest_news_command(
+    source: str | None = typer.Option(
+        None, "--source", help="One RSS source. Defaults to all configured sources."
+    ),
+    max_items_per_source: int = typer.Option(
+        20, "--max-items-per-source", min=1, help="Maximum unseen stories to structure per feed."
+    ),
+    offline: bool | None = typer.Option(
+        None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
+    ),
+) -> None:
+    """Fetch RSS stories and persist structured events or review rows."""
+    settings = load_settings()
+    sources = [source] if source is not None else None
+    try:
+        summary = refresh_news_events(
+            settings,
+            offline=offline,
+            sources=sources,
+            max_items_per_source=max_items_per_source,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
 
 @cache_app.command("warm")
@@ -363,12 +392,16 @@ def draft_board_command(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    output_path = draft_board.draft_board_csv_path(settings, season=resolved_season)
+    output_path = draft_board.draft_board_csv_path(
+        settings, season=resolved_season, league_slug=league_config.slug
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result.write_csv(output_path)
     typer.echo(f"Wrote {result.height} players to {output_path}")
 
-    source_rankings_path = draft_board.source_rankings_csv_path(settings, season=resolved_season)
+    source_rankings_path = draft_board.source_rankings_csv_path(
+        settings, season=resolved_season, league_slug=league_config.slug
+    )
     source_ranks.write_csv(source_rankings_path)
     typer.echo(f"Wrote {source_ranks.height} players to {source_rankings_path}")
 
@@ -411,7 +444,11 @@ def draft_export_command(
         raise typer.Exit(code=1) from exc
 
     html_path = (
-        out if out is not None else draft_export.export_html_path(settings, season=resolved_season)
+        out
+        if out is not None
+        else draft_export.export_html_path(
+            settings, season=resolved_season, league_slug=league_config.slug
+        )
     )
     csv_path = html_path.with_suffix(".csv")
     html_path.parent.mkdir(parents=True, exist_ok=True)
@@ -837,7 +874,12 @@ def project_command(
         output_path_ros = (
             settings.data_root / "outputs" / league_config.slug / "projections_ros.parquet"
         )
-        combined_ros = predict.write_projections(result, output_path_ros)
+        if output_path_ros.exists():
+            prior_ros = pl.read_parquet(output_path_ros).filter(pl.col("season") != resolved_season)
+            combined_ros = pl.concat([prior_ros, result], how="vertical_relaxed")
+        else:
+            combined_ros = result
+        atomic_write_parquet(combined_ros, output_path_ros)
         typer.echo(
             f"Wrote {result.height} ROS projections to {output_path_ros} "
             f"({combined_ros.height} total rows)."
@@ -1384,6 +1426,9 @@ def refresh_weekly_command(
     league: str | None = typer.Option(
         None, "--league", help="League slug. Defaults to the primary league."
     ),
+    all_leagues: bool = typer.Option(
+        False, "--all-leagues", help="Refresh every configured league."
+    ),
     run_label: str | None = typer.Option(
         None,
         "--run-label",
@@ -1394,12 +1439,56 @@ def refresh_weekly_command(
         "--backfill-prior/--skip-backfill",
         help="Backfill the preceding week's actuals when real outcomes exist.",
     ),
+    refresh_ros: bool = typer.Option(
+        True,
+        "--refresh-ros/--skip-ros",
+        help="Rebuild rest-of-season projections and free-agent rankings.",
+    ),
+    refresh_news: bool = typer.Option(
+        True,
+        "--refresh-news/--skip-news",
+        help="Ingest unseen NFL news when ANTHROPIC_API_KEY is configured.",
+    ),
+    rebuild_features: bool = typer.Option(
+        True,
+        "--rebuild-features/--skip-features",
+        help="Refresh shared raw/interim/feature artifacts before league-specific work.",
+    ),
     offline: bool | None = typer.Option(
         None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
     ),
 ) -> None:
     """Refresh the complete weekly decision stack and leave a structured manifest."""
     settings = load_settings()
+    if all_leagues:
+        if league is not None:
+            typer.echo("--all-leagues cannot be combined with --league.", err=True)
+            raise typer.Exit(code=1)
+        leagues = sorted(
+            load_all_leagues(), key=lambda item: (not item.is_primary, item.display_name.lower())
+        )
+        failures: list[str] = []
+        for index, selected in enumerate(leagues):
+            typer.echo(f"Refreshing league '{selected.slug}' ({index + 1}/{len(leagues)}).")
+            try:
+                refresh_weekly_command(
+                    week=week,
+                    season=season,
+                    league=selected.slug,
+                    all_leagues=False,
+                    run_label=run_label,
+                    backfill_prior=backfill_prior,
+                    refresh_ros=refresh_ros,
+                    refresh_news=refresh_news and index == 0,
+                    rebuild_features=rebuild_features and index == 0,
+                    offline=offline,
+                )
+            except typer.Exit as exc:
+                failures.append(f"{selected.slug} (exit {exc.exit_code})")
+        if failures:
+            typer.echo("Failed league refreshes: " + ", ".join(failures), err=True)
+            raise typer.Exit(code=1)
+        return
     league_config = load_league(league) if league is not None else load_primary_league()
     resolved_season = season if season is not None else league_config.season
     if week is None:
@@ -1413,23 +1502,48 @@ def refresh_weekly_command(
     failed = False
     degraded = False
 
-    try:
-        feature_summary = refresh_features(
-            settings, league_config, offline=offline, now=datetime.now(UTC)
-        )
-        has_actuals = feature_summary["current_actual_rows"] > 0
-        feature_status = "healthy" if has_actuals else "degraded"
-        degraded = degraded or not has_actuals
+    if rebuild_features:
+        try:
+            feature_summary = refresh_features(
+                settings, league_config, offline=offline, now=datetime.now(UTC)
+            )
+            has_actuals = feature_summary["current_actual_rows"] > 0
+            feature_status = "healthy" if has_actuals else "degraded"
+            degraded = degraded or not has_actuals
+            steps.append(
+                {
+                    "name": "features",
+                    "status": feature_status,
+                    "detail": json.dumps(feature_summary, sort_keys=True),
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append({"name": "features", "status": "degraded", "detail": str(exc)})
+    else:
         steps.append(
             {
                 "name": "features",
-                "status": feature_status,
-                "detail": json.dumps(feature_summary, sort_keys=True),
+                "status": "skipped",
+                "detail": "Shared features already refreshed by this all-league run",
             }
         )
-    except Exception as exc:
-        degraded = True
-        steps.append({"name": "features", "status": "degraded", "detail": str(exc)})
+
+    if refresh_news:
+        try:
+            news_summary = refresh_news_events(settings, offline=offline)
+            steps.append(
+                {
+                    "name": "news",
+                    "status": str(news_summary["status"]),
+                    "detail": json.dumps(news_summary, sort_keys=True),
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append({"name": "news", "status": "degraded", "detail": str(exc)})
+    else:
+        steps.append({"name": "news", "status": "skipped", "detail": "--skip-news"})
 
     try:
         if league_config.league_id is None or settings.sleeper_username is None:
@@ -1472,6 +1586,36 @@ def refresh_weekly_command(
         except Exception as exc:
             degraded = True
             steps.append({"name": "decision_alerts", "status": "degraded", "detail": str(exc)})
+
+    if refresh_ros and not failed:
+        try:
+            schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
+            through_week = max(sos.full_season_weeks(schedule, season=resolved_season))
+            project_command(
+                week=week,
+                season=resolved_season,
+                offline=offline,
+                from_week=week,
+                through_week=through_week,
+                league=league_config.slug,
+            )
+            rankings_ros_command(
+                league=league_config.slug,
+                season=resolved_season,
+                offline=offline,
+            )
+            steps.append(
+                {
+                    "name": "ros_decisions",
+                    "status": "healthy",
+                    "detail": f"Rebuilt weeks {week}-{through_week} and ROS rankings",
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append({"name": "ros_decisions", "status": "degraded", "detail": str(exc)})
+    elif not refresh_ros:
+        steps.append({"name": "ros_decisions", "status": "skipped", "detail": "--skip-ros"})
 
     if backfill_prior and week > 1:
         try:

@@ -81,6 +81,25 @@ def test_source_rankings_csv_path_is_alongside_the_main_board() -> None:
     assert result == Path("data") / "outputs" / "source_rankings_2026.csv"
 
 
+def test_draft_paths_are_isolated_by_league_slug() -> None:
+    settings = Settings(
+        data_root=Path("data"),
+        sleeper_username="fixture_user",
+        cache=CacheSettings(
+            root=Path("data/raw"),
+            offline_default=True,
+            staleness_hours={},
+            warn_on_stale=True,
+        ),
+    )
+
+    board_path = board.draft_board_csv_path(settings, season=2026, league_slug="league-a")
+    rankings_path = board.source_rankings_csv_path(settings, season=2026, league_slug="league-b")
+
+    assert board_path == Path("data/outputs/league-a/draft/draft_board_2026.csv")
+    assert rankings_path == Path("data/outputs/league-b/draft/source_rankings_2026.csv")
+
+
 # --- POINT_SOURCE_NAMES / RANK_SOURCE_NAMES -------------------------------------
 
 

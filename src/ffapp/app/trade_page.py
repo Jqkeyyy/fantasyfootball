@@ -6,7 +6,17 @@ from collections.abc import Mapping, Sequence
 
 import polars as pl
 
-from ffapp.sim.season import Matchup, Roster, SimPlayer
+from ffapp.sim.season import Matchup, Roster, SimPlayer, WeekProjection
+
+
+def trade_analysis_blocker(league: object, playoff_week_start: int) -> str | None:
+    """Explain why the standard head-to-head trade simulation does not apply."""
+    league_cache = getattr(league, "league_cache", {})
+    if league_cache.get("disable_trades"):
+        return "Trades are disabled in this league."
+    if league_cache.get("league_type") == 3 or playoff_week_start <= 0:
+        return "Elimination leagues need a survival model, not head-to-head playoff odds."
+    return None
 
 
 def build_trade_rosters(
@@ -32,27 +42,37 @@ def build_trade_rosters(
         pl.col("mean").sum().alias("ros_points"),
     )
     by_id = {str(row["player_id"]): row for row in players.iter_rows(named=True)}
+    weekly_by_id: dict[str, dict[int, WeekProjection]] = {}
+    for row in future.iter_rows(named=True):
+        weekly_by_id.setdefault(str(row["player_id"]), {})[int(row["week"])] = WeekProjection(
+            mean=float(row["mean"]),
+            quantile_values=tuple(float(row[name]) for name in ("q10", "q25", "q50", "q75", "q90")),
+            opponent_team=(str(row["opponent_team"]) if row["opponent_team"] is not None else None),
+        )
     rosters: list[Roster] = []
     for team_id, player_ids in roster_players.items():
         sim_players: list[SimPlayer] = []
         for player_id in player_ids:
-            row = by_id.get(player_id)
-            if row is None:
+            player_row = by_id.get(player_id)
+            if player_row is None:
                 continue
             sim_players.append(
                 SimPlayer(
                     player_id=player_id,
-                    position=str(row["position"]),
-                    team=str(row["team"]),
+                    position=str(player_row["position"]),
+                    team=str(player_row["team"]),
                     opponent_team=(
-                        str(row["opponent_team"]) if row["opponent_team"] is not None else None
+                        str(player_row["opponent_team"])
+                        if player_row["opponent_team"] is not None
+                        else None
                     ),
-                    mean=float(row["mean"]),
+                    mean=float(player_row["mean"]),
                     alphas=(0.10, 0.25, 0.50, 0.75, 0.90),
                     quantile_values=tuple(
-                        float(row[name]) for name in ("q10", "q25", "q50", "q75", "q90")
+                        float(player_row[name]) for name in ("q10", "q25", "q50", "q75", "q90")
                     ),
                     p_miss=0.0,
+                    weekly=weekly_by_id[player_id],
                 )
             )
         rosters.append(Roster(team_id=str(team_id), players=sim_players))
@@ -84,4 +104,26 @@ def matchup_schedule(
     return schedule
 
 
-__all__ = ["build_trade_rosters", "matchup_schedule"]
+def standings_from_rosters(
+    rosters: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Read current Sleeper wins and points-for, including decimal components."""
+    wins: dict[str, float] = {}
+    points: dict[str, float] = {}
+    for roster in rosters:
+        team_id = str(roster["roster_id"])
+        settings = roster.get("settings")
+        values = settings if isinstance(settings, dict) else {}
+        wins[team_id] = float(values.get("wins", 0)) + 0.5 * float(values.get("ties", 0))
+        points[team_id] = (
+            float(values.get("fpts", 0)) + float(values.get("fpts_decimal", 0)) / 100.0
+        )
+    return wins, points
+
+
+__all__ = [
+    "build_trade_rosters",
+    "matchup_schedule",
+    "standings_from_rosters",
+    "trade_analysis_blocker",
+]

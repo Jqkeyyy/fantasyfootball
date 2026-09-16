@@ -8,7 +8,12 @@ import polars as pl
 import streamlit as st
 
 from ffapp.app.league_selector import select_league
-from ffapp.app.trade_page import build_trade_rosters, matchup_schedule
+from ffapp.app.trade_page import (
+    build_trade_rosters,
+    matchup_schedule,
+    standings_from_rosters,
+    trade_analysis_blocker,
+)
 from ffapp.config import load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ids import mapping
@@ -22,6 +27,11 @@ league = select_league()
 fmt = parse_league_format(league)
 st.title("Trade Analyzer")
 st.caption(f"{league.display_name} — lineup-aware rest-of-season impact for both teams")
+
+blocker = trade_analysis_blocker(league, fmt.playoff_week_start)
+if blocker is not None:
+    st.info(blocker)
+    st.stop()
 
 ros_path = settings.data_root / "outputs" / league.slug / "projections_ros.parquet"
 if league.league_id is None or not ros_path.exists():
@@ -85,6 +95,7 @@ if not available_weeks:
     st.stop()
 from_week = min(available_weeks)
 teams, vor = build_trade_rosters(ros, roster_players, from_week=from_week)
+initial_wins, initial_points = standings_from_rosters(rosters)
 supported_positions = {player.position for team in teams for player in team.players}
 supported_fmt = fmt.__class__(
     n_teams=fmt.n_teams,
@@ -153,6 +164,8 @@ if st.button("Simulate trade", type="primary", disabled=not give or not receive)
                 playoff_week_start=fmt.playoff_week_start,
                 n_playoff_teams=int(league_settings.get("playoff_teams", max(2, fmt.n_teams // 2))),
                 season_sims=settings.simulation.season_sims,
+                initial_wins=initial_wins,
+                initial_points=initial_points,
                 rng_seed=20260915,
             )
         result = pl.DataFrame(

@@ -96,11 +96,15 @@ def test_draft_board_writes_csv_and_reports_row_count(
 
     assert result.exit_code == 0
     assert "1 players" in result.output
-    output_path = fixture_settings.data_root / "outputs" / "draft_board_2026.csv"
+    output_path = (
+        fixture_settings.data_root / "outputs" / _LEAGUE.slug / "draft" / "draft_board_2026.csv"
+    )
     assert output_path.exists()
     written = pl.read_csv(output_path)
     assert written["player"].to_list() == ["Elite RB"]
-    source_rankings_path = fixture_settings.data_root / "outputs" / "source_rankings_2026.csv"
+    source_rankings_path = (
+        fixture_settings.data_root / "outputs" / _LEAGUE.slug / "draft" / "source_rankings_2026.csv"
+    )
     assert source_rankings_path.exists()
     assert pl.read_csv(source_rankings_path)["player"].to_list() == ["Elite RB"]
 
@@ -137,8 +141,9 @@ def test_draft_board_season_override_is_respected(
     result = runner.invoke(cli.app, ["draft", "board", "--season", "2025"])
 
     assert result.exit_code == 0
-    assert (fixture_settings.data_root / "outputs" / "draft_board_2025.csv").exists()
-    assert (fixture_settings.data_root / "outputs" / "source_rankings_2025.csv").exists()
+    draft_dir = fixture_settings.data_root / "outputs" / _LEAGUE.slug / "draft"
+    assert (draft_dir / "draft_board_2025.csv").exists()
+    assert (draft_dir / "source_rankings_2025.csv").exists()
 
 
 def test_draft_board_reports_no_rankings_sources_error(
@@ -198,8 +203,9 @@ def test_draft_export_writes_html_and_csv(
     result = runner.invoke(cli.app, ["draft", "export"])
 
     assert result.exit_code == 0
-    html_path = fixture_settings.data_root / "outputs" / "draft_board_2026_export.html"
-    csv_path = fixture_settings.data_root / "outputs" / "draft_board_2026_export.csv"
+    draft_dir = fixture_settings.data_root / "outputs" / _LEAGUE.slug / "draft"
+    html_path = draft_dir / "draft_board_2026_export.html"
+    csv_path = draft_dir / "draft_board_2026_export.csv"
     assert html_path.exists()
     assert csv_path.exists()
     assert "Elite RB" in html_path.read_text(encoding="utf-8")

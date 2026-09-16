@@ -210,16 +210,10 @@ def test_project_keeps_two_leagues_in_separate_projection_files(
     assert "Using league 'weekly-test-league'" in first.output
     assert "Using league 'second-weekly-league'" in second.output
     assert (
-        fixture_settings.data_root
-        / "outputs"
-        / _WEEKLY_LEAGUE.slug
-        / "projections.parquet"
+        fixture_settings.data_root / "outputs" / _WEEKLY_LEAGUE.slug / "projections.parquet"
     ).exists()
     assert (
-        fixture_settings.data_root
-        / "outputs"
-        / _SECOND_WEEKLY_LEAGUE.slug
-        / "projections.parquet"
+        fixture_settings.data_root / "outputs" / _SECOND_WEEKLY_LEAGUE.slug / "projections.parquet"
     ).exists()
 
 
@@ -253,10 +247,7 @@ def test_project_refuses_to_write_an_all_null_projection_artifact(
     assert result.exit_code == 1
     assert "refusing to write an all-null artifact" in result.output
     assert not (
-        fixture_settings.data_root
-        / "outputs"
-        / _WEEKLY_LEAGUE.slug
-        / "projections.parquet"
+        fixture_settings.data_root / "outputs" / _WEEKLY_LEAGUE.slug / "projections.parquet"
     ).exists()
 
 
@@ -438,6 +429,14 @@ def test_project_command_accepts_from_week_through_week_and_league(
 
     monkeypatch.setattr(cli.predict_ros, "project_week_range", fake_project_week_range)
 
+    output_path = (
+        fixture_settings.data_root / "outputs" / "ros-test-league" / "projections_ros.parquet"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fake_project_week_range().with_columns(
+        pl.lit(7).alias("week"), pl.lit(True).alias("is_current_week")
+    ).write_parquet(output_path)
+
     result = runner.invoke(
         cli.app,
         [
@@ -457,12 +456,10 @@ def test_project_command_accepts_from_week_through_week_and_league(
 
     assert result.exit_code == 0, result.output
     assert "args" in calls
-    output_path = (
-        fixture_settings.data_root / "outputs" / "ros-test-league" / "projections_ros.parquet"
-    )
     assert output_path.exists()
     written = pl.read_parquet(output_path)
     assert written["player_id"].to_list() == ["p1"]
+    assert written["week"].to_list() == [8]
 
 
 def test_project_command_requires_both_from_week_and_through_week(

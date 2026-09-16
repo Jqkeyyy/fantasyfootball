@@ -262,6 +262,11 @@ uv run streamlit run src/ffapp/app/streamlit_app.py
 
 The first command refreshes every available point-projection source, rank source, and ADP cache. Individual source failures degrade gracefully, but the board cannot be built if all point sources fail.
 
+Draft boards, source rankings, and default exports are isolated beneath
+`data/outputs/<league>/draft/`. The dashboard's Draft Board, Draft Mobile, and
+Mock Draft pages use the shared league selector, so switching leagues never
+reuses another league's scoring-specific board or mock/live state.
+
 For an offline phone backup:
 
 ```powershell
@@ -290,7 +295,9 @@ Once the current week's feature rows exist:
 uv run ffapp refresh weekly --week 6 --season 2026 --league rogan-radinator-league --run-label tuesday --no-offline
 ```
 
-The refresh command incrementally ingests current-season results, rebuilds features, updates Sleeper context, builds projections, optionally preserves a pregame snapshot, safely attempts the prior-week actuals backfill, runs health checks and decision alerts, and writes an auditable JSON manifest beneath `data/outputs/<league>/refresh_runs/`. Generated parquet and manifest files use replace-on-success writes so interrupted runs do not expose partial artifacts. Use `ffapp project --week ...` when you only want to rebuild projections, or `ffapp refresh features --no-offline` for only the raw-to-feature stage.
+Use `--all-leagues` instead of `--league` for the scheduled account-wide run. Shared feature and news work runs once, while projections, rest-of-season rankings, alerts, logs, and manifests are produced for every league.
+
+The refresh command incrementally ingests current-season results, rebuilds features, ingests structured news when `ANTHROPIC_API_KEY` is configured, updates Sleeper context, builds weekly and rest-of-season projections/rankings, optionally preserves a pregame snapshot, safely attempts the prior-week actuals backfill, runs health checks and decision alerts, and writes an auditable JSON manifest beneath `data/outputs/<league>/refresh_runs/`. Without the optional Anthropic key, news is explicitly recorded as skipped and the rest of the run remains healthy. Generated parquet and manifest files use replace-on-success writes so interrupted runs do not expose partial artifacts. Use `ffapp project --week ...` when you only want to rebuild projections, `ffapp ingest news --no-offline` for only RSS structuring, or `ffapp refresh features --no-offline` for only the raw-to-feature stage.
 
 Omit `--week` to select the next week with an unplayed kickoff automatically. On Windows, install the Tuesday/Thursday/Sunday jobs with `powershell -ExecutionPolicy Bypass -File scripts/install-weekly-tasks.ps1`. Scheduled runs write logs beneath `data/outputs/logs/` and display a local message when a refresh is degraded or failed, a starter is newly ruled out, a starter projection moves by at least three points, or a new waiver upgrade crosses the alert threshold.
 
@@ -394,7 +401,8 @@ uv run ffapp <group> <command> --help
 | `ffapp draft live` | Start/stop a timed replay of a completed real draft. | `--replay`, `--pace-seconds`, `--stop`, `--league`. |
 | `ffapp evaluate` | Run walk-forward points and availability evaluation. | Required multi-value `--seasons`. |
 | `ffapp project` | Generate a weekly projection or a ROS week range. | Required `--week`; optional `--season`, `--league`, `--from-week`, `--through-week`, network override. |
-| `ffapp refresh weekly` | Refresh features, Sleeper context, projections, alerts, optional logging, prior actuals, health checks, and a run manifest. | Optional `--week` (auto-selected when omitted), `--season`, `--league`, `--run-label`, `--skip-backfill`, network override. |
+| `ffapp ingest news` | Structure unseen RSS stories into durable events or a manual-review queue. | `--source`, `--max-items-per-source`, network override. |
+| `ffapp refresh weekly` | Refresh shared inputs/news plus per-league weekly and ROS decisions, alerts, logs, health checks, and manifests. | Optional `--week` (auto-selected when omitted), `--season`, `--league` or `--all-leagues`, `--run-label`, `--skip-backfill`, `--skip-ros`, `--skip-news`, `--skip-features`, network override. |
 | `ffapp refresh features` | Incrementally fetch current-season partitions and rebuild interim/feature artifacts. | `--league`, network override. |
 | `ffapp rankings ros` | Build a current-free-agent ROS ranking board. | `--league`, `--season`, network override. |
 | `ffapp log week` | Preserve a real pregame projection snapshot. | Required `--week`, `--run-label`; optional `--season`, `--league`, network override. |

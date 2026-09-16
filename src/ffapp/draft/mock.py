@@ -486,7 +486,7 @@ def init_mock_draft(
     order/trades/owner display names) and assembles the state.
     """
     assert league.league_id is not None
-    board_path = draft_board_csv_path(settings, season=season)
+    board_path = draft_board_csv_path(settings, season=season, league_slug=league.slug)
     if not board_path.exists():
         raise MockDraftBoardNotBuiltError(
             f"No draft board found at {board_path}. Run `ffapp draft board` to build one first."

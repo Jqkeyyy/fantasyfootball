@@ -87,6 +87,9 @@ def discover_leagues(
             "waiver_type": league_settings.get("waiver_type"),
             "waiver_budget": league_settings.get("waiver_budget"),
             "playoff_week_start": league_settings.get("playoff_week_start"),
+            "league_type": league_settings.get("type"),
+            "disable_trades": league_settings.get("disable_trades"),
+            "last_chopped_leg": league_settings.get("last_chopped_leg"),
         }
         path = write_league_stub(
             slug=slug,

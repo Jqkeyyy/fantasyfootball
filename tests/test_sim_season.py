@@ -8,6 +8,8 @@ composing tasks 2.1-2.3's already-fixture-tested building blocks.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -17,6 +19,7 @@ from ffapp.sim.season import (
     Matchup,
     Roster,
     SimPlayer,
+    WeekProjection,
     simulate_availability,
     simulate_season,
     simulate_team_week_totals,
@@ -156,6 +159,35 @@ def test_simulate_team_week_totals_returns_shape_season_sims_by_n_weeks() -> Non
     assert totals["A"].shape == (300, 4)
 
 
+def test_simulate_team_week_totals_uses_each_weeks_projection_and_lineup() -> None:
+    low = (0.5, 0.8, 1.0, 1.2, 1.5)
+    high = (18.0, 19.0, 20.0, 21.0, 22.0)
+    rb = _player("rb", "RB", mean=1.0, values=low)
+    wr = _player("wr", "WR", mean=1.0, values=low)
+    rb = replace(
+        rb,
+        weekly={1: WeekProjection(20.0, high, None), 2: WeekProjection(1.0, low, None)},
+    )
+    wr = replace(
+        wr,
+        weekly={1: WeekProjection(1.0, low, None), 2: WeekProjection(20.0, high, None)},
+    )
+
+    totals, first_lineup = simulate_team_week_totals(
+        [Roster(team_id="A", players=[rb, wr])],
+        _flex_only_format(),
+        _NO_CORRELATION,
+        remaining_weeks=[1, 2],
+        season_sims=1000,
+        recovery_prob=0.5,
+        rng=np.random.default_rng(7),
+    )
+
+    assert first_lineup["A"].slots["FLEX_1"] == "rb"
+    assert totals["A"][:, 0].mean() > 18.0
+    assert totals["A"][:, 1].mean() > 18.0
+
+
 # --- simulate_season: playoff odds sum sensibly ---------------------------------------
 
 
@@ -232,6 +264,25 @@ def test_expected_wins_sum_to_the_real_number_of_regular_season_matchups() -> No
     )
 
     assert sum(result.expected_wins.values()) == pytest.approx(6.0)
+
+
+def test_simulate_season_includes_current_standings() -> None:
+    teams, schedule, fmt = _four_team_league()
+    result = simulate_season(
+        teams,
+        schedule,
+        fmt,
+        _NO_CORRELATION,
+        remaining_weeks=[1, 2, 3, 4, 5],
+        playoff_week_start=4,
+        n_playoff_teams=4,
+        season_sims=100,
+        initial_wins={"A": 5.0},
+        initial_points={"A": 800.0},
+        rng=np.random.default_rng(4),
+    )
+
+    assert result.expected_wins["A"] >= 5.0
 
 
 def test_simulate_season_rejects_a_non_power_of_two_playoff_field() -> None:

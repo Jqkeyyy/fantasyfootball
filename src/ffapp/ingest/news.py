@@ -86,6 +86,7 @@ from ffapp.cache.offline import (
 from ffapp.config import Settings
 from ffapp.config import load_settings as _load_settings
 from ffapp.ids.mapping import normalize_name
+from ffapp.tools.artifacts import atomic_write_parquet
 
 USER_AGENT = (
     "ffapp/0.1 (personal fantasy football decision-support tool; "
@@ -444,8 +445,7 @@ def write_review_queue(rows: pl.DataFrame, output_path: Path) -> pl.DataFrame:
         combined = pl.concat([existing, rows], how="vertical_relaxed")
     else:
         combined = rows
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.write_parquet(output_path)
+    atomic_write_parquet(combined, output_path)
     return combined
 
 

@@ -148,12 +148,15 @@ def build_export_bundle(
     )
 
 
-def export_html_path(settings: Settings, *, season: int) -> Path:
-    return settings.data_root / "outputs" / f"draft_board_{season}_export.html"
+def export_html_path(settings: Settings, *, season: int, league_slug: str | None = None) -> Path:
+    output_dir = settings.data_root / "outputs"
+    if league_slug is not None:
+        output_dir = output_dir / league_slug / "draft"
+    return output_dir / f"draft_board_{season}_export.html"
 
 
-def export_csv_path(settings: Settings, *, season: int) -> Path:
-    return settings.data_root / "outputs" / f"draft_board_{season}_export.csv"
+def export_csv_path(settings: Settings, *, season: int, league_slug: str | None = None) -> Path:
+    return export_html_path(settings, season=season, league_slug=league_slug).with_suffix(".csv")
 
 
 def _format_age(age: InputAge) -> str:

@@ -156,6 +156,8 @@ def analyze_trade(
     n_playoff_teams: int,
     season_sims: int,
     recovery_prob: float = 0.5,
+    initial_wins: Mapping[str, float] | None = None,
+    initial_points: Mapping[str, float] | None = None,
     rng_seed: int,
 ) -> TradeAnalysis:
     """SPEC §14.6's full algorithm. `vor_by_player` is SPEC step 4's
@@ -173,6 +175,8 @@ def analyze_trade(
         n_playoff_teams=n_playoff_teams,
         season_sims=season_sims,
         recovery_prob=recovery_prob,
+        initial_wins=initial_wins,
+        initial_points=initial_points,
         rng=np.random.default_rng(rng_seed),
     )
     traded_teams = apply_trade(teams, proposal)
@@ -186,6 +190,8 @@ def analyze_trade(
         n_playoff_teams=n_playoff_teams,
         season_sims=season_sims,
         recovery_prob=recovery_prob,
+        initial_wins=initial_wins,
+        initial_points=initial_points,
         rng=np.random.default_rng(rng_seed),  # same seed -- common random numbers
     )
 

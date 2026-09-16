@@ -86,21 +86,31 @@ BOARD_COLUMNS = [
 ]
 
 
-def draft_board_csv_path(settings: Settings, *, season: int) -> Path:
+def draft_board_csv_path(
+    settings: Settings, *, season: int, league_slug: str | None = None
+) -> Path:
     """`data/outputs/draft_board_<season>.csv` (SPEC §9.7) -- the one place
     that knows this path, shared by `ffapp draft board` (which writes it)
     and the Streamlit page (which reads it, task 0.13).
     """
-    return settings.data_root / "outputs" / f"draft_board_{season}.csv"
+    output_dir = settings.data_root / "outputs"
+    if league_slug is not None:
+        output_dir = output_dir / league_slug / "draft"
+    return output_dir / f"draft_board_{season}.csv"
 
 
-def source_rankings_csv_path(settings: Settings, *, season: int) -> Path:
+def source_rankings_csv_path(
+    settings: Settings, *, season: int, league_slug: str | None = None
+) -> Path:
     """`data/outputs/source_rankings_<season>.csv` -- the "no model" board:
     each source's own real published overall rank side by side, no VOR/
     league-scoring valuation. Written by the same `ffapp draft board`
     command as the main board, read by the Streamlit page's per-source tabs.
     """
-    return settings.data_root / "outputs" / f"source_rankings_{season}.csv"
+    output_dir = settings.data_root / "outputs"
+    if league_slug is not None:
+        output_dir = output_dir / league_slug / "draft"
+    return output_dir / f"source_rankings_{season}.csv"
 
 
 # Sources with real per-stat projections (rescaled via league scoring before

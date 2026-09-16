@@ -36,7 +36,13 @@ def _mock_sleeper(monkeypatch: pytest.MonkeyPatch) -> None:
             "total_rosters": 10,
             "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DEF"],
             "scoring_settings": {"rec": 1},
-            "settings": {"waiver_type": 2, "waiver_budget": 100, "playoff_week_start": 15},
+            "settings": {
+                "waiver_type": 2,
+                "waiver_budget": 100,
+                "playoff_week_start": 15,
+                "type": 1,
+                "disable_trades": 0,
+            },
         },
         "/league/222": {
             "league_id": "222",
@@ -63,6 +69,8 @@ def test_discover_leagues_writes_a_stub_per_league_with_deduplicated_slugs(
     main = load_league("main-league", leagues_dir=leagues_dir)
     assert main.league_cache["scoring_settings"]["rec"] == 1
     assert main.league_cache["waiver_type"] == 2
+    assert main.league_cache["league_type"] == 1
+    assert main.league_cache["disable_trades"] == 0
 
 
 def test_discover_leagues_reuses_existing_slug_for_a_known_league_id(

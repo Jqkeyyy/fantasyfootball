@@ -701,6 +701,17 @@ def _week_path(settings: Settings, league_slug: str, season: int, week: int) -> 
     return _log_dir(settings, league_slug) / f"season={season}" / f"week={week:02d}.parquet"
 
 
+def _align_prediction_log_schema(frame: pl.DataFrame) -> pl.DataFrame:
+    """Add nullable fields when reading logs written by an older release."""
+    missing = [
+        pl.lit(None, dtype=dtype).alias(name)
+        for name, dtype in PREDICTION_LOG_SCHEMA.items()
+        if name not in frame.columns
+    ]
+    aligned = frame.with_columns(*missing) if missing else frame
+    return aligned.select(list(PREDICTION_LOG_SCHEMA)).cast(pl.Schema(PREDICTION_LOG_SCHEMA))
+
+
 def write_prediction_log(
     rows: pl.DataFrame,
     fetch_rows: pl.DataFrame,
@@ -725,11 +736,11 @@ def write_prediction_log(
     week_path = _week_path(settings, league_slug, season, week)
     week_path.parent.mkdir(parents=True, exist_ok=True)
     if week_path.exists():
-        existing = pl.read_parquet(week_path)
+        existing = _align_prediction_log_schema(pl.read_parquet(week_path))
         existing = existing.filter(pl.col("run_label") != run_label)
-        combined = pl.concat([existing, rows], how="vertical_relaxed")
+        combined = pl.concat([existing, _align_prediction_log_schema(rows)], how="vertical")
     else:
-        combined = rows
+        combined = _align_prediction_log_schema(rows)
     atomic_write_parquet(combined, week_path)
 
     latest_path = _log_dir(settings, league_slug) / "latest.parquet"
