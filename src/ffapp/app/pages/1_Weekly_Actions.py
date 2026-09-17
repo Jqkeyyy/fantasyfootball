@@ -10,6 +10,7 @@ import streamlit as st
 
 from ffapp.app.league_selector import select_league
 from ffapp.app.weekly_actions_page import (
+    build_action_inbox,
     explain_player,
     projection_supported_format,
     recommended_lineup,
@@ -26,6 +27,7 @@ from ffapp.ingest import rankings as rankings_ingest
 from ffapp.league_format import parse_league_format
 from ffapp.projections.aggregate import apply_league_scoring
 from ffapp.sim.startsit import evaluate_start_sit
+from ffapp.tools import decision_ledger
 from ffapp.tools.pipeline_health import health_table, inspect_weekly_pipeline
 
 st.set_page_config(page_title="Weekly Actions", layout="wide")
@@ -154,6 +156,112 @@ lineup = recommended_lineup(rankings, my_roster_ids, current_starter_ids, fmt)
 supported_positions = set(rankings["position"].unique().to_list())
 unsupported_starters = sorted(set(fmt.starters) - supported_positions)
 
+waiver_budget = fmt.waiver_budget or 0
+roster_settings = my_roster.get("settings")
+used_budget = (
+    int(roster_settings.get("waiver_budget_used", 0)) if isinstance(roster_settings, dict) else 0
+)
+remaining_budget = max(0, waiver_budget - used_budget)
+waivers = waiver_recommendations(
+    rankings,
+    my_roster_ids,
+    fmt,
+    current_week=week,
+    remaining_budget=remaining_budget,
+    playoff_weight=settings.waivers.playoff_weight,
+    aggressiveness=settings.waivers.aggressiveness,
+    ros_projections=(
+        pl.read_parquet(
+            settings.data_root / "outputs" / league.slug / "projections_ros.parquet"
+        )
+        if (settings.data_root / "outputs" / league.slug / "projections_ros.parquet").exists()
+        else None
+    ),
+    opponent_roster_ids=opponent_roster_ids,
+)
+
+alert_path = settings.data_root / "outputs" / league.slug / "alerts" / "latest.json"
+alert_rows: list[dict[str, object]] = []
+if alert_path.exists():
+    try:
+        loaded = json.loads(alert_path.read_text()).get("alerts", [])
+        if isinstance(loaded, list):
+            alert_rows = [row for row in loaded if isinstance(row, dict)]
+    except (OSError, json.JSONDecodeError):
+        pass
+
+st.subheader("Decision inbox")
+inbox = build_action_inbox(
+    lineup,
+    rankings,
+    current_starter_ids,
+    waivers,
+    pipeline_status=pipeline_health.status,
+    alerts=alert_rows,
+)
+if inbox.is_empty():
+    st.success("No lineup, waiver, data-quality, or projection-change exception needs action.")
+else:
+    st.dataframe(
+        inbox,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "expected_gain": st.column_config.NumberColumn(format="%+.1f"),
+            "confidence": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0),
+        },
+    )
+
+recommendations = decision_ledger.recommendation_rows(
+    league.slug,
+    season,
+    week,
+    lineup,
+    rankings,
+    current_starter_ids,
+    waivers,
+)
+decision_path = decision_ledger.ledger_path(settings.data_root, league.slug)
+if st.button("Save this recommendation snapshot", disabled=recommendations.is_empty()):
+    saved = decision_ledger.append_recommendations(decision_path, recommendations)
+    st.success(f"Decision ledger now contains {saved.height} recommendation(s).")
+
+if decision_path.exists():
+    all_decisions = pl.read_parquet(decision_path)
+    with st.expander("Decision record and outcomes"):
+        st.dataframe(
+            decision_ledger.decision_summary(all_decisions),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "follow_rate": st.column_config.NumberColumn(format="%.0%%"),
+                "mean_expected_delta": st.column_config.NumberColumn(format="%+.1f"),
+                "mean_realized_delta": st.column_config.NumberColumn(format="%+.1f"),
+                "mean_regret": st.column_config.NumberColumn(format="%.1f"),
+            },
+        )
+    current_decisions = all_decisions.filter(
+        (pl.col("season") == season) & (pl.col("week") == week)
+    )
+    pending = current_decisions.filter(pl.col("status") == "recommended")
+    if not pending.is_empty():
+        by_id = {
+            str(row["decision_id"]): str(row["recommended_action"])
+            for row in pending.iter_rows(named=True)
+        }
+        selected_decision = st.selectbox(
+            "Record what you chose",
+            options=list(by_id),
+            format_func=lambda value: by_id[value],
+        )
+        accept_col, reject_col = st.columns(2)
+        if accept_col.button("Followed recommendation"):
+            decision_ledger.record_choice(decision_path, selected_decision, accepted=True)
+            st.rerun()
+        if reject_col.button("Did something else"):
+            decision_ledger.record_choice(decision_path, selected_decision, accepted=False)
+            st.rerun()
+
 st.subheader("Recommended lineup")
 recommended_total = float(lineup["projected_points"].sum()) if not lineup.is_empty() else 0.0
 current_rows = rankings.filter(pl.col("player_id").is_in(list(current_starter_ids)))
@@ -263,29 +371,6 @@ if st.button("Run win-probability simulation"):
         st.error(f"Matchup simulation unavailable: {exc}")
 
 st.subheader("Waiver upgrades")
-waiver_budget = fmt.waiver_budget or 0
-roster_settings = my_roster.get("settings")
-used_budget = (
-    int(roster_settings.get("waiver_budget_used", 0)) if isinstance(roster_settings, dict) else 0
-)
-remaining_budget = max(0, waiver_budget - used_budget)
-waivers = waiver_recommendations(
-    rankings,
-    my_roster_ids,
-    fmt,
-    current_week=week,
-    remaining_budget=remaining_budget,
-    playoff_weight=settings.waivers.playoff_weight,
-    aggressiveness=settings.waivers.aggressiveness,
-    ros_projections=(
-        pl.read_parquet(
-            settings.data_root / "outputs" / league.slug / "projections_ros.parquet"
-        )
-        if (settings.data_root / "outputs" / league.slug / "projections_ros.parquet").exists()
-        else None
-    ),
-    opponent_roster_ids=opponent_roster_ids,
-)
 if waivers.is_empty():
     st.success("No available skill player projects as a starting-lineup upgrade this week.")
 else:

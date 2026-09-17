@@ -17,6 +17,15 @@ from ffapp.tools.waivers import build_waiver_board, value_added
 
 _QUANTILE_ALPHAS = (0.10, 0.25, 0.50, 0.75, 0.90)
 
+ACTION_INBOX_SCHEMA = {
+    "priority": pl.String,
+    "category": pl.String,
+    "action": pl.String,
+    "expected_gain": pl.Float64,
+    "confidence": pl.Float64,
+    "evidence": pl.String,
+}
+
 
 def _number(value: object) -> float:
     if not isinstance(value, int | float):
@@ -170,6 +179,103 @@ def recommended_lineup(
         "currently_starting": pl.Boolean,
     }
     return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+
+
+def build_action_inbox(
+    lineup: pl.DataFrame,
+    rankings: pl.DataFrame,
+    current_starter_ids: set[str],
+    waivers: pl.DataFrame,
+    *,
+    pipeline_status: str,
+    alerts: list[dict[str, object]] | None = None,
+) -> pl.DataFrame:
+    """Build a small, ordered list of decisions that deserve attention now."""
+    rows: list[dict[str, object]] = []
+    if pipeline_status != "healthy":
+        rows.append(
+            {
+                "priority": "NOW",
+                "category": "data",
+                "action": f"Review {pipeline_status} pipeline checks before acting",
+                "expected_gain": None,
+                "confidence": None,
+                "evidence": "At least one freshness, coverage, or source check is not healthy.",
+            }
+        )
+    recommended_ids = set(lineup["player_id"].to_list()) if not lineup.is_empty() else set()
+    incoming = lineup.filter(~pl.col("player_id").is_in(list(current_starter_ids))).sort(
+        "projected_points", descending=True
+    )
+    outgoing = rankings.filter(
+        pl.col("player_id").is_in(list(current_starter_ids - recommended_ids))
+    ).sort("proj_mean")
+    for add, drop in zip(
+        incoming.iter_rows(named=True), outgoing.iter_rows(named=True), strict=False
+    ):
+        gain = float(add["projected_points"]) - float(drop["proj_mean"])
+        spread = max(0.0, float(add["ceiling"]) - float(add["floor"]))
+        confidence = max(
+            0.0,
+            min(1.0, 1.0 - spread / max(1.0, float(add["projected_points"]) * 4.0)),
+        )
+        rows.append(
+            {
+                "priority": "NOW" if gain >= 2.0 else "WATCH",
+                "category": "lineup",
+                "action": f"Start {add['player_name']} over {drop['player_name']}",
+                "expected_gain": gain,
+                "confidence": confidence,
+                "evidence": (
+                    f"{float(add['projected_points']):.1f} vs {float(drop['proj_mean']):.1f} "
+                    f"projected points; {float(add['floor']):.1f}-{float(add['ceiling']):.1f} "
+                    "range for the recommended starter."
+                ),
+            }
+        )
+    for row in waivers.head(5).iter_rows(named=True):
+        gain = float(row["value_added_per_week"])
+        rows.append(
+            {
+                "priority": "NOW" if gain >= 2.0 else "WATCH",
+                "category": "waiver",
+                "action": (
+                    f"Add {row['player_name']}"
+                    + (f"; drop {row['drop_player']}" if row.get("drop_player") else "")
+                ),
+                "expected_gain": gain,
+                "confidence": None,
+                "evidence": (
+                    f"Suggested bid {row['suggested_bid']}; "
+                    f"{row['competing_teams']} competing roster(s); "
+                    f"{row['projection_basis']} basis."
+                ),
+            }
+        )
+    for alert in (alerts or [])[:5]:
+        message = str(alert.get("message") or "Projection changed since the last refresh")
+        if not any(row["action"] == message for row in rows):
+            rows.append(
+                {
+                    "priority": "WATCH",
+                    "category": "change",
+                    "action": message,
+                    "expected_gain": None,
+                    "confidence": None,
+                    "evidence": "Detected by comparison with the previous refresh snapshot.",
+                }
+            )
+    order = {"NOW": 0, "WATCH": 1}
+    rows.sort(
+        key=lambda row: (
+            order[str(row["priority"])],
+            0 if row["category"] == "data" else 1,
+            -_number(row["expected_gain"]) if row["expected_gain"] is not None else 0.0,
+        )
+    )
+    return pl.DataFrame(rows, schema=ACTION_INBOX_SCHEMA) if rows else pl.DataFrame(
+        schema=ACTION_INBOX_SCHEMA
+    )
 
 
 def waiver_recommendations(
@@ -355,6 +461,7 @@ def streaming_recommendations(
 
 
 __all__ = [
+    "build_action_inbox",
     "explain_player",
     "player_projections",
     "projection_supported_format",

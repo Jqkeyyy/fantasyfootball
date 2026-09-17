@@ -3,6 +3,7 @@ from __future__ import annotations
 import polars as pl
 
 from ffapp.app.weekly_actions_page import (
+    build_action_inbox,
     explain_player,
     recommended_lineup,
     streaming_recommendations,
@@ -186,3 +187,20 @@ def test_streamers_exclude_rostered_kickers_and_defenses() -> None:
     )
 
     assert result["player_name"].to_list() == ["K Two"]
+
+
+def test_action_inbox_prioritizes_data_and_meaningful_lineup_changes() -> None:
+    lineup = recommended_lineup(
+        _rankings(), {"rb1", "rb2", "wr1", "wr2"}, {"rb2", "wr1", "wr2"}, _format()
+    )
+
+    result = build_action_inbox(
+        lineup,
+        _rankings(),
+        {"rb2", "wr1", "wr2"},
+        pl.DataFrame(),
+        pipeline_status="degraded",
+    )
+
+    assert result["category"].to_list()[:2] == ["data", "lineup"]
+    assert "Start RB One over WR Two" in result["action"].to_list()

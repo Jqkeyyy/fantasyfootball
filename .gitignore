@@ -49,3 +49,6 @@ Thumbs.db
 *.md
 !README.md
 docs/
+!docs/
+docs/*
+!docs/CURRENT_STATE.md

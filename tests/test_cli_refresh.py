@@ -106,6 +106,11 @@ def _patch_refresh_dependencies(
     monkeypatch.setattr(cli, "log_backfill_command", lambda **kwargs: None)
     monkeypatch.setattr(cli, "log_week_command", lambda **kwargs: None)
     monkeypatch.setattr(
+        cli.run_manifest,
+        "promote_last_known_good",
+        lambda *args, **kwargs: settings.data_root / "last_known_good" / "manifest.json",
+    )
+    monkeypatch.setattr(
         cli,
         "inspect_weekly_pipeline",
         lambda *args, **kwargs: PipelineHealth(
@@ -159,6 +164,38 @@ def test_weekly_refresh_records_degraded_prior_actuals_without_hiding_projection
     assert payload["status"] == "degraded"
     actuals = next(step for step in payload["steps"] if step["name"] == "prior_week_actuals")
     assert actuals["status"] == "degraded"
+
+
+def test_weekly_refresh_falls_back_to_cached_projections_after_live_failure(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings
+) -> None:
+    _patch_refresh_dependencies(monkeypatch, fixture_settings)
+    calls: list[bool | None] = []
+
+    def project_with_fallback(**kwargs: object) -> None:
+        offline = kwargs.get("offline")
+        assert offline is None or isinstance(offline, bool)
+        calls.append(offline)
+        if offline is False:
+            raise RuntimeError("live source rate limited")
+
+    monkeypatch.setattr(cli, "project_command", project_with_fallback)
+
+    result = runner.invoke(
+        cli.app,
+        ["refresh", "weekly", "--week", "2", "--no-offline", "--skip-backfill"],
+    )
+
+    assert result.exit_code == 0, result.output
+    latest = fixture_settings.data_root / "outputs" / _LEAGUE.slug / "refresh_runs" / "latest.json"
+    payload = json.loads(latest.read_text())
+    assert payload["status"] == "degraded"
+    projection = next(step for step in payload["steps"] if step["name"] == "projections")
+    ros = next(step for step in payload["steps"] if step["name"] == "ros_decisions")
+    assert projection["status"] == "degraded"
+    assert "Cached-source fallback" in projection["detail"]
+    assert ros["status"] == "degraded"
+    assert calls == [False, True, False, True]
 
 
 def test_weekly_refresh_all_leagues_rebuilds_shared_features_once(

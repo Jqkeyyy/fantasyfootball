@@ -27,8 +27,12 @@ function Send-LocalMessage {
 
 Push-Location $ProjectRoot
 try {
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & uv run ffapp refresh weekly --all-leagues --run-label $RunLabel --no-offline *>> $LogPath
-    $ExitCode = $LASTEXITCODE
+    $CliExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $PreviousErrorActionPreference
+    Add-Content -LiteralPath $LogPath -Value "CLI exit code: $CliExitCode"
     $Unhealthy = @()
     foreach ($Manifest in Get-ChildItem -Path "data\outputs\*\refresh_runs\latest.json") {
         $Result = Get-Content -LiteralPath $Manifest.FullName -Raw | ConvertFrom-Json
@@ -51,7 +55,8 @@ try {
         $Preview = ($NewAlerts | Select-Object -First 3 | ForEach-Object { $_.message }) -join " | "
         Send-LocalMessage "FFApp has $($NewAlerts.Count) new decision alert(s): $Preview"
     }
-    exit $ExitCode
+    Add-Content -LiteralPath $LogPath -Value "Scheduled wrapper exit code: $CliExitCode"
+    exit ([int]$CliExitCode)
 }
 finally {
     Pop-Location

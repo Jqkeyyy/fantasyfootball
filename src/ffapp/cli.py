@@ -37,10 +37,12 @@ from ffapp.sim import injury
 from ffapp.tools import (
     automation,
     chopped_alerts,
+    decision_ledger,
     discord_notifications,
     prediction_log,
     ros_aggregate,
     ros_rankings,
+    run_manifest,
     sos,
     waiver_history,
     waivers,
@@ -1506,6 +1508,9 @@ def _write_refresh_manifest(
         "status": status,
         "generated_at_utc": generated_at.isoformat(),
         "steps": steps,
+        "artifacts": run_manifest.inventory_weekly_artifacts(
+            settings.data_root / "outputs" / league_slug
+        ),
     }
     path = output_dir / f"{season}-w{week:02d}-{generated_at:%Y%m%dT%H%M%SZ}.json"
     content = json.dumps(payload, indent=2) + "\n"
@@ -1692,15 +1697,38 @@ def refresh_weekly_command(
             steps.append({"name": "waiver_history", "status": "degraded", "detail": str(exc)})
 
     try:
-        project_command(
-            week=week,
-            season=resolved_season,
-            offline=offline,
-            from_week=None,
-            through_week=None,
-            league=league_config.slug,
+        try:
+            project_command(
+                week=week,
+                season=resolved_season,
+                offline=offline,
+                from_week=None,
+                through_week=None,
+                league=league_config.slug,
+            )
+            projection_status = "healthy"
+            projection_detail = "Artifact built"
+        except Exception as live_exc:
+            if offline is True:
+                raise
+            project_command(
+                week=week,
+                season=resolved_season,
+                offline=True,
+                from_week=None,
+                through_week=None,
+                league=league_config.slug,
+            )
+            degraded = True
+            projection_status = "degraded"
+            projection_detail = f"Cached-source fallback after: {live_exc}"
+        steps.append(
+            {
+                "name": "projections",
+                "status": projection_status,
+                "detail": projection_detail,
+            }
         )
-        steps.append({"name": "projections", "status": "healthy", "detail": "Artifact built"})
     except Exception as exc:
         failed = True
         detail = str(exc) or type(exc).__name__
@@ -1726,14 +1754,33 @@ def refresh_weekly_command(
         try:
             schedule = pl.read_parquet(settings.data_root / "interim" / "schedule.parquet")
             through_week = max(sos.full_season_weeks(schedule, season=resolved_season))
-            project_command(
-                week=week,
-                season=resolved_season,
-                offline=offline,
-                from_week=week,
-                through_week=through_week,
-                league=league_config.slug,
-            )
+            try:
+                project_command(
+                    week=week,
+                    season=resolved_season,
+                    offline=offline,
+                    from_week=week,
+                    through_week=through_week,
+                    league=league_config.slug,
+                )
+                ros_status = "healthy"
+                ros_detail = f"Rebuilt weeks {week}-{through_week} and ROS rankings"
+            except Exception as live_exc:
+                if offline is True:
+                    raise
+                project_command(
+                    week=week,
+                    season=resolved_season,
+                    offline=True,
+                    from_week=week,
+                    through_week=through_week,
+                    league=league_config.slug,
+                )
+                degraded = True
+                ros_status = "degraded"
+                ros_detail = (
+                    f"Rebuilt weeks {week}-{through_week} from cached sources after: {live_exc}"
+                )
             rankings_ros_command(
                 league=league_config.slug,
                 season=resolved_season,
@@ -1742,8 +1789,8 @@ def refresh_weekly_command(
             steps.append(
                 {
                     "name": "ros_decisions",
-                    "status": "healthy",
-                    "detail": f"Rebuilt weeks {week}-{through_week} and ROS rankings",
+                    "status": ros_status,
+                    "detail": ros_detail,
                 }
             )
         except Exception as exc:
@@ -1786,8 +1833,33 @@ def refresh_weekly_command(
     if backfill_prior and week > 1:
         try:
             log_backfill_command(week=week - 1, season=resolved_season, league=league_config.slug)
+            prior_log = (
+                settings.data_root
+                / "outputs"
+                / league_config.slug
+                / "prediction_log"
+                / f"season={resolved_season}"
+                / f"week={week - 1:02d}.parquet"
+            )
+            decisions = decision_ledger.ledger_path(settings.data_root, league_config.slug)
+            settled_detail = ""
+            if decisions.exists() and prior_log.exists():
+                actuals = pl.read_parquet(prior_log).select(
+                    "season", "week", "player_id", "actual_points"
+                )
+                settled = decision_ledger.settle_outcomes(decisions, actuals)
+                settled_count = settled.filter(
+                    (pl.col("season") == resolved_season)
+                    & (pl.col("week") == week - 1)
+                    & pl.col("settled_at_utc").is_not_null()
+                ).height
+                settled_detail = f"; settled {settled_count} decision(s)"
             steps.append(
-                {"name": "prior_week_actuals", "status": "healthy", "detail": "Backfilled"}
+                {
+                    "name": "prior_week_actuals",
+                    "status": "healthy",
+                    "detail": f"Backfilled{settled_detail}",
+                }
             )
         except Exception as exc:
             degraded = True
@@ -1849,6 +1921,27 @@ def refresh_weekly_command(
     failed = failed or health.status == "failed"
     degraded = degraded or health.status == "degraded"
     status = "failed" if failed else "degraded" if degraded else "healthy"
+    if health.status == "healthy" and not failed:
+        try:
+            recovery_manifest = run_manifest.promote_last_known_good(
+                settings.data_root / "outputs" / league_config.slug,
+                league_slug=league_config.slug,
+                season=resolved_season,
+                week=week,
+            )
+            steps.append(
+                {
+                    "name": "last_known_good",
+                    "status": "healthy",
+                    "detail": f"Promoted decision artifacts: {recovery_manifest}",
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append(
+                {"name": "last_known_good", "status": "degraded", "detail": str(exc)}
+            )
+        status = "failed" if failed else "degraded" if degraded else "healthy"
     alert_payload_path = (
         settings.data_root / "outputs" / league_config.slug / "alerts" / "latest.json"
     )

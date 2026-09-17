@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import getpass
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -30,7 +32,11 @@ DEFAULT_SCHEDULES = (
 
 
 def task_xml(
-    project_root: Path, schedule: RefreshSchedule, *, start: datetime | None = None
+    project_root: Path,
+    schedule: RefreshSchedule,
+    *,
+    start: datetime | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Build a Task Scheduler definition without shell-quoting user paths."""
     executable = project_root / ".venv" / "Scripts" / "ffapp.exe"
@@ -53,7 +59,9 @@ def task_xml(
     ET.SubElement(days, f"{{{ns}}}{schedule.weekday}")
     principals = ET.SubElement(task, f"{{{ns}}}Principals")
     principal = ET.SubElement(principals, f"{{{ns}}}Principal", id="Author")
-    ET.SubElement(principal, f"{{{ns}}}LogonType").text = "InteractiveToken"
+    resolved_user = user_id or _current_windows_user()
+    ET.SubElement(principal, f"{{{ns}}}UserId").text = resolved_user
+    ET.SubElement(principal, f"{{{ns}}}LogonType").text = "S4U"
     ET.SubElement(principal, f"{{{ns}}}RunLevel").text = "LeastPrivilege"
     settings = ET.SubElement(task, f"{{{ns}}}Settings")
     ET.SubElement(settings, f"{{{ns}}}MultipleInstancesPolicy").text = "IgnoreNew"
@@ -73,6 +81,13 @@ def task_xml(
     ).text = f"refresh weekly --all-leagues --run-label {schedule.run_label} --no-offline"
     ET.SubElement(action, f"{{{ns}}}WorkingDirectory").text = str(project_root)
     return ET.tostring(task, encoding="unicode")
+
+
+def _current_windows_user() -> str:
+    """Return the Task Scheduler principal for the current account."""
+    username = os.getenv("USERNAME") or getpass.getuser()
+    domain = os.getenv("USERDOMAIN")
+    return f"{domain}\\{username}" if domain else username
 
 
 def install_tasks(project_root: Path) -> list[str]:

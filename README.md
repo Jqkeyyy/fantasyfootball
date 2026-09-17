@@ -6,6 +6,9 @@ The application is designed for a personal, data-driven workflow: expensive inge
 
 > **Project status:** active personal project, version `0.1.0`. The checked-in configuration currently targets the 2026 season and uses **Rogan Radinator League** as the primary league. Generated data is mostly local and is not included in Git, so a fresh clone needs to build or restore its data artifacts before every dashboard page is available.
 
+For authoritative shipping status, model evidence, operational risks, and next priorities, see
+[`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
+
 ## Table of contents
 
 - [What it does](#what-it-does)
@@ -298,7 +301,7 @@ uv run ffapp refresh weekly --week 6 --season 2026 --league rogan-radinator-leag
 
 Use `--all-leagues` instead of `--league` for the scheduled account-wide run. Shared feature and news work runs once, while projections, rest-of-season rankings, alerts, logs, and manifests are produced for every league.
 
-The refresh command incrementally ingests current-season results, rebuilds features, ingests structured news when `ANTHROPIC_API_KEY` is configured, updates Sleeper context, builds weekly and rest-of-season projections/rankings, optionally preserves a pregame snapshot, safely attempts the prior-week actuals backfill, runs health checks and decision alerts, and writes an auditable JSON manifest beneath `data/outputs/<league>/refresh_runs/`. Without the optional Anthropic key, news is explicitly recorded as skipped and the rest of the run remains healthy. Generated parquet and manifest files use replace-on-success writes so interrupted runs do not expose partial artifacts. Use `ffapp project --week ...` when you only want to rebuild projections, `ffapp ingest news --no-offline` for only RSS structuring, or `ffapp refresh features --no-offline` for only the raw-to-feature stage.
+The refresh command incrementally ingests current-season results, rebuilds features, ingests structured news when `ANTHROPIC_API_KEY` is configured, updates Sleeper context, builds weekly and rest-of-season projections/rankings, optionally preserves a pregame snapshot, safely attempts the prior-week actuals backfill, runs health checks and decision alerts, and writes an auditable JSON manifest beneath `data/outputs/<league>/refresh_runs/`. Without the optional Anthropic key, news is explicitly recorded as skipped and the rest of the run remains healthy. Generated parquet and manifest files use replace-on-success writes so interrupted runs do not expose partial artifacts. A healthy pipeline also promotes the current decision artifacts into `last_known_good/` with SHA-256 hashes, giving a known recovery point if a later run fails. Use `ffapp project --week ...` when you only want to rebuild projections, `ffapp ingest news --no-offline` for only RSS structuring, or `ffapp refresh features --no-offline` for only the raw-to-feature stage.
 
 Omit `--week` to select the next week with an unplayed kickoff automatically. On Windows, install the Tuesday/Thursday/Sunday jobs with `powershell -ExecutionPolicy Bypass -File scripts/install-weekly-tasks.ps1`. Scheduled runs write logs beneath `data/outputs/logs/` and display a local message when a refresh is degraded or failed, a starter is newly ruled out, a starter projection moves by at least three points, or a new waiver upgrade crosses the alert threshold.
 
@@ -420,7 +423,7 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | --- | --- | --- |
 | **Draft Board** | Filters, tier breaks, VOR, ADP value, and opportunity cost. Includes Pure Rankings and Live Draft tabs. | `data/outputs/<league>/draft/draft_board_<season>.csv`; source tab also uses `source_rankings_<season>.csv`. |
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
-| **Weekly Actions** | Recommended lineup, projection explanations, matchup simulation, multiweek waiver bids with opponent competition, K/DST streamers, and pipeline health. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
+| **Weekly Actions** | Prioritized decision inbox, recommended lineup, explanations, matchup simulation, waiver bids, K/DST streamers, pipeline health, and a follow/reject outcome ledger. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
 | **Schedule Grid** | Positional SOS, bye-aware heatmap, and player matchup detail with usage context. | `data/interim/schedule.parquet`, `defense_position_allowed.parquet`, and `data/features/player_week_features.parquet`. |
 | **Model Health** | Active projection source and current/historical evaluation reports. | `config/projection_source_evaluation.yml` and `data/outputs/eval/*/report.md`. |
@@ -457,6 +460,10 @@ data/
     └── <league>/
         ├── projections.parquet
         ├── refresh_runs/latest.json
+        ├── last_known_good/
+        │   └── manifest.json
+        ├── decisions/
+        │   └── ledger.parquet
         ├── projections_ros.parquet
         ├── rankings_ros/
         │   ├── latest.parquet
