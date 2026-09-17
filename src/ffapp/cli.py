@@ -36,6 +36,7 @@ from ffapp.scoring.targets import apply_league_scoring_target
 from ffapp.sim import injury
 from ffapp.tools import (
     automation,
+    chopped_alerts,
     discord_notifications,
     prediction_log,
     ros_aggregate,
@@ -1750,6 +1751,37 @@ def refresh_weekly_command(
             steps.append({"name": "ros_decisions", "status": "degraded", "detail": str(exc)})
     elif not refresh_ros:
         steps.append({"name": "ros_decisions", "status": "skipped", "detail": "--skip-ros"})
+
+    if is_chopped and live_roster_rows and not failed:
+        try:
+            chopped_result = chopped_alerts.refresh_chopped_alerts(
+                settings,
+                league_config,
+                resolved_season,
+                week,
+                live_roster_rows,
+                offline=offline,
+            )
+            if chopped_result.status == "failed":
+                degraded = True
+            steps.append(
+                {
+                    "name": "chopped_discord_alert",
+                    "status": (
+                        "degraded"
+                        if chopped_result.status == "failed"
+                        else "skipped"
+                        if chopped_result.status in {"skipped", "initialized"}
+                        else "healthy"
+                    ),
+                    "detail": chopped_result.detail,
+                }
+            )
+        except Exception as exc:
+            degraded = True
+            steps.append(
+                {"name": "chopped_discord_alert", "status": "degraded", "detail": str(exc)}
+            )
 
     if backfill_prior and week > 1:
         try:

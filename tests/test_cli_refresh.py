@@ -92,6 +92,13 @@ def _patch_refresh_dependencies(
         lambda *args, **kwargs: (settings.data_root / "waivers.parquet", 0),
     )
     monkeypatch.setattr(
+        cli.chopped_alerts,
+        "refresh_chopped_alerts",
+        lambda *args, **kwargs: cli.chopped_alerts.ChoppedAlertResult(
+            "skipped", "No new chopped transaction"
+        ),
+    )
+    monkeypatch.setattr(
         cli,
         "refresh_news_events",
         lambda *args, **kwargs: {"status": "skipped", "reason": "fixture"},

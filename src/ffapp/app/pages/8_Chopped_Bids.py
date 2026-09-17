@@ -278,6 +278,62 @@ with st.expander("League bidding tendencies"):
             },
         )
 
+evaluation_path = (
+    settings.data_root / "outputs" / league.slug / "chopped_notifications" / "evaluation.parquet"
+)
+with st.expander("Recommendation results"):
+    if not evaluation_path.exists():
+        st.caption(
+            "Results will appear after a Discord recommendation is followed by a completed "
+            "Sleeper waiver award."
+        )
+    else:
+        recommendation_results = pl.read_parquet(evaluation_path)
+        if recommendation_results.is_empty():
+            st.caption("No recommended player has reached a completed waiver result yet.")
+        else:
+            result_a, result_b = st.columns(2)
+            mean_error = float(
+                recommendation_results.select(pl.col("recommendation_error").mean()).item()
+                or 0.0
+            )
+            winning_rate = float(
+                recommendation_results.select(
+                    pl.col("recommended_met_winning_bid").mean()
+                ).item()
+                or 0.0
+            )
+            result_a.metric(
+                "Mean bid error",
+                f"${mean_error:+.1f}",
+                help=(
+                    "Recommended minus actual winning bid; positive means the recommendation "
+                    "was higher."
+                ),
+            )
+            result_b.metric(
+                "Met winning bid",
+                f"{winning_rate:.0%}",
+            )
+            st.dataframe(
+                recommendation_results,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "recommended_bid": st.column_config.NumberColumn("Recommended", format="$%d"),
+                    "max_bid": st.column_config.NumberColumn("Max", format="$%d"),
+                    "actual_winning_bid": st.column_config.NumberColumn(
+                        "Winning bid", format="$%d"
+                    ),
+                    "recommendation_error": st.column_config.NumberColumn(
+                        "Bid error", format="$%d"
+                    ),
+                    "recommended_met_winning_bid": st.column_config.CheckboxColumn(
+                        "Would meet winning bid"
+                    ),
+                },
+            )
+
 if unresolved:
     st.warning(
         f"{unresolved} chopped player(s) lack a current projection and are excluded from bids."

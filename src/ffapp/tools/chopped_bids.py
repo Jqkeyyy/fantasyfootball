@@ -13,6 +13,53 @@ from ffapp.sim.lineup import PlayerProjection, optimal_lineup, slot_instances
 from ffapp.tools.waivers import suggested_bid
 
 
+def build_player_values(
+    weekly_projections: pl.DataFrame,
+    ros_projections: pl.DataFrame | None,
+    players_dim: pl.DataFrame,
+    *,
+    season: int,
+    week: int,
+) -> pl.DataFrame:
+    """Build one canonical projection row per Sleeper player."""
+    identities = (
+        players_dim.filter(pl.col("sleeper_id").is_not_null())
+        .sort("search_rank")
+        .unique(subset=["player_id"], keep="first")
+        .select(
+            "player_id",
+            "sleeper_id",
+            pl.col("full_name").alias("player_name"),
+            "position",
+            "team",
+        )
+    )
+    current = (
+        weekly_projections.filter(
+            (pl.col("season") == season) & (pl.col("week") == week) & pl.col("mean").is_not_null()
+        )
+        .select("player_id", pl.col("mean").alias("current_week_projection"))
+        .unique(subset=["player_id"], keep="last")
+    )
+    values = identities.join(current, on="player_id", how="inner")
+    if ros_projections is not None and not ros_projections.is_empty():
+        ros = (
+            ros_projections.filter(
+                (pl.col("season") == season)
+                & (pl.col("week") >= week)
+                & pl.col("mean").is_not_null()
+            )
+            .group_by("player_id")
+            .agg(pl.col("mean").mean().alias("ros_projection_ppg"))
+        )
+        values = values.join(ros, on="player_id", how="left")
+    else:
+        values = values.with_columns(pl.lit(None, dtype=pl.Float64).alias("ros_projection_ppg"))
+    return values.with_columns(
+        pl.coalesce("ros_projection_ppg", "current_week_projection").alias("projection_ppg")
+    )
+
+
 def remaining_faab(roster: dict[str, Any], total_budget: int) -> int:
     settings = roster.get("settings")
     used = int(settings.get("waiver_budget_used", 0)) if isinstance(settings, dict) else 0
@@ -303,6 +350,8 @@ def build_chopped_bid_board(
                 "position": str(row["position"]),
                 "team": str(row["team"]) if row.get("team") is not None else None,
                 "chopped_week": int(row["chopped_week"]),
+                "chopped_at_ms": int(row["chopped_at_ms"]),
+                "chopped_transaction_id": str(row["transaction_id"]),
                 "current_week_projection": float(row["current_week_projection"]),
                 "projection_ppg": float(row["projection_ppg"]),
                 "lineup_gain_ppg": lineup_gain,
@@ -350,6 +399,8 @@ _BID_SCHEMA = {
     "position": pl.String,
     "team": pl.String,
     "chopped_week": pl.Int64,
+    "chopped_at_ms": pl.Int64,
+    "chopped_transaction_id": pl.String,
     "current_week_projection": pl.Float64,
     "projection_ppg": pl.Float64,
     "lineup_gain_ppg": pl.Float64,
@@ -379,6 +430,7 @@ def _empty_bid_board() -> pl.DataFrame:
 
 
 __all__ = [
+    "build_player_values",
     "build_chopped_bid_board",
     "chopped_candidates",
     "remaining_faab",
