@@ -582,6 +582,7 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
 | **Decision Learning** | Recorded choices, settled outcomes, realized value, regret, and confidence calibration. | `data/outputs/<league>/decisions/ledger.parquet`. |
 | **Postgame Review** | Completed-week decision outcomes and categorized model misses with confirmed injuries excluded. | Prediction logs, weekly actuals/usage, and the decision ledger. |
+| **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
 | **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
 | **Operations** | League refresh health, upstream source age, host disk/app status, schedules, and manual refresh controls. | Refresh manifests, cache metadata, and local host state. |
 | **Install App** | iPhone and Android home-screen installation steps for the private dashboard. | Tailscale access and Streamlit static PWA assets. |
