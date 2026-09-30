@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import polars as pl
 
 from ffapp.app.weekly_actions_page import (
     build_action_inbox,
     explain_player,
+    lineup_decisions,
     recommended_lineup,
     streaming_recommendations,
     waiver_recommendations,
@@ -56,6 +59,41 @@ def test_recommended_lineup_uses_supported_positions_and_marks_changes() -> None
     assert not result["slot"].str.starts_with("K").any()
 
 
+def test_lineup_decisions_pair_unlocked_swap_with_confidence() -> None:
+    rankings = _rankings()
+    lineup = recommended_lineup(
+        rankings, {"rb1", "rb2", "wr1", "wr2"}, {"rb2", "wr1", "wr2"}, _format()
+    )
+    result = lineup_decisions(
+        lineup,
+        rankings,
+        {"rb2", "wr1", "wr2"},
+        _format(),
+        kickoff_by_team={"A": datetime.now(UTC) + timedelta(days=1)},
+    )
+
+    assert result.row(0, named=True)["start"] == "RB One"
+    assert result.row(0, named=True)["sit"] == "WR Two"
+    assert result.row(0, named=True)["expected_gain"] == 15.0
+    assert result.row(0, named=True)["confidence_label"] in {"Medium", "High"}
+
+
+def test_lineup_decisions_exclude_locked_players() -> None:
+    rankings = _rankings()
+    lineup = recommended_lineup(
+        rankings, {"rb1", "rb2", "wr1", "wr2"}, {"rb2", "wr1", "wr2"}, _format()
+    )
+    result = lineup_decisions(
+        lineup,
+        rankings,
+        {"rb2", "wr1", "wr2"},
+        _format(),
+        kickoff_by_team={"A": datetime.now(UTC) - timedelta(minutes=1)},
+    )
+
+    assert result.is_empty()
+
+
 def test_explain_player_states_source_uncertainty_and_matchup_limits() -> None:
     row = _rankings().row(0, named=True)
     row.update(
@@ -87,6 +125,45 @@ def test_waiver_recommendations_rank_only_real_lineup_upgrades() -> None:
     assert result["player_id"].to_list() == ["fa1"]
     assert result["value_added_per_week"].item() == 3.0
     assert result["drop_player"].item() == "WR Two"
+    assert result["claim_role"].item() == "Primary WR"
+    assert result["bid_floor"].item() <= result["bid_ceiling"].item()
+    assert "projected lineup points" in result["why"].item()
+
+
+def test_waiver_recommendations_exclude_explicitly_unavailable_players() -> None:
+    rankings = _rankings().with_columns(
+        pl.when(pl.col("player_id") == "fa1")
+        .then(pl.lit("Out"))
+        .otherwise(pl.lit(None, dtype=pl.String))
+        .alias("injury_status")
+    )
+
+    result = waiver_recommendations(
+        rankings,
+        {"rb1", "rb2", "wr1", "wr2"},
+        _format(),
+        current_week=10,
+        remaining_budget=80,
+        playoff_weight=1.5,
+        aggressiveness=1.0,
+    )
+
+    assert result.is_empty()
+
+
+def test_recommended_lineup_excludes_explicitly_unavailable_players() -> None:
+    rankings = _rankings().with_columns(
+        pl.when(pl.col("player_id") == "rb1")
+        .then(pl.lit("IR"))
+        .otherwise(pl.lit(None, dtype=pl.String))
+        .alias("injury_status")
+    )
+
+    result = recommended_lineup(
+        rankings, {"rb1", "rb2", "wr1", "wr2"}, {"rb1", "wr1", "wr2"}, _format()
+    )
+
+    assert "rb1" not in result["player_id"].to_list()
 
 
 def test_waiver_bid_accounts_for_competing_roster_need() -> None:
@@ -204,3 +281,41 @@ def test_action_inbox_prioritizes_data_and_meaningful_lineup_changes() -> None:
 
     assert result["category"].to_list()[:2] == ["data", "lineup"]
     assert "Start RB One over WR Two" in result["action"].to_list()
+
+
+def test_lineup_decisions_never_pair_an_illegal_cross_position_swap() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"QB": 1, "RB": 2, "WR": 2},
+        flex_slots={"FLEX": 2, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB", "WR", "TE"]},
+        bench=3,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    ids = ["qb", "rb1", "rb2", "rb3", "rb4", "rb5", "wr1", "wr2", "wr3"]
+    positions = ["QB", "RB", "RB", "RB", "RB", "RB", "WR", "WR", "WR"]
+    points = [20.0, 15.0, 14.0, 10.0, 9.0, 12.0, 16.0, 4.0, 6.0]
+    rankings = pl.DataFrame(
+        {
+            "player_id": ids,
+            "player_name": ids,
+            "position": positions,
+            "team": ["A"] * 9,
+            "opponent": ["B"] * 9,
+            "p_active": [1.0] * 9,
+            "proj_mean": points,
+            "floor": [p - 5 for p in points],
+            "median": points,
+            "ceiling": [p + 5 for p in points],
+        }
+    )
+    # Four RBs start (both FLEX spots are RBs), so benched rb5 can only replace
+    # an RB -- starting it over the weakest starter, wr2, would leave one WR.
+    current = {"qb", "rb1", "rb2", "rb3", "rb4", "wr1", "wr2"}
+    lineup = recommended_lineup(rankings, set(ids), current, fmt)
+    result = lineup_decisions(lineup, rankings, current, fmt)
+
+    pairs = {(row["start"], row["sit"]) for row in result.iter_rows(named=True)}
+    assert pairs == {("rb5", "rb4"), ("wr3", "wr2")}

@@ -45,6 +45,7 @@ from scipy.stats import rankdata
 from ffapp.features.opponent import POSITION_TO_GROUPS, team_opponent
 
 _GRADE_LABELS = ["F", "D", "C", "B", "A"]  # ascending value -> ascending grade
+UNAVAILABLE_STATUSES = frozenset({"Out", "IR", "PUP", "NFI", "Suspended", "NA"})
 
 
 class ProjectionsNotBuiltError(Exception):
@@ -173,8 +174,27 @@ def build_weekly_rankings(
 
     graded = add_matchup_grade(merged)
 
+    player_columns = [
+        pl.col("player_id"),
+        pl.col("full_name").alias("player_name"),
+        (
+            pl.col("injury_status")
+            if "injury_status" in players_dim.columns
+            else pl.lit(None, dtype=pl.String).alias("injury_status")
+        ),
+        (
+            pl.col("injury_body_part")
+            if "injury_body_part" in players_dim.columns
+            else pl.lit(None, dtype=pl.String).alias("injury_body_part")
+        ),
+        (
+            pl.col("injury_notes")
+            if "injury_notes" in players_dim.columns
+            else pl.lit(None, dtype=pl.String).alias("injury_notes")
+        ),
+    ]
     named = graded.join(
-        players_dim.select("player_id", pl.col("full_name").alias("player_name")),
+        players_dim.select(*player_columns),
         on="player_id",
         how="left",
     )
@@ -207,6 +227,9 @@ def build_weekly_rankings(
         "team",
         "opponent",
         "p_active",
+        "injury_status",
+        "injury_body_part",
+        "injury_notes",
         "proj_mean",
         "floor",
         "lower_quartile",
@@ -250,6 +273,7 @@ def filter_rankings(
 
 __all__ = [
     "ProjectionsNotBuiltError",
+    "UNAVAILABLE_STATUSES",
     "add_matchup_grade",
     "build_weekly_rankings",
     "filter_rankings",

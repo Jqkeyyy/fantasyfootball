@@ -488,6 +488,11 @@ def normalize_injuries(raw: pl.DataFrame) -> pl.DataFrame:
     it costs nothing extra since the raw source already carries it
     (same justified-addition precedent as task 0.12's provenance columns).
     """
+    date_modified = (
+        pl.col("date_modified")
+        if "date_modified" in raw.columns
+        else pl.lit(None, dtype=pl.Datetime(time_zone="UTC")).alias("date_modified")
+    )
     return raw.select(
         pl.col("gsis_id").alias("player_id"),
         pl.col("season").cast(pl.Int32),
@@ -496,7 +501,7 @@ def normalize_injuries(raw: pl.DataFrame) -> pl.DataFrame:
         "report_status",
         pl.col("practice_status").str.strip_chars().replace("", None),
         "report_primary_injury",
-        "date_modified",
+        date_modified,
     )
 
 

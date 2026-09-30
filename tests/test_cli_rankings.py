@@ -357,6 +357,56 @@ def test_rankings_ros_logs_missing_anchor_week_availability_coverage(
     assert "had no anchor-week availability data; using positional base rates." in result.output
 
 
+def test_rankings_ros_falls_back_when_anchor_week_rows_are_not_published_yet(
+    monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
+) -> None:
+    """Early on a Tuesday, nflverse has not yet published the new week's
+    roster rows, so the anchor week is empty. The rebuild must fall back to
+    positional base rates instead of crashing inside sklearn's
+    `SimpleImputer` ("Found array with 0 sample(s)")."""
+    _apply_common_mocks(monkeypatch, fixture_settings, tmp_path)
+
+    def _refuse_empty(name: str):
+        def predict(model: object, rows: pl.DataFrame) -> pl.Series:
+            if rows.is_empty():
+                raise ValueError("Found array with 0 sample(s)")
+            return pl.Series(name, [0.5] * rows.height)
+
+        return predict
+
+    monkeypatch.setattr(cli.availability, "predict_p_active", _refuse_empty("p_active"))
+    monkeypatch.setattr(cli.injury, "predict_p_miss", _refuse_empty("p_miss"))
+    earlier_weeks_only = pl.DataFrame(
+        {
+            "player_id": ["p2", "p3"],
+            "season": [2020, 2020],
+            "week": [7, 7],
+            "position": ["RB", "WR"],
+            "missed": [False, False],
+        }
+    )
+    monkeypatch.setattr(
+        cli.injury, "build_hazard_features", lambda *args, **kwargs: earlier_weeks_only
+    )
+    features_path = fixture_settings.data_root / "features" / "player_week_features.parquet"
+    features = pl.read_parquet(features_path)
+    features.filter(pl.col("week") < features["week"].max()).write_parquet(features_path)
+
+    captured_kwargs: dict[str, object] = {}
+
+    def _spy_aggregate_ros(*args: object, **kwargs: object) -> pl.DataFrame:
+        captured_kwargs["p_active_now"] = args[1]
+        captured_kwargs["p_miss_now"] = args[2]
+        return pl.DataFrame({"player_id": ["p2", "p3"], "ros_points": [120.0, 90.0]})
+
+    monkeypatch.setattr(cli.ros_aggregate, "aggregate_ros", _spy_aggregate_ros)
+
+    result = runner.invoke(cli.app, ["rankings", "ros", "--league", "ros-rank-league"])
+
+    assert result.exit_code == 0, result.output
+    assert captured_kwargs == {"p_active_now": {}, "p_miss_now": {}}
+
+
 def test_rankings_ros_exits_nonzero_when_projections_ros_is_missing(
     monkeypatch: pytest.MonkeyPatch, fixture_settings: Settings, tmp_path: Path
 ) -> None:

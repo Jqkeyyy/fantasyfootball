@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from ffapp.league_format import LeagueFormat
 from ffapp.tools.weekly_alerts import build_weekly_alerts
 
 
@@ -40,6 +41,16 @@ def test_alerts_do_not_repeat_unchanged_conditions() -> None:
     assert alerts.is_empty()
 
 
+def test_alerts_do_not_recommend_ruled_out_free_agent() -> None:
+    current = _snapshot([10.0, 12.0], [1.0, 1.0], [0.0, 4.0]).with_columns(
+        pl.Series("injury_status", [None, "Out"], dtype=pl.String)
+    )
+
+    alerts = build_weekly_alerts(current, None)
+
+    assert alerts.filter(pl.col("kind") == "waiver_upgrade").is_empty()
+
+
 def test_projection_change_does_not_compare_different_weeks() -> None:
     previous = _snapshot([15.0, 8.0], [1.0, 1.0], [0.0, 0.0]).with_columns(
         pl.lit(2026).alias("season"), pl.lit(2).alias("week")
@@ -49,3 +60,44 @@ def test_projection_change_does_not_compare_different_weeks() -> None:
     )
 
     assert build_weekly_alerts(current, previous).is_empty()
+
+
+def test_alerts_capture_new_meaningful_lineup_swap() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=2,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    current = pl.DataFrame(
+        {
+            "player_id": ["starter", "bench"],
+            "player_name": ["Old Starter", "Better Bench"],
+            "position": ["RB", "RB"],
+            "mean": [10.0, 13.0],
+            "p_active": [1.0, 1.0],
+            "is_starter": [True, False],
+            "is_rostered": [True, True],
+            "is_my_roster": [True, True],
+            "waiver_upgrade": [0.0, 0.0],
+        }
+    )
+
+    alerts = build_weekly_alerts(current, None, fmt=fmt)
+
+    lineup_alert = alerts.filter(pl.col("kind") == "lineup_swap").row(0, named=True)
+    assert "Start Better Bench over Old Starter" in lineup_alert["message"]
+    assert lineup_alert["priority"] == "NOW"
+
+    assert build_weekly_alerts(current, current, fmt=fmt).is_empty()
+    repeated = build_weekly_alerts(
+        current,
+        current,
+        fmt=fmt,
+        repeat_lineup_actions=True,
+    )
+    assert repeated.filter(pl.col("kind") == "lineup_swap").height == 1

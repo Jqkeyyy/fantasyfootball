@@ -92,6 +92,8 @@ def value_added(
     my_roster: list[PlayerProjection],
     candidate: PlayerProjection,
     fmt: LeagueFormat,
+    *,
+    baseline_points: float | None = None,
 ) -> tuple[float, str | None]:
     """SPEC §14.4's own algorithm: baseline = my roster's own optimal
     starting-lineup points; with_p = the same with the candidate added.
@@ -102,7 +104,11 @@ def value_added(
     second element. `None` when the candidate adds no value -- there is
     no real add/drop decision to make for a player who can't crack the
     lineup."""
-    baseline = optimal_lineup_points(my_roster, fmt)
+    baseline = (
+        baseline_points
+        if baseline_points is not None
+        else optimal_lineup_points(my_roster, fmt)
+    )
     lineup_with_candidate = optimal_lineup([*my_roster, candidate], fmt, objective="mean")
     added = lineup_with_candidate.total_points - baseline
 
@@ -195,6 +201,7 @@ def build_waiver_board(
     trend_rank_by_id = {pid: i + 1 for i, pid in enumerate(trending_ids or [])}
 
     rows: list[dict[str, Any]] = []
+    baseline_points = optimal_lineup_points(my_roster, fmt)
     for row in free_agents.iter_rows(named=True):
         player_id = row["player_id"]
         projection_ppg = projection_by_player.get(player_id)
@@ -207,7 +214,9 @@ def build_waiver_board(
             median=projection_ppg,
             ceiling=projection_ppg,
         )
-        added, drop = value_added(my_roster, candidate, fmt)
+        added, drop = value_added(
+            my_roster, candidate, fmt, baseline_points=baseline_points
+        )
         rv = ros_value(added, weeks, fmt.playoff_week_start, playoff_weight)
         sleeper_id = row.get("sleeper_id")
         rows.append(

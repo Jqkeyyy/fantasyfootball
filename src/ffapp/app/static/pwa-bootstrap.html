@@ -1,0 +1,28 @@
+<!doctype html>
+<html><body><script>
+const doc = window.parent.document;
+if (!doc.getElementById('ffapp-manifest')) {
+  const manifest = doc.createElement('link');
+  manifest.id = 'ffapp-manifest';
+  manifest.rel = 'manifest';
+  manifest.href = '/app/static/manifest.webmanifest';
+  doc.head.appendChild(manifest);
+  const icon = doc.createElement('link');
+  icon.rel = 'apple-touch-icon';
+  icon.href = '/app/static/icon-192.png';
+  doc.head.appendChild(icon);
+  for (const [name, content] of [
+    ['apple-mobile-web-app-capable', 'yes'],
+    ['apple-mobile-web-app-title', 'FF Command'],
+    ['theme-color', '#132238']
+  ]) {
+    const meta = doc.createElement('meta');
+    meta.name = name;
+    meta.content = content;
+    doc.head.appendChild(meta);
+  }
+}
+if ('serviceWorker' in window.parent.navigator) {
+  window.parent.navigator.serviceWorker.register('/app/static/ffapp-sw.js');
+}
+</script></body></html>

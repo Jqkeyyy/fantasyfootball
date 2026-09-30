@@ -192,7 +192,16 @@ else:
                         pl.col("floor").round(1).cast(pl.String)
                         + " - "
                         + pl.col("ceiling").round(1).cast(pl.String)
-                    ).alias("floor_to_ceiling")
+                    ).alias("floor_to_ceiling"),
+                    pl.col("owner_status")
+                    .replace(
+                        {
+                            "my_roster": "Mine",
+                            "rostered_elsewhere": "Rostered",
+                            "free_agent": "Free agent",
+                        }
+                    )
+                    .alias("owner_status"),
                 )
                 .select(
                     "player_name",
@@ -207,4 +216,25 @@ else:
                     "owner_status",
                 )
             )
-            st.dataframe(position_df, use_container_width=True, height=600)
+            st.dataframe(
+                position_df,
+                width="stretch",
+                height=600,
+                hide_index=True,
+                column_config={
+                    "player_name": "Player",
+                    "team": "Team",
+                    "opponent": "Opp",
+                    "p_active": st.column_config.ProgressColumn(
+                        "Active", format="percent", min_value=0.0, max_value=1.0
+                    ),
+                    "proj_mean": st.column_config.NumberColumn(
+                        "Projected", format="%.1f"
+                    ),
+                    "floor_to_ceiling": "Range",
+                    "median": st.column_config.NumberColumn("Median", format="%.1f"),
+                    "matchup_grade": "Matchup",
+                    "n_plays_behind_matchup_grade": "Plays",
+                    "owner_status": "Roster",
+                },
+            )

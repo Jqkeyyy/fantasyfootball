@@ -30,7 +30,15 @@ from ffapp.evaluation import report as evaluation_report
 from ffapp.ids import mapping
 from ffapp.ingest import nflverse, rankings, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
-from ffapp.models import availability, baselines, points, predict, predict_ros, ros_consensus
+from ffapp.models import (
+    availability,
+    baselines,
+    live_adjustments,
+    points,
+    predict,
+    predict_ros,
+    ros_consensus,
+)
 from ffapp.scoring import golden
 from ffapp.scoring.targets import apply_league_scoring_target
 from ffapp.sim import injury
@@ -55,7 +63,7 @@ from ffapp.tools.projection_coverage import (
     build_projection_coverage,
     write_projection_coverage,
 )
-from ffapp.tools.weekly_alerts import refresh_weekly_alerts
+from ffapp.tools.weekly_alerts import enrich_alerts_with_movements, refresh_weekly_alerts
 from ffapp.tools.weekly_clock import current_projection_week
 
 load_env()
@@ -85,7 +93,9 @@ app.add_typer(notifications_app, name="notifications")
 def discord_test_command() -> None:
     """Send a safe test message to the configured Discord webhook."""
     result = discord_notifications.send_discord_message(
-        "✅ Fantasy Football Assistant Discord notifications are connected."
+        discord_notifications.with_dashboard_link(
+            "✅ Fantasy Football Assistant Discord notifications are connected."
+        )
     )
     typer.echo(result.detail)
     if result.status != "sent":
@@ -761,6 +771,67 @@ def evaluate_command(
     typer.echo(f"Wrote evaluation report to {report_path}")
 
 
+def _projection_adjustments(
+    projections: pl.DataFrame,
+    players_dim: pl.DataFrame,
+    settings: Settings,
+    *,
+    season: int,
+    anchor_week: int,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Apply current injury and sustained-role evidence to a projection frame."""
+    injury_rows = live_adjustments.build_injury_adjustments(
+        projections, players_dim, anchor_week=anchor_week
+    )
+    usage_path = settings.data_root / "interim" / "player_week_usage.parquet"
+    role_changes = pl.DataFrame()
+    role_rows = pl.DataFrame()
+    if usage_path.exists():
+        role_changes = live_adjustments.build_role_adjustments(
+            pl.read_parquet(usage_path),
+            players_dim,
+            season=season,
+            target_week=anchor_week,
+        )
+        if not injury_rows.is_empty() and not role_changes.is_empty():
+            unavailable_ids = injury_rows.filter(pl.col("week") == anchor_week)[
+                "player_id"
+            ].unique()
+            role_changes = role_changes.filter(~pl.col("player_id").is_in(unavailable_ids))
+        role_rows = live_adjustments.expand_role_adjustments(
+            role_changes,
+            projections,
+            anchor_week=anchor_week,
+        )
+    pieces = [frame for frame in (role_rows, injury_rows) if not frame.is_empty()]
+    audit = pl.concat(pieces, how="diagonal_relaxed") if pieces else pl.DataFrame()
+    adjusted, _ = live_adjustments.apply_adjustments(projections, audit)
+    return adjusted, audit, role_changes
+
+
+def _write_adjustment_artifacts(
+    output_dir: Path,
+    audit: pl.DataFrame,
+    role_changes: pl.DataFrame,
+    *,
+    season: int,
+    weeks: list[int],
+) -> None:
+    """Replace the requested periods so resolved injuries never leave stale audit rows."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    requested = (pl.col("season") == season) & pl.col("week").is_in(weeks)
+    for path, current in (
+        (output_dir / "projection_adjustments.parquet", audit),
+        (output_dir / "role_changes.parquet", role_changes),
+    ):
+        prior = pl.read_parquet(path).filter(~requested) if path.exists() else pl.DataFrame()
+        frames = [frame for frame in (prior, current) if not frame.is_empty()]
+        if frames:
+            atomic_write_parquet(pl.concat(frames, how="diagonal_relaxed"), path)
+        elif path.exists():
+            path.unlink()
+
+
 @app.command("project")
 def project_command(
     week: int = typer.Option(..., "--week", help="Target week to generate projections for."),
@@ -921,6 +992,13 @@ def project_command(
         if result.is_empty():
             typer.echo("No ROS projections generated -- see HANDOFF.md.", err=True)
             raise typer.Exit(code=1)
+        result, adjustment_audit, role_changes = _projection_adjustments(
+            result,
+            players_dim_ros,
+            settings,
+            season=resolved_season,
+            anchor_week=from_week,
+        )
         output_path_ros = (
             settings.data_root / "outputs" / league_config.slug / "projections_ros.parquet"
         )
@@ -930,9 +1008,17 @@ def project_command(
         else:
             combined_ros = result
         atomic_write_parquet(combined_ros, output_path_ros)
+        _write_adjustment_artifacts(
+            output_path_ros.parent,
+            adjustment_audit,
+            role_changes,
+            season=resolved_season,
+            weeks=list(range(from_week, through_week + 1)),
+        )
         typer.echo(
             f"Wrote {result.height} ROS projections to {output_path_ros} "
-            f"({combined_ros.height} total rows)."
+            f"({combined_ros.height} total rows); applied {adjustment_audit.height} "
+            "explained injury/role adjustment(s)."
         )
         return
 
@@ -971,6 +1057,7 @@ def project_command(
         offline=offline,
         settings=settings,
         scoring_settings=league_config.league_cache["scoring_settings"],
+        source_weights=_load_adaptive_blend_weights(settings, league_config.slug),
     )
     if result.is_empty():
         typer.echo(
@@ -980,6 +1067,16 @@ def project_command(
             err=True,
         )
         raise typer.Exit(code=1)
+    adjustment_audit = pl.DataFrame()
+    role_changes = pl.DataFrame()
+    if players_dim is not None:
+        result, adjustment_audit, role_changes = _projection_adjustments(
+            result,
+            players_dim,
+            settings,
+            season=resolved_season,
+            anchor_week=week,
+        )
     usable = result.filter(pl.col("mean").is_not_null()).height
     if usable == 0:
         typer.echo(
@@ -998,6 +1095,14 @@ def project_command(
 
     output_path = settings.data_root / "outputs" / league_config.slug / "projections.parquet"
     combined = predict.write_projections(result, output_path)
+    if players_dim is not None:
+        _write_adjustment_artifacts(
+            output_path.parent,
+            adjustment_audit,
+            role_changes,
+            season=resolved_season,
+            weeks=[week],
+        )
     if players_dim is not None and league_config.league_id is not None:
         try:
             roster_rows = json.loads(
@@ -1022,7 +1127,8 @@ def project_command(
             typer.echo(f"WARNING: could not write projection coverage audit ({exc}).", err=True)
     typer.echo(
         f"Wrote {result.height} projections for season {resolved_season} week {week} "
-        f"to {output_path} ({combined.height} total rows)."
+        f"to {output_path} ({combined.height} total rows); applied "
+        f"{adjustment_audit.height} explained injury/role adjustment(s)."
     )
 
 
@@ -1153,10 +1259,15 @@ def rankings_ros_command(
     availability_model = availability.fit_availability_model(
         train_rows, lightgbm_params=settings.model.lightgbm
     )
-    p_active_series = availability.predict_p_active(availability_model, target_rows)
-    p_active_now = dict(
-        zip(target_rows["player_id"].to_list(), p_active_series.to_list(), strict=True)
-    )
+    # Early in a new week nflverse may not have published the anchor week's
+    # rows yet; players then fall back to the positional base rates below
+    # rather than the whole ROS rebuild crashing on an empty predict.
+    p_active_now: dict[str, float] = {}
+    if not target_rows.is_empty():
+        p_active_series = availability.predict_p_active(availability_model, target_rows)
+        p_active_now = dict(
+            zip(target_rows["player_id"].to_list(), p_active_series.to_list(), strict=True)
+        )
 
     # rosters/snap_counts/injuries have no usable data/interim/ counterpart here --
     # sim.injury's own build_hazard_features reads the RAW nflverse tables directly
@@ -1214,10 +1325,12 @@ def rankings_ros_command(
     hazard_train = hazard_grid.filter(before_anchor)
     hazard_target = hazard_grid.filter(anchor_row)
     hazard_model = injury.fit_hazard_model(hazard_train)
-    p_miss_series = injury.predict_p_miss(hazard_model, hazard_target)
-    p_miss_now = dict(
-        zip(hazard_target["player_id"].to_list(), p_miss_series.to_list(), strict=True)
-    )
+    p_miss_now: dict[str, float] = {}
+    if not hazard_target.is_empty():
+        p_miss_series = injury.predict_p_miss(hazard_model, hazard_target)
+        p_miss_now = dict(
+            zip(hazard_target["player_id"].to_list(), p_miss_series.to_list(), strict=True)
+        )
 
     # Fix 1 (final review fix wave, the most severe finding): real positional
     # fallback rates for any real ranked player with no anchor-week
@@ -1303,6 +1416,20 @@ def _resolve_league_slug(league: str | None) -> tuple[str, dict[str, float]]:
     return league_config.slug, league_config.league_cache["scoring_settings"]
 
 
+def _load_adaptive_blend_weights(settings: Settings, league_slug: str) -> pl.DataFrame | None:
+    path = (
+        settings.data_root
+        / "outputs"
+        / league_slug
+        / "model_health"
+        / "adaptive_blend_weights.parquet"
+    )
+    if not path.exists():
+        return None
+    weights = pl.read_parquet(path)
+    return None if weights.is_empty() else weights
+
+
 @log_app.command("week")
 def log_week_command(
     week: int = typer.Option(..., "--week", help="Target week to log."),
@@ -1382,6 +1509,7 @@ def log_week_command(
         offline=offline,
         settings=settings,
         live_projection_source=settings.model.projection_source,
+        source_weights=_load_adaptive_blend_weights(settings, league_slug),
     )
     if rows.is_empty():
         typer.echo(
@@ -1561,6 +1689,12 @@ def refresh_weekly_command(
     offline: bool | None = typer.Option(
         None, "--offline/--no-offline", help="Override FFAPP_OFFLINE for this run."
     ),
+    reuse_shared_sources: bool = typer.Option(
+        False,
+        "--reuse-shared-sources",
+        hidden=True,
+        help="Reuse ranking caches already refreshed by an earlier league in this run.",
+    ),
 ) -> None:
     """Refresh the complete weekly decision stack and leave a structured manifest."""
     settings = load_settings()
@@ -1586,6 +1720,7 @@ def refresh_weekly_command(
                     refresh_news=refresh_news and index == 0,
                     rebuild_features=rebuild_features and index == 0,
                     offline=offline,
+                    reuse_shared_sources=index > 0,
                 )
             except typer.Exit as exc:
                 failures.append(f"{selected.slug} (exit {exc.exit_code})")
@@ -1594,6 +1729,7 @@ def refresh_weekly_command(
             raise typer.Exit(code=1)
         return
     league_config = load_league(league) if league is not None else load_primary_league()
+    source_offline = True if reuse_shared_sources else offline
     resolved_season = season if season is not None else league_config.season
     if week is None:
         schedule_path = settings.data_root / "interim" / "schedule.parquet"
@@ -1658,6 +1794,9 @@ def refresh_weekly_command(
             league_config.league_id, offline=offline, settings=settings
         )
         live_roster_rows = json.loads(rosters_path.read_text())
+        # Users share the sleeper_rosters staleness policy; a stale copy makes
+        # strict-cache downstream steps (ROS decisions) refuse to run.
+        sleeper.fetch_users(league_config.league_id, offline=offline, settings=settings)
         sleeper.fetch_matchups(league_config.league_id, week, offline=offline, settings=settings)
         if league_config.league_cache.get("league_type") == 3:
             for transaction_week in sorted({max(1, week - 1), week}):
@@ -1701,7 +1840,7 @@ def refresh_weekly_command(
             project_command(
                 week=week,
                 season=resolved_season,
-                offline=offline,
+                offline=source_offline,
                 from_week=None,
                 through_week=None,
                 league=league_config.slug,
@@ -1758,7 +1897,7 @@ def refresh_weekly_command(
                 project_command(
                     week=week,
                     season=resolved_season,
-                    offline=offline,
+                    offline=source_offline,
                     from_week=week,
                     through_week=through_week,
                     league=league_config.slug,
@@ -1784,7 +1923,7 @@ def refresh_weekly_command(
             rankings_ros_command(
                 league=league_config.slug,
                 season=resolved_season,
-                offline=offline,
+                offline=source_offline,
             )
             steps.append(
                 {
@@ -1874,7 +2013,7 @@ def refresh_weekly_command(
                     run_label=run_label,
                     season=resolved_season,
                     league=league_config.slug,
-                    offline=offline,
+                    offline=source_offline,
                 )
                 detail = run_label
             except Exception as live_exc:
@@ -1902,6 +2041,21 @@ def refresh_weekly_command(
         summary = inseason.materialize_inseason_report(
             settings, league_config, parse_league_format(league_config)
         )
+        movements_path = (
+            settings.data_root
+            / "outputs"
+            / league_config.slug
+            / "model_health"
+            / "projection_movements.parquet"
+        )
+        movement_alerts = (
+            enrich_alerts_with_movements(
+                settings, league_config.slug, pl.read_parquet(movements_path)
+            )
+            if movements_path.exists()
+            else 0
+        )
+        summary["movement_alerts_enriched"] = movement_alerts
         steps.append(
             {
                 "name": "model_accuracy",
@@ -1938,9 +2092,7 @@ def refresh_weekly_command(
             )
         except Exception as exc:
             degraded = True
-            steps.append(
-                {"name": "last_known_good", "status": "degraded", "detail": str(exc)}
-            )
+            steps.append({"name": "last_known_good", "status": "degraded", "detail": str(exc)})
         status = "failed" if failed else "degraded" if degraded else "healthy"
     alert_payload_path = (
         settings.data_root / "outputs" / league_config.slug / "alerts" / "latest.json"
@@ -1958,15 +2110,18 @@ def refresh_weekly_command(
             "skipped", "Healthy refresh with no decision alerts"
         )
     else:
-        notification = discord_notifications.send_discord_message(
-            discord_notifications.format_refresh_message(
-                league_config.display_name,
-                resolved_season,
-                week,
-                status,
-                steps,
-                alert_rows,
-            )
+        notification = discord_notifications.send_action_notification(
+            discord_notifications.with_dashboard_link(
+                discord_notifications.format_refresh_message(
+                    league_config.display_name,
+                    resolved_season,
+                    week,
+                    status,
+                    steps,
+                    alert_rows,
+                )
+            ),
+            key=f"{league_config.slug}:{resolved_season}:{week}",
         )
     if notification.status == "failed":
         degraded = True

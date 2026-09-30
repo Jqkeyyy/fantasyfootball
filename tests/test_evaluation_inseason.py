@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from ffapp.evaluation.inseason import (
+    adaptive_blend_weights,
     recommend_projection_source,
     source_reliability_weights,
     summarize_inseason_performance,
@@ -12,6 +14,26 @@ from ffapp.evaluation.inseason import (
     weekly_accuracy,
 )
 from ffapp.league_format import LeagueFormat
+
+
+def test_adaptive_blend_waits_for_four_weeks_and_caps_one_source() -> None:
+    performance = pl.DataFrame(
+        {
+            "source": ["espn_weekly", "consensus_b3", "baseline_b2", "espn_weekly"],
+            "position": ["RB", "RB", "RB", "WR"],
+            "mae": [1.0, 8.0, 10.0, 2.0],
+            "rmse": [1.0, 8.0, 10.0, 2.0],
+            "weekly_spearman": [0.8, 0.7, 0.6, 0.8],
+            "n_obs": [80, 80, 80, 80],
+            "n_weeks": [5, 5, 5, 3],
+        }
+    )
+
+    result = adaptive_blend_weights(performance)
+
+    assert result["position"].unique().to_list() == ["RB"]
+    assert result["weight"].max() == pytest.approx(0.70)
+    assert result["weight"].sum() == pytest.approx(1.0)
 
 
 def _history(actuals: list[float], *, week: int = 1) -> pl.DataFrame:

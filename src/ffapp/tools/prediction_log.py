@@ -157,6 +157,7 @@ PREDICTION_LOG_SCHEMA = {
     "live_q50": pl.Float64,
     "live_q75": pl.Float64,
     "live_q90": pl.Float64,
+    "espn_mean": pl.Float64,
     "b3_mean": pl.Float64,
     "b3_q10": pl.Float64,
     "b3_q25": pl.Float64,
@@ -488,6 +489,7 @@ def build_prediction_log(
     offline: bool | None,
     settings: Settings,
     live_projection_source: str = "consensus_b3",
+    source_weights: pl.DataFrame | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """The real per-week log build: three real `models.predict.project_week`
     calls (`"direct"` for `model_mean` -- logged even though it isn't
@@ -556,8 +558,47 @@ def build_prediction_log(
         "baseline_b2": b2,
         "consensus_b3": b3,
     }
+    espn: pl.DataFrame | None = None
+    if live_projection_source == "espn_weekly":
+        espn = predict.project_week(
+            features,
+            season,
+            week,
+            train_start=train_start,
+            min_train_rows=min_train_rows,
+            lightgbm_params=lightgbm_params,
+            code_version=code_version,
+            now=now,
+            quantile_alphas=quantile_alphas,
+            projection_source="espn_weekly",
+            players_dim=players_dim,
+            b3_historical=b3_historical,
+            offline=offline,
+            settings=settings,
+            scoring_settings=scoring_settings,
+        )
+        known_live["espn_weekly"] = espn
     live = known_live.get(live_projection_source)
-    if live is None:
+    if live_projection_source == "espn_weekly" and source_weights is not None:
+        live = predict.project_week(
+            features,
+            season,
+            week,
+            train_start=train_start,
+            min_train_rows=min_train_rows,
+            lightgbm_params=lightgbm_params,
+            code_version=code_version,
+            now=now,
+            quantile_alphas=quantile_alphas,
+            projection_source="espn_weekly",
+            players_dim=players_dim,
+            b3_historical=b3_historical,
+            offline=offline,
+            settings=settings,
+            scoring_settings=scoring_settings,
+            source_weights=source_weights,
+        )
+    elif live is None:
         live = predict.project_week(
             features,
             season,
@@ -637,6 +678,14 @@ def build_prediction_log(
             how="left",
         )
     )
+    if espn is None:
+        work = work.with_columns(pl.lit(None, dtype=pl.Float64).alias("espn_mean"))
+    else:
+        work = work.join(
+            espn.select("player_id", pl.col("mean").alias("espn_mean")),
+            on="player_id",
+            how="left",
+        )
     for name in WEEKLY_SOURCES:
         work = work.join(
             per_source_points[name].select(

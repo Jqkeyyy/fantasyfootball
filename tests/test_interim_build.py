@@ -541,15 +541,15 @@ def _stadiums() -> pl.DataFrame:
     )
 
 
-def test_add_kickoff_utc_converts_local_kickoff_to_utc_in_the_venues_own_timezone() -> None:
+def test_add_kickoff_utc_uses_feed_eastern_time_regardless_of_venue() -> None:
     schedule = _schedule(
         [_schedule_row(stadium_id="KAN00", gameday="2025-09-07", gametime="13:00")]
     )
 
     result = build.add_kickoff_utc(schedule, _stadiums())
 
-    # Kansas City is America/Chicago; September 7 is inside US DST (CDT, UTC-5).
-    assert result.row(0, named=True)["kickoff_utc"] == "2025-09-07T18:00:00Z"
+    # The feed's 13:00 is Eastern even for a Kansas City game.
+    assert result.row(0, named=True)["kickoff_utc"] == "2025-09-07T17:00:00Z"
 
 
 def test_add_kickoff_utc_handles_multiple_distinct_timezones_in_one_call() -> None:
@@ -570,8 +570,8 @@ def test_add_kickoff_utc_handles_multiple_distinct_timezones_in_one_call() -> No
     result = build.add_kickoff_utc(schedule, _stadiums())
 
     rows = {row["game_id"]: row for row in result.iter_rows(named=True)}
-    # Same local wall-clock time, different real timezones -> different UTC hour.
-    assert rows["2025_01_KC_BAL"]["kickoff_utc"] == "2025-09-07T18:00:00Z"  # Chicago, CDT (UTC-5)
+    # All venues share the feed's Eastern time convention.
+    assert rows["2025_01_KC_BAL"]["kickoff_utc"] == "2025-09-07T17:00:00Z"
     assert rows["2025_01_PHI_DAL"]["kickoff_utc"] == "2025-09-07T17:00:00Z"  # NY, EDT (UTC-4)
 
 
@@ -586,12 +586,12 @@ def test_add_kickoff_utc_applies_standard_time_outside_dst() -> None:
     assert result.row(0, named=True)["kickoff_utc"] == "2026-01-04T18:00:00Z"
 
 
-def test_add_kickoff_utc_leaves_null_when_stadium_id_has_no_match() -> None:
+def test_add_kickoff_utc_does_not_require_stadium_metadata() -> None:
     schedule = _schedule([_schedule_row(stadium_id="ZZZ00")])
 
     result = build.add_kickoff_utc(schedule, _stadiums())
 
-    assert result.row(0, named=True)["kickoff_utc"] is None
+    assert result.row(0, named=True)["kickoff_utc"] == "2025-09-07T17:00:00Z"
 
 
 def test_add_kickoff_utc_preserves_schedule_columns_and_other_values() -> None:

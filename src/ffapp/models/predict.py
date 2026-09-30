@@ -185,6 +185,66 @@ def _mean_source_feature_columns(projection_source: str, position: str) -> list[
     return []
 
 
+def apply_adaptive_source_blend(
+    work: pl.DataFrame, source_weights: pl.DataFrame | None
+) -> pl.DataFrame:
+    """Blend ESPN, consensus and trailing means using scored position weights.
+
+    The caller supplies a frame with ``position`` plus ``_primary_mean``,
+    ``_consensus_mean`` and ``_b2_mean``. A row is blended only when its
+    position has guarded weights and at least two estimates are present.
+    """
+    fallback_mean = pl.coalesce("_primary_mean", "_consensus_mean", "_b2_mean")
+    fallback_source = (
+        pl.when(pl.col("_primary_mean").is_not_null())
+        .then(pl.lit("espn_weekly"))
+        .when(pl.col("_consensus_mean").is_not_null())
+        .then(pl.lit("consensus_b3"))
+        .when(pl.col("_b2_mean").is_not_null())
+        .then(pl.lit("baseline_b2"))
+        .otherwise(pl.lit("espn_weekly"))
+    )
+    if source_weights is None or source_weights.is_empty():
+        return work.with_columns(fallback_mean.alias("mean"), fallback_source.alias("mean_source"))
+
+    allowed = {"espn_weekly", "consensus_b3", "baseline_b2"}
+    usable = source_weights.filter(pl.col("source").is_in(list(allowed)))
+    if usable.is_empty():
+        return work.with_columns(fallback_mean.alias("mean"), fallback_source.alias("mean_source"))
+    wide = usable.select("position", "source", "weight").pivot(
+        on="source", index="position", values="weight", aggregate_function="first"
+    )
+    for source in allowed:
+        if source not in wide.columns:
+            wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(source))
+    wide = wide.rename({source: f"_weight_{source}" for source in allowed})
+    blended = work.join(wide, on="position", how="left")
+    source_columns = {
+        "espn_weekly": "_primary_mean",
+        "consensus_b3": "_consensus_mean",
+        "baseline_b2": "_b2_mean",
+    }
+    numerator = pl.lit(0.0)
+    denominator = pl.lit(0.0)
+    available = pl.lit(0)
+    for source, mean_column in source_columns.items():
+        weight_column = f"_weight_{source}"
+        present = pl.col(mean_column).is_not_null() & pl.col(weight_column).is_not_null()
+        numerator += (
+            pl.when(present).then(pl.col(mean_column) * pl.col(weight_column)).otherwise(0.0)
+        )
+        denominator += pl.when(present).then(pl.col(weight_column)).otherwise(0.0)
+        available += pl.when(present).then(1).otherwise(0)
+    can_blend = (available >= 2) & (denominator > 0)
+    return blended.with_columns(
+        pl.when(can_blend).then(numerator / denominator).otherwise(fallback_mean).alias("mean"),
+        pl.when(can_blend)
+        .then(pl.lit("adaptive_blend"))
+        .otherwise(fallback_source)
+        .alias("mean_source"),
+    )
+
+
 def project_week(
     features: pl.DataFrame,
     season: int,
@@ -202,6 +262,7 @@ def project_week(
     offline: bool | None = None,
     settings: Settings | None = None,
     scoring_settings: dict[str, float] | None = None,
+    source_weights: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """The real pipeline: fit availability + quantiles (task 1.14/1.16,
     always) plus whichever conditional-mean source `projection_source`
@@ -367,9 +428,7 @@ def project_week(
                 season, week, cutoff_utc, players_dim, offline=offline, settings=settings
             ).unique(subset=["player_id"], keep="first")
             work = work.join(
-                consensus.select(
-                    "player_id", pl.col("b3_points").alias("_consensus_mean")
-                ),
+                consensus.select("player_id", pl.col("b3_points").alias("_consensus_mean")),
                 on="player_id",
                 how="left",
             )
@@ -379,17 +438,21 @@ def project_week(
             target_rows.select("player_id", pl.col("b2_ewm_4").alias("_b2_mean")),
             on="player_id",
             how="left",
-        ).with_columns(
-            pl.coalesce("_primary_mean", "_consensus_mean", "_b2_mean").alias("mean"),
-            pl.when(pl.col("_primary_mean").is_not_null())
-            .then(pl.lit(projection_source))
-            .when(pl.col("_consensus_mean").is_not_null())
-            .then(pl.lit("consensus_b3"))
-            .when(pl.col("_b2_mean").is_not_null())
-            .then(pl.lit("baseline_b2"))
-            .otherwise(pl.lit(projection_source))
-            .alias("mean_source"),
         )
+        if projection_source == "espn_weekly":
+            work = apply_adaptive_source_blend(work, source_weights)
+        else:
+            work = work.with_columns(
+                pl.coalesce("_primary_mean", "_consensus_mean", "_b2_mean").alias("mean"),
+                pl.when(pl.col("_primary_mean").is_not_null())
+                .then(pl.lit(projection_source))
+                .when(pl.col("_consensus_mean").is_not_null())
+                .then(pl.lit("consensus_b3"))
+                .when(pl.col("_b2_mean").is_not_null())
+                .then(pl.lit("baseline_b2"))
+                .otherwise(pl.lit(projection_source))
+                .alias("mean_source"),
+            )
         # Real historical B3 archive, joined onto strictly-prior rows --
         # this project's real materialized archive predates live-fetching
         # every historical week's B3 on every call (prohibitively
@@ -430,9 +493,7 @@ def project_week(
                 fallback = baselines.apply_empirical_error_quantiles(
                     work["mean"], work["position"], fallback_error_quantiles, tau
                 )
-                recentered = recentered.zip_with(
-                    work["mean_source"] != "baseline_b2", fallback
-                )
+                recentered = recentered.zip_with(work["mean_source"] != "baseline_b2", fallback)
             work = work.with_columns(recentered.alias(column_name))
     else:
         quantile_model = quantiles.fit_quantile_models(
@@ -445,11 +506,7 @@ def project_week(
         for tau, column_name in _Q_COLUMN_NAMES.items():
             work = work.with_columns(unconditional[f"unconditional_q_{tau}"].alias(column_name))
 
-    source = (
-        pl.col("mean_source")
-        if "mean_source" in work.columns
-        else pl.lit(projection_source)
-    )
+    source = pl.col("mean_source") if "mean_source" in work.columns else pl.lit(projection_source)
     result = (
         work.join(feature_hash_df, on="position", how="left")
         .with_columns(
@@ -464,6 +521,9 @@ def project_week(
             "_primary_mean",
             "_consensus_mean",
             "_b2_mean",
+            "_weight_espn_weekly",
+            "_weight_consensus_b3",
+            "_weight_baseline_b2",
             strict=False,
         )
     )
@@ -488,6 +548,7 @@ def write_projections(projections: pl.DataFrame, output_path: Path) -> pl.DataFr
 
 __all__ = [
     "OUTPUT_COLUMNS",
+    "apply_adaptive_source_blend",
     "compute_feature_hash",
     "compute_model_version",
     "project_week",

@@ -48,6 +48,74 @@ def _read_history_and_current(
     return pl.concat([historical, current], how="diagonal_relaxed")
 
 
+def _read_current_partition(
+    fetcher: FetchFrame,
+    historical_seasons: list[int],
+    current_season: int,
+    *,
+    offline: bool | None,
+    settings: Settings,
+    current_required: bool,
+) -> pl.DataFrame:
+    """Read only the live partition, retaining an optional source's empty schema."""
+    try:
+        current_path = fetcher(current_season, offline=offline, settings=settings)
+        current = pl.read_parquet(current_path)
+    except Exception:
+        if current_required:
+            raise
+        historical_path = fetcher(historical_seasons, offline=True, settings=settings)
+        return pl.read_parquet(historical_path, n_rows=0)
+    try:
+        historical_path = fetcher(historical_seasons, offline=True, settings=settings)
+        historical_schema = pl.read_parquet(historical_path, n_rows=0)
+    except Exception:
+        return current
+    return pl.concat([historical_schema, current], how="diagonal_relaxed")
+
+
+def _merge_existing_history(
+    path: Path, current_frame: pl.DataFrame, current_season: int
+) -> pl.DataFrame:
+    """Replace one live-season partition without rebuilding unchanged history."""
+    if not path.exists():
+        return current_frame
+    existing = pl.read_parquet(path)
+    if "season" not in existing.columns or "season" not in current_frame.columns:
+        return current_frame
+    historical = existing.filter(pl.col("season") != current_season)
+    return pl.concat([historical, current_frame], how="diagonal_relaxed")
+
+
+def _extend_live_rosters(
+    rosters: pl.DataFrame, schedule: pl.DataFrame, current_season: int
+) -> pl.DataFrame:
+    """Carry the latest published NFL roster into not-yet-published game weeks."""
+    current_rows = rosters.filter(pl.col("season") == current_season)
+    if current_rows.is_empty():
+        return rosters
+    latest_value = current_rows["week"].max()
+    if not isinstance(latest_value, int):
+        return rosters
+    latest_week = latest_value
+    future_weeks = sorted(
+        int(value)
+        for value in schedule.filter(
+            (pl.col("season") == current_season) & (pl.col("week") > latest_week)
+        )["week"]
+        .unique()
+        .to_list()
+    )
+    if not future_weeks:
+        return rosters
+    latest = current_rows.filter(pl.col("week") == latest_week)
+    week_dtype = rosters.schema["week"]
+    carried = [
+        latest.with_columns(pl.lit(week).cast(week_dtype).alias("week")) for week in future_weeks
+    ]
+    return pl.concat([rosters, *carried], how="vertical_relaxed")
+
+
 def _weather_table(
     schedule: pl.DataFrame,
     stadiums: pl.DataFrame,
@@ -64,10 +132,7 @@ def _weather_table(
     current_games = schedule.filter(
         (pl.col("season") == current_season)
         & pl.col("kickoff_utc").is_not_null()
-        & (
-            pl.col("kickoff_utc").str.to_datetime(time_zone="UTC", strict=False)
-            <= pl.lit(cutoff)
-        )
+        & (pl.col("kickoff_utc").str.to_datetime(time_zone="UTC", strict=False) <= pl.lit(cutoff))
     )
     if current_games.is_empty():
         return existing
@@ -113,8 +178,11 @@ def refresh_features(
         "depth_charts": nflverse.fetch_depth_charts,
         "ff_opportunity": nflverse.fetch_ff_opportunity,
     }
+    features_path = settings.data_root / "features" / "player_week_features.parquet"
+    incremental = features_path.exists()
+    reader = _read_current_partition if incremental else _read_history_and_current
     raw = {
-        name: _read_history_and_current(
+        name: reader(
             fetcher,
             historical,
             current,
@@ -126,7 +194,7 @@ def refresh_features(
     }
     raw.update(
         {
-            name: _read_history_and_current(
+            name: reader(
                 fetcher,
                 historical,
                 current,
@@ -146,11 +214,11 @@ def refresh_features(
         nflverse.normalize_schedule(raw["schedules"]),
         pl.read_csv(CONFIG_DIR / "stadiums.csv"),
     )
+    if incremental:
+        raw["rosters"] = _extend_live_rosters(raw["rosters"], schedule, current)
     team_context = interim_build.add_schedule_context(
         interim_build.add_neutral_pace(
-            interim_build.add_proe(
-                interim_build.build_team_week_context(raw["pbp"]), raw["pbp"]
-            ),
+            interim_build.add_proe(interim_build.build_team_week_context(raw["pbp"]), raw["pbp"]),
             raw["pbp"],
         ),
         schedule,
@@ -204,9 +272,14 @@ def refresh_features(
         interim_dir / "player_week_usage.parquet": usage,
         interim_dir / "injuries.parquet": injuries,
         interim_dir / "weather.parquet": weather_table,
-        features_dir / "player_week_features.parquet": features,
+        features_path: features,
     }
+    feature_count = features.height
     for path, frame in outputs.items():
+        if incremental and path != interim_dir / "weather.parquet":
+            frame = _merge_existing_history(path, frame, current)
+        if path == features_path:
+            feature_count = frame.height
         temporary = path.with_suffix(f"{path.suffix}.tmp")
         frame.write_parquet(temporary)
         temporary.replace(path)
@@ -215,8 +288,11 @@ def refresh_features(
     return {
         "player_week_stats": player_stats.height,
         "current_actual_rows": current_actual_rows,
-        "features": features.height,
+        "features": feature_count,
     }
 
 
-__all__ = ["FORECAST_HORIZON_DAYS", "refresh_features"]
+__all__ = [
+    "FORECAST_HORIZON_DAYS",
+    "refresh_features",
+]

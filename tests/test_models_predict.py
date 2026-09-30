@@ -19,6 +19,31 @@ from ffapp.models import baselines as baselines_module
 from ffapp.models import points as points_module
 from ffapp.models import predict
 
+
+def test_adaptive_source_blend_renormalizes_available_sources() -> None:
+    work = pl.DataFrame(
+        {
+            "player_id": ["p1", "p2"],
+            "position": ["RB", "RB"],
+            "_primary_mean": [20.0, None],
+            "_consensus_mean": [10.0, 12.0],
+            "_b2_mean": [8.0, 6.0],
+        }
+    )
+    weights = pl.DataFrame(
+        {
+            "source": ["espn_weekly", "consensus_b3", "baseline_b2"],
+            "position": ["RB", "RB", "RB"],
+            "weight": [0.5, 0.3, 0.2],
+        }
+    )
+
+    result = predict.apply_adaptive_source_blend(work, weights)
+
+    assert result["mean"].to_list() == pytest.approx([14.6, 9.6])
+    assert result["mean_source"].to_list() == ["adaptive_blend", "adaptive_blend"]
+
+
 _FAST_PARAMS = LightGBMSettings(
     n_estimators=15,
     learning_rate=0.3,

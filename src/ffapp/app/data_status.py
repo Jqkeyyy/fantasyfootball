@@ -6,15 +6,20 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import streamlit as st
 
 from ffapp.config import LeagueConfig, Settings, load_settings
+from ffapp.ingest import sleeper
+from ffapp.tools.weekly_alerts import refresh_weekly_alerts
 
 DEFAULT_STALE_HOURS = 72.0
+CENTRAL = ZoneInfo("America/Chicago")
+WEEKLY_REFRESH_WINDOWS = ((1, 7, "Tuesday"), (3, 7, "Thursday"), (6, 8, "Sunday"))
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,21 @@ def run_label_for_date(value: datetime) -> str:
     return "sunday"
 
 
+def next_scheduled_refresh(now: datetime | None = None) -> tuple[datetime, str]:
+    """Return the next production refresh in America/Chicago."""
+    current = (now or datetime.now(UTC)).astimezone(CENTRAL)
+    candidates: list[tuple[datetime, str]] = []
+    for days_ahead in range(8):
+        day = current.date() + timedelta(days=days_ahead)
+        for weekday, hour, label in WEEKLY_REFRESH_WINDOWS:
+            if day.weekday() != weekday:
+                continue
+            candidate = datetime.combine(day, time(hour=hour), tzinfo=CENTRAL)
+            if candidate > current:
+                candidates.append((candidate, label))
+    return min(candidates, key=lambda item: item[0])
+
+
 def load_latest_alerts(path: Path) -> list[dict[str, object]]:
     if not path.exists():
         return []
@@ -126,18 +146,18 @@ def load_refresh_manifest(path: Path) -> dict[str, object] | None:
 
 
 def build_refresh_command(
-    league_slug: str, *, executable: str = "uv", run_label: str | None = None
+    league_slug: str | None, *, executable: str = "uv", run_label: str | None = None
 ) -> list[str]:
     if Path(executable).name.lower().startswith("uv"):
         prefix = [executable, "run", "ffapp"]
     else:
         prefix = [executable]
+    target = ["--all-leagues"] if league_slug is None else ["--league", league_slug]
     return [
         *prefix,
         "refresh",
         "weekly",
-        "--league",
-        league_slug,
+        *target,
         "--run-label",
         run_label or run_label_for_date(datetime.now().astimezone()),
         "--no-offline",
@@ -145,7 +165,7 @@ def build_refresh_command(
 
 
 def run_weekly_refresh(
-    league_slug: str, *, timeout_seconds: int = 900
+    league_slug: str | None, *, timeout_seconds: int = 900
 ) -> subprocess.CompletedProcess[str]:
     executable = shutil.which("uv") or shutil.which("ffapp")
     if executable is None:
@@ -158,6 +178,20 @@ def run_weekly_refresh(
         timeout=timeout_seconds,
         check=False,
     )
+
+
+def sync_live_league_state(settings: Settings, league: LeagueConfig, week: int) -> int:
+    """Refresh fast-changing Sleeper state without rebuilding every model."""
+    if league.league_id is None or settings.sleeper_username is None:
+        raise ValueError("Sleeper league ID and username are required for a live sync.")
+    sleeper.fetch_players(offline=False, settings=settings)
+    sleeper.fetch_user(settings.sleeper_username, offline=False, settings=settings)
+    sleeper.fetch_rosters(league.league_id, offline=False, settings=settings)
+    sleeper.fetch_users(league.league_id, offline=False, settings=settings)
+    sleeper.fetch_matchups(league.league_id, week, offline=False, settings=settings)
+    sleeper.fetch_transactions(league.league_id, week, offline=False, settings=settings)
+    _, alert_count = refresh_weekly_alerts(settings, league, league.season, week)
+    return alert_count
 
 
 def render_league_data_controls(league: LeagueConfig) -> None:
@@ -206,7 +240,27 @@ def render_league_data_controls(league: LeagueConfig) -> None:
         result_key = f"refresh_result_{league.slug}"
         if result_key in st.session_state:
             st.caption(str(st.session_state.pop(result_key)))
-        if st.button("Refresh league data", key=f"refresh_league_{league.slug}"):
+        if st.button(
+            "Quick sync rosters & injuries",
+            key=f"sync_league_{league.slug}",
+            type="primary",
+        ):
+            if status.week is None:
+                st.error("Weekly projections must exist before a live sync can run.")
+            else:
+                with st.spinner("Syncing Sleeper rosters, injuries, matchups, and moves..."):
+                    try:
+                        alert_count = sync_live_league_state(settings, league, status.week)
+                    except Exception as exc:
+                        st.error(f"Live sync failed: {exc}")
+                    else:
+                        st.cache_data.clear()
+                        st.session_state[result_key] = (
+                            f"Live Sleeper data synced; {alert_count} new alert(s)."
+                        )
+                        st.rerun()
+        st.caption("Quick sync normally finishes in seconds and does not retrain the model.")
+        if st.button("Rebuild all projections", key=f"refresh_league_{league.slug}"):
             with st.spinner("Refreshing projections, rosters, ROS rankings, and alerts..."):
                 try:
                     completed = run_weekly_refresh(league.slug)
@@ -230,7 +284,9 @@ __all__ = [
     "league_data_status",
     "load_latest_alerts",
     "load_refresh_manifest",
+    "next_scheduled_refresh",
     "render_league_data_controls",
     "run_label_for_date",
     "run_weekly_refresh",
+    "sync_live_league_state",
 ]

@@ -72,6 +72,7 @@ def _patch_refresh_dependencies(
     )
     monkeypatch.setattr(cli.sleeper, "fetch_user", lambda *args, **kwargs: user_path)
     monkeypatch.setattr(cli.sleeper, "fetch_rosters", lambda *args, **kwargs: rosters_path)
+    monkeypatch.setattr(cli.sleeper, "fetch_users", lambda *args, **kwargs: Path("users.json"))
     monkeypatch.setattr(
         cli.sleeper, "fetch_matchups", lambda *args, **kwargs: Path("matchups.json")
     )
@@ -207,7 +208,7 @@ def test_weekly_refresh_all_leagues_rebuilds_shared_features_once(
     monkeypatch.setattr(cli, "load_league", lambda slug: leagues[slug])
     feature_calls: list[str] = []
     news_calls: list[str] = []
-    projected_leagues: list[str] = []
+    projected_leagues: list[tuple[str, bool | None]] = []
     monkeypatch.setattr(
         cli,
         "refresh_features",
@@ -219,7 +220,9 @@ def test_weekly_refresh_all_leagues_rebuilds_shared_features_once(
     monkeypatch.setattr(
         cli,
         "project_command",
-        lambda **kwargs: projected_leagues.append(str(kwargs["league"])),
+        lambda **kwargs: projected_leagues.append(
+            (str(kwargs["league"]), kwargs.get("offline"))  # type: ignore[arg-type]
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -239,14 +242,14 @@ def test_weekly_refresh_all_leagues_rebuilds_shared_features_once(
             "2",
             "--skip-backfill",
             "--skip-ros",
-            "--offline",
+            "--no-offline",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert feature_calls == [_LEAGUE.slug]
     assert news_calls == ["refresh"]
-    assert projected_leagues == [_LEAGUE.slug, _SECOND_LEAGUE.slug]
+    assert projected_leagues == [(_LEAGUE.slug, False), (_SECOND_LEAGUE.slug, True)]
     for league in leagues.values():
         assert (
             fixture_settings.data_root / "outputs" / league.slug / "refresh_runs" / "latest.json"

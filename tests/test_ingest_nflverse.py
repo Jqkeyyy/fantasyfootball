@@ -577,6 +577,25 @@ def test_normalize_injuries_blanks_a_literal_newline_practice_status_to_null() -
     assert result.row(0, named=True)["practice_status"] is None
 
 
+def test_normalize_injuries_allows_live_feed_without_date_modified() -> None:
+    raw = pl.DataFrame(
+        {
+            "gsis_id": ["00-0031234"],
+            "season": [2026],
+            "week": [3],
+            "team": ["KC"],
+            "report_status": ["Questionable"],
+            "practice_status": ["Limited Participation"],
+            "report_primary_injury": ["Ankle"],
+        }
+    )
+
+    result = nflverse.normalize_injuries(raw)
+
+    assert result.schema["date_modified"] == pl.Datetime(time_zone="UTC")
+    assert result.row(0, named=True)["date_modified"] is None
+
+
 # --- fetch_ff_opportunity (task 1.2) -----------------------------------------------
 
 

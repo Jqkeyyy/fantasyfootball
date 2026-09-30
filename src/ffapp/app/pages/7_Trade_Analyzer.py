@@ -12,6 +12,7 @@ from ffapp.app.trade_page import (
     build_trade_rosters,
     matchup_schedule,
     standings_from_rosters,
+    suggested_trade_packages,
     trade_analysis_blocker,
 )
 from ffapp.config import load_settings
@@ -113,6 +114,36 @@ supported_fmt = fmt.__class__(
 
 my_team_id = str(my_roster_id)
 opponent_ids = [team_id for team_id in roster_players if team_id != my_team_id]
+st.subheader("Suggested deals")
+ideas = suggested_trade_packages(teams, vor, name_by_player, team_names, my_team_id)
+if ideas.is_empty():
+    st.info("No balanced one-for-one fit was found. Try building a package manually below.")
+else:
+    st.caption(
+        "These are starting points based on both teams' positional needs and similar ROS value. "
+        "Run the full simulation before proposing one."
+    )
+    st.dataframe(
+        ideas.select(
+            "target",
+            "target_position",
+            "partner",
+            "offer",
+            "offer_position",
+            "target_value",
+            "offer_value",
+            "fairness",
+        ),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "fairness": st.column_config.ProgressColumn(
+                "Value match", min_value=0.0, max_value=1.0, format="percent"
+            )
+        },
+    )
+
+st.subheader("Build and simulate")
 opponent_id = st.selectbox(
     "Trade partner", opponent_ids, format_func=lambda value: team_names[value]
 )

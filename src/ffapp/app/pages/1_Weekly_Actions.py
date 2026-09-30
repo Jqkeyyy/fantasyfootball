@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import numpy as np
 import polars as pl
@@ -12,6 +13,7 @@ from ffapp.app.league_selector import select_league
 from ffapp.app.weekly_actions_page import (
     build_action_inbox,
     explain_player,
+    lineup_decisions,
     projection_supported_format,
     recommended_lineup,
     sim_players,
@@ -36,7 +38,7 @@ settings = load_settings()
 league = select_league()
 fmt = parse_league_format(league)
 
-st.title("Weekly Actions")
+st.title("Weekly Decision Center")
 st.caption(f"{league.display_name} — lineup decisions and roster-relative upgrades")
 
 projections_path = settings.data_root / "outputs" / league.slug / "projections.parquet"
@@ -60,9 +62,7 @@ features = pl.read_parquet(features_path)
 schedule = pl.read_parquet(schedule_path)
 players_dim = _players_dim()
 
-weeks = all_projections.select("season", "week").unique().sort(
-    ["season", "week"], descending=True
-)
+weeks = all_projections.select("season", "week").unique().sort(["season", "week"], descending=True)
 week_options = [(row["season"], row["week"]) for row in weeks.to_dicts()]
 with st.sidebar:
     season, week = st.selectbox(
@@ -76,6 +76,11 @@ elif pipeline_health.status == "degraded":
     st.warning("Weekly pipeline health: degraded. Review the checks before acting.")
 else:
     st.success("Weekly pipeline health: healthy.")
+if week <= 4:
+    st.info(
+        "Early-season guard is active: role changes use partial strength until four current-season "
+        "games are available, and projection-movement confidence depends on source agreement."
+    )
 with st.expander("Pipeline health details"):
     st.dataframe(health_table(pipeline_health), width="stretch", hide_index=True)
 
@@ -114,9 +119,7 @@ def _canonical_ids(values: object) -> set[str]:
 my_roster_ids = _canonical_ids(my_roster.get("players"))
 current_starter_ids = _canonical_ids(my_roster.get("starters"))
 all_rostered_sleeper_ids = {
-    player_id
-    for roster in rosters
-    for player_id in _string_list(roster.get("players"))
+    player_id for roster in rosters for player_id in _string_list(roster.get("players"))
 }
 all_rostered_ids = {
     sleeper_to_player[player_id]
@@ -153,6 +156,25 @@ if not unprojected_roster.is_empty():
     )
 
 lineup = recommended_lineup(rankings, my_roster_ids, current_starter_ids, fmt)
+kickoff_by_team: dict[str, datetime] = {}
+for game in schedule.filter((pl.col("season") == season) & (pl.col("week") == week)).iter_rows(
+    named=True
+):
+    raw_kickoff = game.get("kickoff_utc")
+    if not isinstance(raw_kickoff, str):
+        continue
+    kickoff = datetime.fromisoformat(raw_kickoff.replace("Z", "+00:00"))
+    for team_column in ("home_team", "away_team"):
+        if game.get(team_column):
+            kickoff_by_team[str(game[team_column])] = kickoff
+lineup_moves = lineup_decisions(
+    lineup,
+    rankings,
+    current_starter_ids,
+    fmt,
+    kickoff_by_team=kickoff_by_team,
+    now=datetime.now(UTC),
+)
 supported_positions = set(rankings["position"].unique().to_list())
 unsupported_starters = sorted(set(fmt.starters) - supported_positions)
 
@@ -171,9 +193,7 @@ waivers = waiver_recommendations(
     playoff_weight=settings.waivers.playoff_weight,
     aggressiveness=settings.waivers.aggressiveness,
     ros_projections=(
-        pl.read_parquet(
-            settings.data_root / "outputs" / league.slug / "projections_ros.parquet"
-        )
+        pl.read_parquet(settings.data_root / "outputs" / league.slug / "projections_ros.parquet")
         if (settings.data_root / "outputs" / league.slug / "projections_ros.parquet").exists()
         else None
     ),
@@ -207,10 +227,120 @@ else:
         width="stretch",
         hide_index=True,
         column_config={
-            "expected_gain": st.column_config.NumberColumn(format="%+.1f"),
-            "confidence": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0),
+            "priority": "Priority",
+            "category": "Type",
+            "action": "Recommendation",
+            "expected_gain": st.column_config.NumberColumn("Edge", format="%+.1f"),
+            "confidence": st.column_config.ProgressColumn(
+                "Confidence", format="percent", min_value=0.0, max_value=1.0
+            ),
+            "evidence": "Why",
         },
     )
+
+adjustments_path = settings.data_root / "outputs" / league.slug / "projection_adjustments.parquet"
+if adjustments_path.exists():
+    adjustments = pl.read_parquet(adjustments_path).filter(
+        (pl.col("season") == season) & (pl.col("week") == week)
+    )
+    if not adjustments.is_empty():
+        st.subheader("Model adjustments")
+        st.caption(
+            "Current injury timing and sustained two-game role movement applied after the "
+            "base projection. Role changes require at least three earlier comparison games."
+        )
+        injury_tab, role_tab = st.tabs(["Injuries", "Role changes"])
+        for tab, kind in ((injury_tab, "injury"), (role_tab, "role")):
+            with tab:
+                rows = adjustments.filter(pl.col("adjustment_type") == kind).with_columns(
+                    (pl.col("multiplier") - 1.0).abs().alias("_magnitude")
+                )
+                if rows.is_empty():
+                    st.info(f"No {kind} adjustment applies this week.")
+                    continue
+                shown = (
+                    rows.sort("_magnitude", descending=True)
+                    .head(20)
+                    .select(
+                        pl.coalesce("player_name", "player_id").alias("Player"),
+                        ((pl.col("multiplier") - 1.0) * 100).alias("Projection change"),
+                        pl.col("confidence").alias("Confidence"),
+                        pl.col("reason").alias("Why"),
+                    )
+                )
+                st.dataframe(
+                    shown,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Projection change": st.column_config.NumberColumn(format="%+.0f%%"),
+                        "Confidence": st.column_config.ProgressColumn(
+                            format="percent", min_value=0.0, max_value=1.0
+                        ),
+                    },
+                )
+                if rows.height > shown.height:
+                    st.caption(f"Showing the 20 largest of {rows.height} {kind} adjustments.")
+
+movements_path = (
+    settings.data_root / "outputs" / league.slug / "model_health" / "projection_movements.parquet"
+)
+if movements_path.exists():
+    movements = pl.read_parquet(movements_path).filter(
+        (pl.col("season") == season) & (pl.col("week") == week)
+    )
+    if not movements.is_empty():
+        st.subheader("Projection movement signals")
+        st.caption(
+            "Compares saved Tuesday, Thursday, and Sunday source snapshots. Small refresh noise "
+            "is omitted; confirmed means at least two sources moved in the same direction."
+        )
+        movement_names = players_dim.select(
+            "player_id", pl.col("full_name").alias("Player")
+        ).unique(subset=["player_id"], keep="first")
+        shown_movements = (
+            movements.join(movement_names, on="player_id", how="left")
+            .with_columns(pl.col("live_delta").abs().alias("_magnitude"))
+            .sort(["is_my_roster", "was_starting", "_magnitude"], descending=True)
+            .head(20)
+            .select(
+                pl.coalesce("Player", "player_id").alias("Player"),
+                pl.col("signal").str.to_titlecase().alias("Signal"),
+                pl.col("live_delta").alias("Projection change"),
+                pl.col("first_mover").alias("Moved first"),
+                pl.col("sources_agreeing").alias("Sources agreeing"),
+                pl.col("confidence").alias("Confidence"),
+                pl.col("reason").alias("Why"),
+            )
+        )
+        st.dataframe(
+            shown_movements,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Projection change": st.column_config.NumberColumn(format="%+.1f"),
+                "Confidence": st.column_config.ProgressColumn(
+                    format="percent", min_value=0.0, max_value=1.0
+                ),
+            },
+        )
+
+st.subheader("Lineup moves")
+if lineup_moves.is_empty():
+    st.success("No unlocked starter swap currently projects as an improvement.")
+else:
+    for move in lineup_moves.iter_rows(named=True):
+        with st.container(border=True):
+            title, edge, confidence = st.columns([2.2, 1, 1])
+            title.markdown(f"**Start {move['start']}** over {move['sit']}")
+            edge.metric("Projected edge", f"{float(move['expected_gain']):+.1f}")
+            confidence.metric("Confidence", str(move["confidence_label"]))
+            st.progress(
+                float(move["confidence"]),
+                text=f"Confidence {float(move['confidence']):.0%}",
+            )
+            st.write(move["why"])
+            st.caption(f"Risk: {move['risk']} · Earliest lock: {move['lock_time']}")
 
 recommendations = decision_ledger.recommendation_rows(
     league.slug,
@@ -222,9 +352,9 @@ recommendations = decision_ledger.recommendation_rows(
     waivers,
 )
 decision_path = decision_ledger.ledger_path(settings.data_root, league.slug)
-if st.button("Save this recommendation snapshot", disabled=recommendations.is_empty()):
-    saved = decision_ledger.append_recommendations(decision_path, recommendations)
-    st.success(f"Decision ledger now contains {saved.height} recommendation(s).")
+saved = decision_ledger.append_recommendations(decision_path, recommendations)
+if not recommendations.is_empty():
+    st.caption(f"Recommendations saved automatically for learning · {saved.height} total")
 
 if decision_path.exists():
     all_decisions = pl.read_parquet(decision_path)
@@ -262,7 +392,7 @@ if decision_path.exists():
             decision_ledger.record_choice(decision_path, selected_decision, accepted=False)
             st.rerun()
 
-st.subheader("Recommended lineup")
+st.subheader("Full recommended lineup")
 recommended_total = float(lineup["projected_points"].sum()) if not lineup.is_empty() else 0.0
 current_rows = rankings.filter(pl.col("player_id").is_in(list(current_starter_ids)))
 current_total = float(current_rows["proj_mean"].sum()) if not current_rows.is_empty() else 0.0
@@ -281,17 +411,22 @@ if changed.is_empty():
     st.success("Your supported starters already match the projection-optimal lineup.")
 else:
     st.warning(
-        "Recommended changes: "
-        + ", ".join(changed["player_name"].cast(pl.String).to_list())
+        "Recommended changes: " + ", ".join(changed["player_name"].cast(pl.String).to_list())
     )
 st.dataframe(
     lineup.drop("player_id"),
     width="stretch",
     hide_index=True,
     column_config={
-        "projected_points": st.column_config.NumberColumn(format="%.1f"),
-        "floor": st.column_config.NumberColumn(format="%.1f"),
-        "ceiling": st.column_config.NumberColumn(format="%.1f"),
+        "slot": "Slot",
+        "player_name": "Player",
+        "position": "Pos",
+        "team": "Team",
+        "opponent": "Opp",
+        "projected_points": st.column_config.NumberColumn("Projected", format="%.1f"),
+        "floor": st.column_config.NumberColumn("Floor", format="%.1f"),
+        "ceiling": st.column_config.NumberColumn("Ceiling", format="%.1f"),
+        "currently_starting": st.column_config.CheckboxColumn("Starting now"),
     },
 )
 
@@ -370,44 +505,53 @@ if st.button("Run win-probability simulation"):
     except Exception as exc:
         st.error(f"Matchup simulation unavailable: {exc}")
 
-st.subheader("Waiver upgrades")
+st.subheader("Waiver claim plan")
 if waivers.is_empty():
     st.success("No available skill player projects as a starting-lineup upgrade this week.")
 else:
     st.caption(f"Remaining waiver budget: {remaining_budget}")
     st.dataframe(
         waivers.select(
+            "claim_priority",
+            "claim_role",
             "player_name",
             "position",
             "team",
             "opponent",
             "proj_mean",
             "value_added_per_week",
-            "suggested_bid",
+            "bid_floor",
+            "bid_ceiling",
             "competing_teams",
             "max_opponent_need",
             "projection_basis",
             "drop_player",
+            "confidence_label",
         ),
         width="stretch",
         hide_index=True,
         column_config={
             "proj_mean": st.column_config.NumberColumn(format="%.1f"),
             "value_added_per_week": st.column_config.NumberColumn(format="%+.1f"),
+            "bid_floor": st.column_config.NumberColumn("Minimum bid"),
+            "bid_ceiling": st.column_config.NumberColumn("Maximum bid"),
         },
     )
+    with st.expander("Why these claims are ordered this way"):
+        for row in waivers.head(8).iter_rows(named=True):
+            st.markdown(
+                f"**{row['claim_priority']}. {row['player_name']} — {row['claim_role']}**  \n"
+                f"{row['why']} Suggested range: {row['bid_floor']}-{row['bid_ceiling']} FAAB. "
+                f"Possible drop: {row.get('drop_player') or 'none identified'}."
+            )
 
 st.subheader("Kicker and defense streamers")
 try:
     espn_payload = json.loads(
         rankings_ingest.fetch_espn(season, offline=True, settings=settings).read_text()
     )
-    weekly_stats = rankings_ingest.normalize_espn_weekly(
-        espn_payload, season=season, week=week
-    )
-    weekly_points = apply_league_scoring(
-        weekly_stats, league.league_cache["scoring_settings"]
-    )
+    weekly_stats = rankings_ingest.normalize_espn_weekly(espn_payload, season=season, week=week)
+    weekly_points = apply_league_scoring(weekly_stats, league.league_cache["scoring_settings"])
     streamers = streaming_recommendations(
         weekly_points,
         players_dim,

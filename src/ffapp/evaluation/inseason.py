@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 
 from ffapp.config import LeagueConfig, Settings
+from ffapp.evaluation.movement import detect_projection_movements
 from ffapp.league_format import LeagueFormat
 from ffapp.sim.lineup import PlayerProjection, optimal_lineup
 from ffapp.tools.artifacts import atomic_write_json, atomic_write_parquet
@@ -16,6 +17,7 @@ _REFERENCE_SOURCE_COLUMNS = {
     "direct": "model_mean",
     "baseline_b2": "b2_mean",
     "consensus_b3": "b3_mean",
+    "espn_weekly": "espn_mean",
 }
 _SCHEMA = {
     "source": pl.String,
@@ -27,11 +29,30 @@ _SCHEMA = {
     "n_weeks": pl.Int64,
 }
 _RUN_ORDER = {"tuesday": 1, "thursday": 2, "sunday": 3}
+_BLEND_SOURCES = {"espn_weekly", "consensus_b3", "baseline_b2"}
 
 
-def load_prediction_history(log_dir: Path) -> pl.DataFrame:
+def _available_source_columns(scored: pl.DataFrame) -> list[tuple[str, str]]:
+    columns = [
+        (source, column)
+        for source, column in _REFERENCE_SOURCE_COLUMNS.items()
+        if column in scored.columns
+    ]
+    represented = {source for source, _ in columns}
+    if {"live_mean", "projection_source"}.issubset(scored.columns):
+        columns.extend(
+            (str(source), "live_mean")
+            for source in scored["projection_source"].drop_nulls().unique().to_list()
+            if str(source) not in represented
+        )
+    return columns
+
+
+def load_prediction_history(log_dir: Path, *, include_kickoff: bool = False) -> pl.DataFrame:
     """Load one league's partitioned week logs, excluding the latest pointer."""
     paths = sorted(log_dir.glob("season=*/week=*.parquet"))
+    if include_kickoff:
+        paths.extend(sorted(log_dir.glob("kickoff/*.parquet")))
     if not paths:
         return pl.DataFrame()
     return pl.concat([pl.read_parquet(path) for path in paths], how="diagonal_relaxed")
@@ -75,14 +96,7 @@ def summarize_inseason_performance(history: pl.DataFrame) -> pl.DataFrame:
 
     summaries: list[dict[str, object]] = []
     positions = [*sorted(scored["position"].drop_nulls().unique().to_list()), "ALL"]
-    source_columns = list(_REFERENCE_SOURCE_COLUMNS.items())
-    if "live_mean" in scored.columns and "projection_source" in scored.columns:
-        live_sources = scored["projection_source"].drop_nulls().unique().to_list()
-        source_columns.extend(
-            (str(source), "live_mean")
-            for source in live_sources
-            if str(source) not in _REFERENCE_SOURCE_COLUMNS
-        )
+    source_columns = _available_source_columns(scored)
 
     for source, column in source_columns:
         if column not in scored.columns:
@@ -189,13 +203,7 @@ def summarize_lineup_regret(history: pl.DataFrame, fmt: LeagueFormat) -> pl.Data
     if scored.is_empty() or "is_my_roster" not in scored.columns:
         return pl.DataFrame(schema=schema)
     scored = scored.filter(pl.col("is_my_roster") == True)  # noqa: E712
-    source_columns = list(_REFERENCE_SOURCE_COLUMNS.items())
-    if {"live_mean", "projection_source"}.issubset(scored.columns):
-        source_columns.extend(
-            (str(source), "live_mean")
-            for source in scored["projection_source"].drop_nulls().unique().to_list()
-            if str(source) not in _REFERENCE_SOURCE_COLUMNS
-        )
+    source_columns = _available_source_columns(scored)
     regrets: dict[str, list[float]] = {}
     for source, column in source_columns:
         if column not in scored.columns:
@@ -291,6 +299,58 @@ def source_reliability_weights(
     )
 
 
+def adaptive_blend_weights(
+    performance: pl.DataFrame,
+    *,
+    min_observations: int = 60,
+    min_weeks: int = 4,
+    maximum_weight: float = 0.70,
+) -> pl.DataFrame:
+    """Create guarded position weights only after several completed weeks."""
+    schema = {
+        "source": pl.String,
+        "position": pl.String,
+        "weight": pl.Float64,
+        "mae": pl.Float64,
+        "n_obs": pl.Int64,
+        "n_weeks": pl.Int64,
+    }
+    eligible = performance.filter(
+        pl.col("source").is_in(list(_BLEND_SOURCES))
+        & (pl.col("position") != "ALL")
+        & (pl.col("n_obs") >= min_observations)
+        & (pl.col("n_weeks") >= min_weeks)
+        & pl.col("mae").is_not_null()
+    )
+    rows: list[dict[str, object]] = []
+    for group in eligible.partition_by("position"):
+        if group["source"].n_unique() < 2:
+            continue
+        raw = [1.0 / max(0.25, float(value)) for value in group["mae"].to_list()]
+        total = sum(raw)
+        weights = [value / total for value in raw]
+        if max(weights) > maximum_weight:
+            leader = weights.index(max(weights))
+            remainder = 1.0 - maximum_weight
+            other_total = sum(value for index, value in enumerate(weights) if index != leader)
+            weights = [
+                maximum_weight if index == leader else remainder * value / other_total
+                for index, value in enumerate(weights)
+            ]
+        for row, weight in zip(group.iter_rows(named=True), weights, strict=True):
+            rows.append(
+                {
+                    "source": row["source"],
+                    "position": row["position"],
+                    "weight": weight,
+                    "mae": row["mae"],
+                    "n_obs": row["n_obs"],
+                    "n_weeks": row["n_weeks"],
+                }
+            )
+    return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+
+
 def weekly_accuracy(history: pl.DataFrame) -> pl.DataFrame:
     """Return one rolling trend point per completed week and source."""
     scored = valid_scored_history(history)
@@ -304,13 +364,7 @@ def weekly_accuracy(history: pl.DataFrame) -> pl.DataFrame:
     if scored.is_empty():
         return pl.DataFrame(schema=schema)
     rows: list[pl.DataFrame] = []
-    source_columns = list(_REFERENCE_SOURCE_COLUMNS.items())
-    if {"live_mean", "projection_source"}.issubset(scored.columns):
-        source_columns.extend(
-            (str(source), "live_mean")
-            for source in scored["projection_source"].drop_nulls().unique().to_list()
-            if str(source) not in _REFERENCE_SOURCE_COLUMNS
-        )
+    source_columns = _available_source_columns(scored)
     for source, column in source_columns:
         if column not in scored.columns:
             continue
@@ -341,16 +395,20 @@ def materialize_inseason_report(
     )
     performance = summarize_inseason_performance(history)
     weights = source_reliability_weights(performance)
+    blend_weights = adaptive_blend_weights(performance)
     calibration = summarize_interval_calibration(history)
     regret = summarize_lineup_regret(history, fmt)
     trends = weekly_accuracy(history)
+    movements = detect_projection_movements(history)
     output = settings.data_root / "outputs" / league.slug / "model_health"
     for name, frame in (
         ("performance", performance),
         ("source_weights", weights),
+        ("adaptive_blend_weights", blend_weights),
         ("calibration", calibration),
         ("lineup_regret", regret),
         ("weekly_accuracy", trends),
+        ("projection_movements", movements),
     ):
         atomic_write_parquet(frame, output / f"{name}.parquet")
     recommendation = recommend_projection_source(performance, settings.model.projection_source)
@@ -358,12 +416,24 @@ def materialize_inseason_report(
         "league_slug": league.slug,
         "scored_weeks": int(trends.select("season", "week").unique().height),
         "recommendation": recommendation,
+        "adaptive_blend_active": not blend_weights.is_empty(),
+        "adaptive_blend_positions": (
+            sorted(blend_weights["position"].unique().to_list())
+            if not blend_weights.is_empty()
+            else []
+        ),
+        "projection_movement_signals": movements.height,
+        "confirmed_projection_movements": movements.filter(
+            pl.col("signal").is_in(["confirmed", "availability"])
+        ).height,
     }
     atomic_write_json(summary, output / "latest.json")
     return summary
 
 
 __all__ = [
+    "adaptive_blend_weights",
+    "detect_projection_movements",
     "load_prediction_history",
     "materialize_inseason_report",
     "recommend_projection_source",

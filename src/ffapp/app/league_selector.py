@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from ffapp.app.data_status import render_league_data_controls
+from ffapp.app.ui import apply_app_shell
 from ffapp.config import LeagueConfig, load_all_leagues
 
 
@@ -15,11 +16,12 @@ def ordered_leagues(leagues: list[LeagueConfig]) -> list[LeagueConfig]:
 
 def select_league() -> LeagueConfig:
     """Render one session-persistent league selector and return its config."""
+    apply_app_shell()
     leagues = ordered_leagues(load_all_leagues())
     if not leagues:
         raise RuntimeError("No league configs found under config/leagues")
     by_slug = {league.slug: league for league in leagues}
-    selected = st.sidebar.selectbox(
+    selected = st.selectbox(
         "League",
         options=list(by_slug),
         format_func=lambda slug: by_slug[slug].display_name,

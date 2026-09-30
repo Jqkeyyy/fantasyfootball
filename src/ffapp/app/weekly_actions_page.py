@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 import polars as pl
 
+from ffapp.app.weekly_rankings_page import UNAVAILABLE_STATUSES
 from ffapp.features.opponent import team_opponent
 from ffapp.ids import mapping
 from ffapp.league_format import LeagueFormat
 from ffapp.projections.aggregate import add_join_key
-from ffapp.sim.lineup import PlayerProjection, optimal_lineup
+from ffapp.sim.lineup import (
+    PlayerProjection,
+    optimal_lineup,
+    optimal_lineup_points,
+    slot_instances,
+)
 from ffapp.sim.season import SimPlayer
 from ffapp.tools.waivers import build_waiver_board, value_added
 
@@ -23,7 +30,25 @@ ACTION_INBOX_SCHEMA = {
     "action": pl.String,
     "expected_gain": pl.Float64,
     "confidence": pl.Float64,
+    "confidence_label": pl.String,
     "evidence": pl.String,
+    "risk": pl.String,
+}
+
+LINEUP_DECISION_SCHEMA = {
+    "slot": pl.String,
+    "start": pl.String,
+    "sit": pl.String,
+    "expected_gain": pl.Float64,
+    "start_floor": pl.Float64,
+    "sit_floor": pl.Float64,
+    "start_ceiling": pl.Float64,
+    "sit_ceiling": pl.Float64,
+    "confidence": pl.Float64,
+    "confidence_label": pl.String,
+    "lock_time": pl.String,
+    "why": pl.String,
+    "risk": pl.String,
 }
 
 
@@ -31,6 +56,22 @@ def _number(value: object) -> float:
     if not isinstance(value, int | float):
         raise TypeError(f"Expected a numeric projection value, got {value!r}")
     return float(value)
+
+
+def recommendation_confidence(
+    *,
+    expected_gain: float,
+    floor: float,
+    ceiling: float,
+    p_active: float,
+) -> tuple[float, str]:
+    """Score decision support from edge, availability, and projection width."""
+    spread = max(0.0, ceiling - floor)
+    edge_score = min(1.0, max(0.0, expected_gain) / 5.0)
+    uncertainty_score = max(0.0, 1.0 - spread / 35.0)
+    score = min(1.0, 0.45 * edge_score + 0.35 * p_active + 0.20 * uncertainty_score)
+    label = "High" if score >= 0.72 else "Medium" if score >= 0.50 else "Low"
+    return score, label
 
 
 def explain_player(row: dict[str, object]) -> list[str]:
@@ -41,8 +82,9 @@ def explain_player(row: dict[str, object]) -> list[str]:
     p_active = row.get("p_active")
     source = row.get("projection_source") or "unknown"
     explanations = [
-        f"Projection: {_number(mean):.1f} points from {source}." if mean is not None else
-        f"Projection: unavailable from {source}.",
+        f"Projection: {_number(mean):.1f} points from {source}."
+        if mean is not None
+        else f"Projection: unavailable from {source}.",
     ]
     if floor is not None and ceiling is not None:
         explanations.append(
@@ -51,6 +93,16 @@ def explain_player(row: dict[str, object]) -> list[str]:
         )
     if p_active is not None:
         explanations.append(f"Availability estimate: {_number(p_active):.0%} chance to play.")
+    if mean is not None and floor is not None and ceiling is not None and p_active is not None:
+        score, label = recommendation_confidence(
+            expected_gain=max(0.0, _number(mean) - _number(floor)),
+            floor=_number(floor),
+            ceiling=_number(ceiling),
+            p_active=_number(p_active),
+        )
+        explanations.append(
+            f"Confidence: {label} ({score:.0%}), based on availability and projection range."
+        )
     grade = row.get("matchup_grade")
     sample = row.get("n_plays_behind_matchup_grade")
     opponent = row.get("opponent") or "unknown opponent"
@@ -63,6 +115,136 @@ def explain_player(row: dict[str, object]) -> list[str]:
             "shown as context, not claimed as the projection's cause."
         )
     return explanations
+
+
+def _fills_slots(positions: list[str], slots: list[list[str]]) -> bool:
+    """Whether every player can occupy a distinct slot that accepts their position."""
+    owner: list[int | None] = [None] * len(slots)
+
+    def place(player: int, seen: set[int]) -> bool:
+        for slot, eligible in enumerate(slots):
+            if positions[player] not in eligible or slot in seen:
+                continue
+            seen.add(slot)
+            holder = owner[slot]
+            if holder is None or place(holder, seen):
+                owner[slot] = player
+                return True
+        return False
+
+    return all(place(player, set()) for player in range(len(positions)))
+
+
+def lineup_decisions(
+    lineup: pl.DataFrame,
+    rankings: pl.DataFrame,
+    current_starter_ids: set[str],
+    fmt: LeagueFormat,
+    *,
+    kickoff_by_team: dict[str, datetime] | None = None,
+    now: datetime | None = None,
+) -> pl.DataFrame:
+    """Pair optimizer changes into actionable, unlocked start/sit decisions."""
+    if lineup.is_empty():
+        return pl.DataFrame(schema=LINEUP_DECISION_SCHEMA)
+    current_time = now or datetime.now(UTC)
+    kickoffs = kickoff_by_team or {}
+    by_id = {str(row["player_id"]): row for row in rankings.iter_rows(named=True)}
+    recommended = set(lineup["player_id"].to_list())
+    outgoing_ids = current_starter_ids - recommended
+    unused_outgoing = set(outgoing_ids)
+    # Each suggested swap must leave a legal lineup on its own, so a RB is
+    # never paired against a WR unless a flex slot can absorb the change.
+    supported = projection_supported_format(fmt, set(rankings["position"].unique().to_list()))
+    slots = [eligible for _, eligible in slot_instances(supported)]
+    starting = {player_id for player_id in current_starter_ids if player_id in by_id}
+
+    def legal_after(incoming_id: str, outgoing_id: str) -> bool:
+        ids = (starting - {outgoing_id}) | {incoming_id}
+        return _fills_slots([str(by_id[player_id]["position"]) for player_id in ids], slots)
+
+    rows: list[dict[str, object]] = []
+    incoming_rows = lineup.filter(~pl.col("currently_starting")).sort(
+        "projected_points", descending=True
+    )
+    for incoming in incoming_rows.iter_rows(named=True):
+        incoming_id = str(incoming["player_id"])
+        incoming_rank = by_id.get(incoming_id)
+        if incoming_rank is None:
+            continue
+        candidates = [
+            by_id[player_id]
+            for player_id in unused_outgoing
+            if player_id in by_id and legal_after(incoming_id, player_id)
+        ]
+        if not candidates:
+            continue
+        outgoing = min(candidates, key=lambda row: _number(row["proj_mean"]))
+        outgoing_id = str(outgoing["player_id"])
+        incoming_kickoff = kickoffs.get(str(incoming_rank.get("team")))
+        outgoing_kickoff = kickoffs.get(str(outgoing.get("team")))
+        if any(
+            stamp is not None and stamp <= current_time
+            for stamp in (incoming_kickoff, outgoing_kickoff)
+        ):
+            continue
+        gain = _number(incoming_rank["proj_mean"]) - _number(outgoing["proj_mean"])
+        if gain <= 0:
+            continue
+        p_active = min(
+            _number(incoming_rank.get("p_active") or 0.0),
+            _number(outgoing.get("p_active") or 0.0),
+        )
+        floor = _number(incoming_rank["floor"])
+        ceiling = _number(incoming_rank["ceiling"])
+        confidence, label = recommendation_confidence(
+            expected_gain=gain,
+            floor=floor,
+            ceiling=ceiling,
+            p_active=p_active,
+        )
+        lock = min(
+            (stamp for stamp in (incoming_kickoff, outgoing_kickoff) if stamp is not None),
+            default=None,
+        )
+        reshuffle = (
+            f" {incoming_rank['player_name']} goes in a FLEX spot; if "
+            f"{outgoing['player_name']} isn't the one in FLEX, slide your FLEX "
+            f"{outgoing['position']} into {outgoing['player_name']}'s {outgoing['position']} spot."
+            if incoming_rank["position"] != outgoing["position"]
+            else ""
+        )
+        rows.append(
+            {
+                "slot": incoming["slot"],
+                "start": incoming_rank["player_name"],
+                "sit": outgoing["player_name"],
+                "expected_gain": gain,
+                "start_floor": floor,
+                "sit_floor": outgoing["floor"],
+                "start_ceiling": ceiling,
+                "sit_ceiling": outgoing["ceiling"],
+                "confidence": confidence,
+                "confidence_label": label,
+                "lock_time": lock.isoformat() if lock is not None else "Unknown",
+                "why": (
+                    f"{_number(incoming_rank['proj_mean']):.1f} vs "
+                    f"{_number(outgoing['proj_mean']):.1f} projected points; "
+                    f"{p_active:.0%} minimum availability.{reshuffle}"
+                ),
+                "risk": (
+                    f"Recommended player's range is {floor:.1f}-{ceiling:.1f}; "
+                    f"the edge is {gain:+.1f}."
+                ),
+            }
+        )
+        unused_outgoing.remove(outgoing_id)
+        starting = (starting - {outgoing_id}) | {incoming_id}
+    return (
+        pl.DataFrame(rows, schema=LINEUP_DECISION_SCHEMA).sort("expected_gain", descending=True)
+        if rows
+        else pl.DataFrame(schema=LINEUP_DECISION_SCHEMA)
+    )
 
 
 def projection_supported_format(fmt: LeagueFormat, positions: set[str]) -> LeagueFormat:
@@ -87,7 +269,12 @@ def projection_supported_format(fmt: LeagueFormat, positions: set[str]) -> Leagu
 def player_projections(rankings: pl.DataFrame, player_ids: Iterable[str]) -> list[PlayerProjection]:
     """Convert ranked rows for a roster into the lineup engine's input."""
     wanted = set(player_ids)
-    rows = rankings.filter(
+    available = rankings
+    if "injury_status" in available.columns:
+        available = available.filter(
+            ~pl.col("injury_status").fill_null("").is_in(list(UNAVAILABLE_STATUSES))
+        )
+    rows = available.filter(
         pl.col("player_id").is_in(list(wanted))
         & pl.col("proj_mean").is_not_null()
         & pl.col("median").is_not_null()
@@ -108,7 +295,12 @@ def player_projections(rankings: pl.DataFrame, player_ids: Iterable[str]) -> lis
 def sim_players(rankings: pl.DataFrame, player_ids: Iterable[str]) -> list[SimPlayer]:
     """Convert ranked rows for a roster into start/sit simulation inputs."""
     wanted = set(player_ids)
-    rows = rankings.filter(
+    available = rankings
+    if "injury_status" in available.columns:
+        available = available.filter(
+            ~pl.col("injury_status").fill_null("").is_in(list(UNAVAILABLE_STATUSES))
+        )
+    rows = available.filter(
         pl.col("player_id").is_in(list(wanted))
         & pl.col("proj_mean").is_not_null()
         & pl.col("floor").is_not_null()
@@ -200,7 +392,9 @@ def build_action_inbox(
                 "action": f"Review {pipeline_status} pipeline checks before acting",
                 "expected_gain": None,
                 "confidence": None,
+                "confidence_label": "Data check",
                 "evidence": "At least one freshness, coverage, or source check is not healthy.",
+                "risk": "Inputs may be stale or incomplete until the next healthy refresh.",
             }
         )
     recommended_ids = set(lineup["player_id"].to_list()) if not lineup.is_empty() else set()
@@ -219,6 +413,9 @@ def build_action_inbox(
             0.0,
             min(1.0, 1.0 - spread / max(1.0, float(add["projected_points"]) * 4.0)),
         )
+        confidence_label = (
+            "High" if confidence >= 0.72 else "Medium" if confidence >= 0.50 else "Low"
+        )
         rows.append(
             {
                 "priority": "NOW" if gain >= 2.0 else "WATCH",
@@ -226,10 +423,15 @@ def build_action_inbox(
                 "action": f"Start {add['player_name']} over {drop['player_name']}",
                 "expected_gain": gain,
                 "confidence": confidence,
+                "confidence_label": confidence_label,
                 "evidence": (
                     f"{float(add['projected_points']):.1f} vs {float(drop['proj_mean']):.1f} "
                     f"projected points; {float(add['floor']):.1f}-{float(add['ceiling']):.1f} "
                     "range for the recommended starter."
+                ),
+                "risk": (
+                    f"Recommended starter range: {float(add['floor']):.1f}-"
+                    f"{float(add['ceiling']):.1f}."
                 ),
             }
         )
@@ -245,11 +447,13 @@ def build_action_inbox(
                 ),
                 "expected_gain": gain,
                 "confidence": None,
+                "confidence_label": "Roster value",
                 "evidence": (
                     f"Suggested bid {row['suggested_bid']}; "
                     f"{row['competing_teams']} competing roster(s); "
                     f"{row['projection_basis']} basis."
                 ),
+                "risk": "FAAB demand and future role can change before waivers process.",
             }
         )
     for alert in (alerts or [])[:5]:
@@ -262,7 +466,9 @@ def build_action_inbox(
                     "action": message,
                     "expected_gain": None,
                     "confidence": None,
+                    "confidence_label": "Changed input",
                     "evidence": "Detected by comparison with the previous refresh snapshot.",
+                    "risk": "Recheck availability and kickoff status before acting.",
                 }
             )
     order = {"NOW": 0, "WATCH": 1}
@@ -273,8 +479,10 @@ def build_action_inbox(
             -_number(row["expected_gain"]) if row["expected_gain"] is not None else 0.0,
         )
     )
-    return pl.DataFrame(rows, schema=ACTION_INBOX_SCHEMA) if rows else pl.DataFrame(
-        schema=ACTION_INBOX_SCHEMA
+    return (
+        pl.DataFrame(rows, schema=ACTION_INBOX_SCHEMA)
+        if rows
+        else pl.DataFrame(schema=ACTION_INBOX_SCHEMA)
     )
 
 
@@ -295,6 +503,10 @@ def waiver_recommendations(
     """Rank current free agents by value relative to the user's roster."""
     supported = projection_supported_format(fmt, set(rankings["position"].unique().to_list()))
     projected = rankings.filter(pl.col("proj_mean").is_not_null())
+    if "injury_status" in projected.columns:
+        projected = projected.filter(
+            ~pl.col("injury_status").fill_null("").is_in(list(UNAVAILABLE_STATUSES))
+        )
     projection_by_player = dict(
         zip(projected["player_id"].to_list(), projected["proj_mean"].to_list(), strict=True)
     )
@@ -305,14 +517,18 @@ def waiver_recommendations(
             not future.is_empty()
             and int(_number(future.select(pl.col("week").min()).item())) == current_week
         ):
-            weighted = future.with_columns(
-                pl.when(pl.col("week") >= fmt.playoff_week_start)
-                .then(pl.lit(playoff_weight))
-                .otherwise(pl.lit(1.0))
-                .alias("_weight")
-            ).group_by("player_id").agg(
-                ((pl.col("mean") * pl.col("_weight")).sum() / pl.col("_weight").sum()).alias(
-                    "weighted_mean"
+            weighted = (
+                future.with_columns(
+                    pl.when(pl.col("week") >= fmt.playoff_week_start)
+                    .then(pl.lit(playoff_weight))
+                    .otherwise(pl.lit(1.0))
+                    .alias("_weight")
+                )
+                .group_by("player_id")
+                .agg(
+                    ((pl.col("mean") * pl.col("_weight")).sum() / pl.col("_weight").sum()).alias(
+                        "weighted_mean"
+                    )
                 )
             )
             projection_by_player.update(
@@ -352,18 +568,35 @@ def waiver_recommendations(
         playoff_weight=playoff_weight,
         aggressiveness=aggressiveness,
     )
-    names = rankings.select("player_id", "player_name", "team", "opponent", "proj_mean")
+    # Competition changes bid sizing, not roster-relative value ordering.
+    # Restrict the expensive opponent-lineup solves to rows that can actually
+    # appear in the rendered recommendation table.
+    board = board.filter(pl.col("value_added_per_week") > 0).head(limit)
+    names = rankings.select(
+        "player_id",
+        "player_name",
+        "team",
+        "opponent",
+        "proj_mean",
+        "p_active",
+        "floor",
+        "ceiling",
+    )
     drop_names = rankings.select(
         pl.col("player_id").alias("drop_candidate"),
         pl.col("player_name").alias("drop_player"),
     )
     opponents = [roster_projections(ids) for ids in (opponent_roster_ids or [])]
+    opponent_context = [(team, optimal_lineup_points(team, supported)) for team in opponents]
     competition_rows: list[dict[str, object]] = []
     for player_id in board["player_id"].to_list():
         row = rankings.filter(pl.col("player_id") == player_id).row(0, named=True)
         mean = _number(projection_by_player[str(player_id)])
         candidate = PlayerProjection(str(player_id), str(row["position"]), mean, mean, mean)
-        opponent_values = [value_added(team, candidate, fmt)[0] for team in opponents]
+        opponent_values = [
+            value_added(team, candidate, supported, baseline_points=baseline)[0]
+            for team, baseline in opponent_context
+        ]
         interested = sum(value > 0 for value in opponent_values)
         competition_rows.append(
             {
@@ -384,17 +617,14 @@ def waiver_recommendations(
         board.join(names, on="player_id", how="left")
         .join(drop_names, on="drop_candidate", how="left")
         .join(competition, on="player_id", how="left")
-        .filter(pl.col("value_added_per_week") > 0)
-        .head(limit)
     )
-    return result.with_columns(
+    result = result.with_columns(
         pl.struct("suggested_bid", "competing_teams")
         .map_elements(
             lambda row: min(
                 remaining_budget,
                 math.ceil(
-                    _number(row["suggested_bid"])
-                    * (1.0 + 0.1 * _number(row["competing_teams"]))
+                    _number(row["suggested_bid"]) * (1.0 + 0.1 * _number(row["competing_teams"]))
                 ),
             ),
             return_dtype=pl.Int64,
@@ -402,6 +632,47 @@ def waiver_recommendations(
         .alias("suggested_bid"),
         pl.lit(projection_basis).alias("projection_basis"),
     )
+    if result.is_empty():
+        return result
+    position_counts: dict[str, int] = {}
+    planned: list[dict[str, object]] = []
+    for priority, row in enumerate(result.iter_rows(named=True), start=1):
+        position = str(row["position"])
+        position_counts[position] = position_counts.get(position, 0) + 1
+        bid = int(_number(row["suggested_bid"]))
+        floor = _number(row.get("floor") or 0.0)
+        ceiling = _number(row.get("ceiling") or floor)
+        p_active = _number(row.get("p_active") or 0.0)
+        confidence, label = recommendation_confidence(
+            expected_gain=_number(row["value_added_per_week"]),
+            floor=floor,
+            ceiling=ceiling,
+            p_active=p_active,
+        )
+        drop = str(row.get("drop_player") or "your lowest-value bench player")
+        role = (
+            "Primary"
+            if position_counts[position] == 1
+            else f"Fallback {position_counts[position] - 1}"
+        )
+        row.update(
+            {
+                "claim_priority": priority,
+                "claim_role": f"{role} {position}",
+                "roster_need": f"Upgrade {drop}",
+                "bid_floor": max(0, math.floor(bid * 0.75)),
+                "bid_ceiling": bid,
+                "confidence": confidence,
+                "confidence_label": label,
+                "why": (
+                    f"Adds {_number(row['value_added_per_week']):.1f} projected lineup "
+                    f"points per week; {int(_number(row['competing_teams']))} competing "
+                    f"roster(s); {projection_basis.replace('_', ' ')} projection basis."
+                ),
+            }
+        )
+        planned.append(row)
+    return pl.DataFrame(planned)
 
 
 def streaming_recommendations(
@@ -433,17 +704,12 @@ def streaming_recommendations(
     )
     candidates = pl.concat(
         [
-            kickers.select(
-                "player_id", "sleeper_id", "player_name", "position", "team", "points"
-            ),
-            defenses.select(
-                "player_id", "sleeper_id", "player_name", "position", "team", "points"
-            ),
+            kickers.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
+            defenses.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
         ],
         how="vertical_relaxed",
     ).filter(
-        pl.col("sleeper_id").is_not_null()
-        & ~pl.col("sleeper_id").is_in(list(rostered_sleeper_ids))
+        pl.col("sleeper_id").is_not_null() & ~pl.col("sleeper_id").is_in(list(rostered_sleeper_ids))
     )
     opponents = (
         team_opponent(schedule)

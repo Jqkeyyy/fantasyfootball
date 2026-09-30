@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 
 from ffapp.league_format import LeagueFormat
-from ffapp.sim.lineup import PlayerProjection
+from ffapp.sim.lineup import PlayerProjection, optimal_lineup_points
 from ffapp.tools import tiers
 from ffapp.tools.ros_rankings import REQUIRED_ROS_BOARD_COLUMNS, ROS_BOARD_SCHEMA_VERSION
 from ffapp.tools.waivers import value_added
@@ -196,7 +196,12 @@ def team_specific_recommendations(
         .alias("_ppg")
     )
     roster_rows = enriched.filter(pl.col("is_my_roster") & pl.col("_ppg").is_not_null())
-    candidates = enriched.filter(pl.col("is_available") & pl.col("_ppg").is_not_null())
+    candidates = (
+        enriched.filter(pl.col("is_available") & pl.col("_ppg").is_not_null())
+        .sort(["position", "vor_ros"], descending=[False, True])
+        .group_by("position", maintain_order=True)
+        .head(12)
+    )
     if roster_rows.is_empty() or candidates.is_empty():
         return pl.DataFrame(schema=schema)
 
@@ -224,6 +229,8 @@ def team_specific_recommendations(
         str(row["player_id"]): str(row["player_name"]) for row in roster_rows.iter_rows(named=True)
     }
     recommendations: list[dict[str, object]] = []
+    baseline = optimal_lineup_points(roster, fmt)
+    playoff_baseline = optimal_lineup_points(playoff_roster, fmt)
     for row in candidates.iter_rows(named=True):
         candidate = PlayerProjection(
             str(row["player_id"]),
@@ -232,7 +239,9 @@ def team_specific_recommendations(
             _number(row["_ppg"]),
             _number(row["_ppg"]),
         )
-        lineup_gain, drop_id = value_added(roster, candidate, fmt)
+        lineup_gain, drop_id = value_added(
+            roster, candidate, fmt, baseline_points=baseline
+        )
         playoff_value = _number(row["playoff_weeks_value"])
         playoff_candidate = PlayerProjection(
             candidate.player_id,
@@ -241,7 +250,12 @@ def team_specific_recommendations(
             playoff_value,
             playoff_value,
         )
-        playoff_gain, _ = value_added(playoff_roster, playoff_candidate, fmt)
+        playoff_gain, _ = value_added(
+            playoff_roster,
+            playoff_candidate,
+            fmt,
+            baseline_points=playoff_baseline,
+        )
         recommendations.append(
             {
                 "player_id": candidate.player_id,

@@ -143,6 +143,9 @@ def _load_sleeper_players(path: Path) -> pl.DataFrame:
             "birth_date": p.get("birth_date"),
             "search_rank": p.get("search_rank"),
             "active": p.get("active"),
+            "injury_status": p.get("injury_status"),
+            "injury_body_part": p.get("injury_body_part"),
+            "injury_notes": p.get("injury_notes"),
         }
         for sleeper_id, p in raw.items()
     ]
@@ -187,10 +190,22 @@ def layer_sleeper_ids(base: pl.DataFrame, sleeper_players_path: Path) -> pl.Data
         "normalized_name",
         "search_rank",
         "active",
+        "injury_status",
+        "injury_body_part",
+        "injury_notes",
     )
 
     filled_with_rank = filled.join(
-        sleeper_df.select("sleeper_id", "search_rank", "active"), on="sleeper_id", how="left"
+        sleeper_df.select(
+            "sleeper_id",
+            "search_rank",
+            "active",
+            "injury_status",
+            "injury_body_part",
+            "injury_notes",
+        ),
+        on="sleeper_id",
+        how="left",
     )
 
     return pl.concat([filled_with_rank, new_rows], how="vertical_relaxed")
@@ -256,6 +271,9 @@ def fuzzy_match_remainder(df: pl.DataFrame, floor: int = 92) -> pl.DataFrame:
             merged["espn_id"] = merged["espn_id"] or sc["espn_id"]
             merged["search_rank"] = sc["search_rank"]
             merged["active"] = sc["active"]
+            merged["injury_status"] = sc["injury_status"]
+            merged["injury_body_part"] = sc["injury_body_part"]
+            merged["injury_notes"] = sc["injury_notes"]
             result_records.append(merged)
         elif r["sleeper_id"] in matched_sleeper_ids and r["gsis_id"] is None:
             continue  # absorbed into the crosswalk row above

@@ -450,51 +450,19 @@ def add_schedule_context(team_week_context: pl.DataFrame, schedule: pl.DataFrame
 
 
 def add_kickoff_utc(schedule: pl.DataFrame, stadiums: pl.DataFrame) -> pl.DataFrame:
-    """Task 1.3: derive `kickoff_utc` (SPEC §6.2's `as_of` boundary) from
-    `gameday`+`gametime` (local kickoff wall-clock time, both already
-    confirmed non-null across the full real 2015-2025 range) and each
-    game's real venue timezone (`config/stadiums.csv`, joined on
-    `stadium_id` -- the actual game venue, which already disambiguates a
-    relocated team's old stadium or a neutral-site/international game
-    from the current row's `home_team`).
+    """nflverse gametime is Eastern for every venue, including international games.
 
-    polars' `dt.replace_time_zone` takes one fixed timezone string per
-    call, not a per-row value, so this loops over the small number of
-    distinct real timezones in `stadiums` (currently 8: five US zones
-    plus Berlin/London/Mexico_City/Sao_Paulo for international games)
-    rather than one replace_time_zone call per row. A game whose
-    `stadium_id` has no match in `stadiums` keeps `kickoff_utc` null
-    rather than guessed -- CLAUDE.md rule 2: this is the single most
-    leakage-sensitive column in the project, so an honest gap beats a
-    wrong timestamp.
+    Keep the stadiums argument for caller compatibility. Source definition:
+    https://raw.githubusercontent.com/nflverse/nflreadr/main/data-raw/dictionary_schedules.csv
     """
-    with_tz = (
-        schedule.drop("kickoff_utc")
-        .join(stadiums.select("stadium_id", "tz"), on="stadium_id", how="left")
-        .with_columns(
-            pl.concat_str([pl.col("gameday"), pl.lit(" "), pl.col("gametime")])
-            .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M")
-            .alias("_local_dt")
-        )
+    return schedule.with_columns(
+        pl.concat_str([pl.col("gameday"), pl.lit(" "), pl.col("gametime")])
+        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M", strict=False)
+        .dt.replace_time_zone("America/New_York", ambiguous="null", non_existent="null")
+        .dt.convert_time_zone("UTC")
+        .dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        .alias("kickoff_utc")
     )
-
-    tzs = with_tz.select("tz").unique().drop_nulls().to_series().to_list()
-    parts = [
-        with_tz.filter(pl.col("tz") == tz).with_columns(
-            pl.col("_local_dt")
-            .dt.replace_time_zone(tz)
-            .dt.convert_time_zone("UTC")
-            .dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-            .alias("kickoff_utc")
-        )
-        for tz in tzs
-    ]
-    unmatched = with_tz.filter(pl.col("tz").is_null()).with_columns(
-        pl.lit(None, dtype=pl.Utf8).alias("kickoff_utc")
-    )
-
-    combined = pl.concat(parts + [unmatched], how="vertical_relaxed").drop(["tz", "_local_dt"])
-    return combined.select(schedule.columns)
 
 
 def _player_position_by_season(player_stats: pl.DataFrame) -> pl.DataFrame:

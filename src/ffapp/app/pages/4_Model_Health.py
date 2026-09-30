@@ -44,6 +44,7 @@ from ffapp.app.model_health_page import (
 )
 from ffapp.config import CONFIG_DIR, load_settings
 from ffapp.evaluation.inseason import (
+    adaptive_blend_weights,
     load_prediction_history,
     recommend_projection_source,
     source_reliability_weights,
@@ -75,6 +76,9 @@ legacy_eval_dir = settings.data_root / "outputs" / "eval"
 eval_dir = league_eval_dir if league_eval_dir.exists() else legacy_eval_dir
 
 st.title("Model Health")
+st.page_link(
+    "pages/9_Weekly_Report.py", label="Weekly accuracy & injury review", icon=":material/analytics:"
+)
 
 st.subheader("Live projection source")
 live_source = settings.model.projection_source
@@ -116,6 +120,19 @@ else:
     if not weights.is_empty():
         st.caption("Evidence-based source weights")
         st.dataframe(weights, width="stretch", hide_index=True)
+    blend = adaptive_blend_weights(inseason)
+    st.caption("Production projection blend")
+    if blend.is_empty():
+        st.info(
+            "The adaptive blend is gathering evidence. It activates by position after "
+            "four completed weeks and 60 scored player-weeks per source."
+        )
+    else:
+        st.success(
+            "These weights are used automatically for ESPN weekly projections. "
+            "No source can exceed 70%."
+        )
+        st.dataframe(blend, width="stretch", hide_index=True)
     calibration = summarize_interval_calibration(history)
     if not calibration.is_empty():
         st.caption("Prediction interval calibration")
@@ -124,6 +141,24 @@ else:
     if not regret.is_empty():
         st.caption("Roster lineup regret (lower is better)")
         st.dataframe(regret, width="stretch", hide_index=True)
+movements_path = (
+    settings.data_root / "outputs" / league.slug / "model_health" / "projection_movements.parquet"
+)
+if movements_path.exists():
+    movements = pl.read_parquet(movements_path)
+    if not movements.is_empty():
+        st.caption("Current projection movement by signal and first-moving source")
+        movement_summary = (
+            movements.with_columns(pl.col("live_delta").abs().alias("absolute_change"))
+            .group_by("signal", "first_mover")
+            .agg(
+                pl.len().alias("players"),
+                pl.col("absolute_change").mean().alias("average_change"),
+                pl.col("confidence").mean().alias("average_confidence"),
+            )
+            .sort(["players", "average_change"], descending=True)
+        )
+        st.dataframe(movement_summary, width="stretch", hide_index=True)
 st.divider()
 
 reports = list_reports(eval_dir)

@@ -102,8 +102,11 @@ event = st.dataframe(
     selection_mode="single-row",
     column_config={
         "view_rank": "Rank",
+        "player_name": "Player",
+        "position": "Pos",
         "position_tier": "Pos Tier",
-        "nfl_team": "NFL Team",
+        "nfl_team": "Team",
+        "availability": "Status",
         "fantasy_team": "Fantasy Team",
         "vor_ros": st.column_config.NumberColumn("VOR", format="%.1f"),
         "ros_points": st.column_config.NumberColumn("ROS Points", format="%.1f"),
@@ -111,6 +114,11 @@ event = st.dataframe(
         "ros_p10": st.column_config.NumberColumn("Floor", format="%.1f"),
         "ros_p50": st.column_config.NumberColumn("Median", format="%.1f"),
         "ros_p90": st.column_config.NumberColumn("Upside", format="%.1f"),
+        "expected_games": st.column_config.NumberColumn("Exp Games", format="%.1f"),
+        "playoff_weeks_value": st.column_config.NumberColumn(
+            "Playoff Value", format="%.1f"
+        ),
+        "rank_change_display": "Change",
         "player_id": None,
     },
 )

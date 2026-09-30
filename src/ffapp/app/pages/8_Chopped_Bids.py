@@ -12,6 +12,7 @@ import streamlit as st
 from ffapp.app.chopped_calculator_page import build_player_values, is_chopped_league
 from ffapp.app.data_status import render_league_data_controls
 from ffapp.app.league_selector import ordered_leagues
+from ffapp.app.ui import apply_app_shell
 from ffapp.config import load_all_leagues, load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ids import mapping
@@ -31,6 +32,7 @@ from ffapp.tools.waiver_history import (
 from ffapp.tools.waivers import rostered_sleeper_ids
 
 st.set_page_config(page_title="Chopped Bids", layout="wide")
+apply_app_shell()
 
 settings = load_settings()
 leagues = [league for league in ordered_leagues(load_all_leagues()) if is_chopped_league(league)]
