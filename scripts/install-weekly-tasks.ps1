@@ -18,10 +18,13 @@ $Schedules = @(
 )
 
 foreach ($Schedule in $Schedules) {
-    $Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$Runner`" -RunLabel $($Schedule.Label)"
+    $Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`" -RunLabel $($Schedule.Label)"
     $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $Arguments
     $Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $Schedule.Day -At $Schedule.Time
-    $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    $Settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -Hidden `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 2)
     $Principal = New-ScheduledTaskPrincipal `
         -UserId $TaskUser `
         -LogonType S4U `

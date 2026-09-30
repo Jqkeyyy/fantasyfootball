@@ -1,0 +1,24 @@
+# Native Linux deployment (no Docker or root access required).
+# Replace /home/maybe/services/fantasyfootball if installed elsewhere.
+SHELL=/bin/bash
+PATH=/home/maybe/.local/bin:/usr/local/bin:/usr/bin:/bin
+UV_NO_SYNC=1
+
+# Keep the private dashboard running. The launcher's file lock prevents
+# duplicates, and this check restarts it within a minute after a reboot/crash.
+* * * * * cd /home/maybe/services/fantasyfootball && ./scripts/run-server-app.sh >> data/outputs/logs/server-app.log 2>&1
+
+# Check the production schedule hourly. The wrapper resolves Tuesday 07:00,
+# Thursday 07:00, and Sunday 08:00 in America/Chicago on a UTC host.
+0 * * * * cd /home/maybe/services/fantasyfootball && ./scripts/run-server-schedule.sh >> data/outputs/logs/cron.log 2>&1
+
+# Check all kickoff windows, including Thursday/Monday and international games.
+*/5 * * * * cd /home/maybe/services/fantasyfootball && ./scripts/run-gameday.sh >> data/outputs/logs/gameday.log 2>&1
+
+# Send one concise morning brief at 07:15 Central. The wrapper handles DST
+# and records the local date so a repeated cron invocation cannot duplicate it.
+15 * * * * cd /home/maybe/services/fantasyfootball && ./scripts/run-daily-briefing.sh >> data/outputs/logs/daily-briefing.log 2>&1
+
+# Keep the private Discord slash-command bot connected. The file lock prevents
+# duplicates; until a bot token is saved this exits cleanly and retries later.
+* * * * * cd /home/maybe/services/fantasyfootball && ./scripts/run-discord-bot.sh >> data/outputs/logs/discord-bot.log 2>&1

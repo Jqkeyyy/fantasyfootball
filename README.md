@@ -45,6 +45,8 @@ For authoritative shipping status, model evidence, operational risks, and next p
 - Produces multiweek rest-of-season projections and free-agent VOR rankings.
 - Shows positional strength of schedule, a schedule heatmap, and player matchup details.
 - Provides a weekly action cockpit for lineups, start/sit choices, multiweek waivers, K/DST streaming, and decision alerts, plus a lineup-aware trade analyzer.
+- Searches every roster for fair trade packages and ranks them by expected starting-lineup gain for both teams.
+- Reviews completed weeks, excludes confirmed injury outcomes, and classifies the largest model misses.
 - Detects real Sleeper `chopped` transactions and calculates league-specific FAAB bids from roster need, opponent demand, remaining budgets, and a configurable future-chop reserve.
 
 ### Data quality and evaluation
@@ -187,7 +189,157 @@ Then open `http://localhost:8501`.
 
 Windows users can instead double-click `start-app.bat`. It starts Streamlit on localhost only, opens a browser, and creates an empty Streamlit credentials file on first use to bypass Streamlit's interactive welcome prompt.
 
+### New-PC recovery during the season
+
+After installing dependencies, creating `.env`, and warming the Sleeper cache above,
+restore the missing local data in this order:
+
+```powershell
+uv run ffapp refresh features --no-offline
+uv run python notebooks/materialize_b3_historical.py
+uv run ffapp refresh weekly --all-leagues --skip-features --no-offline
+```
+
+The first command downloads historical data and builds the schedule needed to select
+the current week. The second builds historical projection errors used by the weekly
+and rest-of-season models. These initial downloads can take several minutes. Open
+**Weekly Actions** in the dashboard after the refresh completes; draft preparation
+is not required for in-season use.
+
+Optional API keys and Discord settings must be restored separately in `.env`.
+To restore unattended refreshes, open PowerShell **as Administrator**, change to
+the project folder, and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-weekly-tasks.ps1
+```
+
+This installs Tuesday/Thursday runs at 7 AM and Sunday runs at 8 AM in the PC's
+local timezone. The PC must be powered on for scheduled work to run.
+
+### Always-on Ubuntu server
+
+The project can run under an ordinary Linux user without Docker. Install `uv`,
+sync Python 3.11 from the lockfile, copy the local `data/` directory and `.env`,
+then install `crontab-native.example` with `crontab`. The included cron file
+keeps the private Streamlit dashboard running with a process lock and runs the
+same all-league Tuesday, Thursday, and Sunday refresh workflow used on Windows.
+Its schedule wrapper resolves America/Chicago time explicitly, including
+daylight-saving changes, even when the host runs UTC.
+
+The native cron also runs kickoff and transaction checks every five minutes and sends one Discord
+briefing at 7:15 AM Central each day. The briefing is date-deduplicated and summarizes
+refresh health plus the current lineup and waiver exceptions for every league.
+
+The server launcher binds Streamlit to `127.0.0.1`. From another computer, open
+an SSH tunnel and leave that terminal running while using the dashboard:
+
+```powershell
+ssh -N -L 8501:127.0.0.1:8501 <server-address>
+```
+
+Then browse to `http://localhost:8501`.
+
+For private access from a phone or another computer anywhere, install Tailscale
+on the server and publish the loopback-only dashboard through Tailscale Serve:
+
+```bash
+sudo ./scripts/install-tailscale-access.sh
+```
+
+Follow the sign-in and HTTPS approval links printed by the command. Install the
+Tailscale app on the phone, sign in to the same account, and use the HTTPS URL
+shown by `tailscale serve status`. Save that URL as `FFAPP_DASHBOARD_URL` in the
+server's `.env` so Discord links and the Install App page point at it. The dashboard remains unavailable to the
+public internet; access is limited to devices authorized in the tailnet.
+
+Open **Install App** from the dashboard on a phone for iPhone and Android home-screen
+instructions. The installed shortcut uses the same private Tailscale URL, so Tailscale
+must remain connected on the phone.
+
+On the configured Windows laptop, set `FFAPP_SERVER_HOST` in `.env` to the server's
+address and double-click `start-server-app.bat` instead.
+It opens an SSH tunnel on `http://localhost:8502` and launches the browser. Keep
+its terminal window open while using the dashboard; closing it only disconnects
+the tunnel and does not stop the server.
+
 ## Configuration
+
+### Weekly model report
+
+Open **Weekly Report** in the dashboard menu to compare saved pregame predictions
+with actual results for each league and week. The report shows average absolute
+error, bias, position breakdowns, interval coverage, same-sample baseline error,
+and game-stat clues behind misses. It updates as the scheduled refresh backfills
+actual points. Weeks without real outcomes or verified pregame snapshots are
+listed as unavailable rather than assigned a score.
+
+Out/IR injury designations and confirmed injury exclusions are omitted from the
+main score. Use **Injury review** to record an in-game exit with a note or reverse
+an earlier manual exclusion. These decisions persist per league in
+`data/outputs/<league>/injury_review.json`. Low snap counts only flag a review;
+they do not establish an injury. A missing injury record does not establish health.
+The report's usage and efficiency clues compare against prior appearances and
+are evidence to investigate, not causal explanations or automatic model changes.
+
+The report also watches for position/source patterns that repeat in at least three
+supported weeks. Its learning lab tests a capped bias adjustment using only earlier
+weeks and evaluates it on a later unseen week. Experiments never alter production
+projections automatically.
+
+### Game-day checks and phone alerts
+
+The native server cron runs `scripts/run-gameday.sh` every five minutes. It refreshes
+the official schedule periodically, then performs checks about 90 and 30 minutes
+before every distinct kickoff window, including Thursday, Monday, and international
+games. Each check refreshes projections and Sleeper state, applies explicit Out/IR
+statuses to teams that have not kicked off, saves an immutable pregame forecast, and
+creates decision alerts. A shared lock prevents overlap with the full weekly refresh.
+
+Open **Phone Alerts** in the private dashboard to store a Discord channel webhook and
+send a test. The secret is kept under `data/private/` outside Git. Notifications cover
+new starter availability problems, material starter projection changes, useful waiver
+upgrades, and refresh failures; identical alerts are suppressed for six hours.
+The same page can securely configure a Discord bot for `/lineup`, `/waivers`,
+`/matchup`, `/trades`, and `/health` slash commands. The cron watchdog keeps the bot
+connected; a server ID is optional but makes command registration immediate.
+
+The home page is the in-season phone dashboard: current cached matchup score, unlocked
+lineup swaps, the top waiver opportunity, data freshness, and links to detailed tools.
+Draft pages remain available inside **Draft & offseason tools**.
+
+### In-season decision and automation centers
+
+Open **Operations** to see every league's latest full-refresh status, projection coverage,
+kickoff-check state, source problems, Discord connection, next scheduled run, and immutable run
+history. The page can rerun one league or the complete account workflow when recovery is needed.
+An operating-system-level refresh failure also sends a Discord alert, including failures that
+terminate the Python process before it can write a normal run manifest.
+
+Open **Weekly Decision Center** for kickoff-aware lineup changes, projected edge, floor and
+ceiling comparisons, availability-based confidence, and a plain-language explanation of the
+main risk. Its waiver plan orders primary and fallback claims by roster-relative value, uses
+rest-of-season projections when available, estimates competing roster interest, suggests a FAAB
+range, and names the likely drop. Discord uses the same action thresholds and explanation fields
+for meaningful lineup, availability, projection, and waiver changes.
+
+Open **Live Matchup** during games for the current Sleeper score, projected finish, win
+probability, remaining starters, swing players, and a final unlocked-lineup check. Open
+**Roster Strategy** for four-week position health, bye pressure, playoff value, waiver
+targets, and trade chips. The **Trade Analyzer** suggests balanced packages based on mutual
+roster needs before running the full season simulation. **Trade Finder** searches 1-for-1,
+2-for-1, and 1-for-2 packages across every roster, measures each side's lineup change over
+the remaining schedule, and can run the full playoff simulation on a selected result.
+
+After games finish, **Postgame Review** compares forecasts and recorded choices with actual
+results. Confirmed injuries are excluded from accuracy and decision value. The live ESPN,
+FantasyPros consensus, and trailing-performance sources earn position-specific blend weights
+after at least four completed weeks and 60 scored player-weeks; no source can exceed 70%.
+
+Recommendations are saved automatically. Record whether you followed them in **Weekly
+Actions** or **Decision Learning**. Later full refreshes settle those choices from actual
+points so Decision Learning can report follow rate, realized value, regret, and confidence
+bands. It waits for repeated settled decisions before presenting a pattern as useful.
 
 ### Global settings
 
@@ -425,6 +577,14 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
 | **Weekly Actions** | Prioritized decision inbox, recommended lineup, explanations, matchup simulation, waiver bids, K/DST streamers, pipeline health, and a follow/reject outcome ledger. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
+| **Trade Finder** | Ranked 1-for-1 and uneven packages across every roster, with lineup gain, partner gain, fairness, and optional playoff simulation. | ROS projections plus cached Sleeper rosters. |
+| **Live Matchup** | Live score, projected finish, win probability, remaining players, and swing outcomes. | Weekly projections, schedule, and current Sleeper matchup data. |
+| **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
+| **Decision Learning** | Recorded choices, settled outcomes, realized value, regret, and confidence calibration. | `data/outputs/<league>/decisions/ledger.parquet`. |
+| **Postgame Review** | Completed-week decision outcomes and categorized model misses with confirmed injuries excluded. | Prediction logs, weekly actuals/usage, and the decision ledger. |
+| **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
+| **Operations** | League refresh health, upstream source age, host disk/app status, schedules, and manual refresh controls. | Refresh manifests, cache metadata, and local host state. |
+| **Install App** | iPhone and Android home-screen installation steps for the private dashboard. | Tailscale access and Streamlit static PWA assets. |
 | **Schedule Grid** | Positional SOS, bye-aware heatmap, and player matchup detail with usage context. | `data/interim/schedule.parquet`, `defense_position_allowed.parquet`, and `data/features/player_week_features.parquet`. |
 | **Model Health** | Active projection source and current/historical evaluation reports. | `config/projection_source_evaluation.yml` and `data/outputs/eval/*/report.md`. |
 | **Draft Mobile** | Phone-friendly best-available cards, position filters, tier depth, and live/replayed picks. | Draft board CSV plus live Sleeper access or an active replay session. |
@@ -676,6 +836,13 @@ Run `ffapp ids check`, inspect the unmatched players, and add only verified corr
 - The default B3 history starts with the available FantasyPros weekly archive in 2021.
 - Live dashboard pages depend on locally precomputed data and, where noted, a current Sleeper cache or network connection.
 - Simulation correlations and some waiver constants are configured assumptions and should be recalibrated as more league history becomes available.
+- Injury recovery timing is only as specific as the live provider notes. When no return range is
+  available, the app labels and uses a conservative status-based curve instead of inventing a date.
+- Role adjustments require two recent games and three earlier comparison games, are capped at 15%,
+  and intentionally do not react to a single-game usage spike.
+- During weeks 1–4, role changes are shrunk according to the number of current-season games. Saved
+  Tuesday, Thursday, and Sunday projections are also compared source by source; small refresh noise
+  is omitted, while meaningful moves identify the first source and whether another source agreed.
 
 ## License
 

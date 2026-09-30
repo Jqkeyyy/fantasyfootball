@@ -3,10 +3,9 @@
 # (edit the `cd` path first to match where the repo actually lives on
 # this machine, then re-save before installing.)
 #
-# Mirrors weekly-refresh.bat's real, previously-verified-working Windows
-# Task Scheduler cadence: Tuesday 07:00, Thursday 09:00, Sunday 10:00,
-# US Central time (see commit 63fd56d). The run time IS load-bearing: the
-# scripts resolve the current NFL week live from Sleeper, so the run time
+# Mirrors the production Windows Task Scheduler cadence: Tuesday 07:00,
+# Thursday 07:00, Sunday 08:00, US Central time. The run time IS load-bearing: the
+# CLI resolves the current NFL week from the schedule, so the run time
 # directly determines which week gets operated on and logged. Running too
 # early (e.g. on a UTC host, if these times were misread as UTC) means
 # Sleeper's week hasn't rolled over yet and Monday Night Football's stats
@@ -25,5 +24,5 @@ PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
 #
 # Day-of-week: 0=Sunday, 2=Tuesday, 4=Thursday.
 0 7 * * 2 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh tuesday >> data/outputs/logs/cron.log 2>&1
-0 9 * * 4 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh thursday >> data/outputs/logs/cron.log 2>&1
-0 10 * * 0 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh sunday >> data/outputs/logs/cron.log 2>&1
+0 7 * * 4 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh thursday >> data/outputs/logs/cron.log 2>&1
+0 8 * * 0 cd /path/to/fantasyfootball && docker compose exec -T app ./weekly-refresh.sh sunday >> data/outputs/logs/cron.log 2>&1

@@ -1,0 +1,18 @@
+[theme]
+primaryColor = "#13B981"
+backgroundColor = "#F7F9FC"
+secondaryBackgroundColor = "#EEF2F7"
+textColor = "#172033"
+font = "sans-serif"
+baseRadius = "0.75rem"
+buttonRadius = "0.75rem"
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "none"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+enableStaticServing = true

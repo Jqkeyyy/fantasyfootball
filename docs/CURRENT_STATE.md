@@ -1,6 +1,6 @@
 # Current project state
 
-**Authoritative as of:** 2026-09-16
+**Authoritative as of:** 2026-09-26
 
 This is the single source of truth for what is shipping, what is trusted, and what comes next.
 `TASKS.md` remains the detailed implementation backlog. `docs/JOURNAL.md` and `HANDOFF.md` are
@@ -27,13 +27,16 @@ historical evidence, not current-status documents.
 
 ## Immediate operational state
 
-- The three production Windows tasks use S4U and no longer depend on an interactive desktop
-  session. A detached Task Scheduler invocation completed the full three-league pipeline on
-  2026-09-16, confirming the former `0xC000013A` session-termination failure is resolved.
-- A live verification also exposed GitHub API rate limiting. Weekly and ROS projections now retry
-  from validated cache and report a degraded run rather than discarding usable recommendations.
-- The obsolete duplicate `\FantasyFootball\* Refresh` task set was removed; only the three
-  `FFApp Weekly *` production jobs remain enabled.
+- The always-on Ubuntu home server is the production host. Native cron keeps Streamlit and the
+  Discord bot running, performs kickoff and transaction checks every five minutes, sends a daily
+  briefing, and runs full Tuesday, Thursday, and Sunday refreshes in America/Chicago time.
+- Tailscale Serve publishes the loopback-only dashboard privately at
+  the tailnet URL saved as `FFAPP_DASHBOARD_URL` in the server `.env`; the app is not exposed to the public internet.
+- A manual production refresh on 2026-09-26 completed all three leagues as healthy for week 3,
+  with all seven prediction sources available, Sunday movement snapshots recorded, and weekly,
+  ROS, role, injury, and source-movement artifacts rebuilt.
+- GitHub API rate limiting remains recoverable: weekly and ROS projections retry from validated
+  cache and report a degraded run rather than discarding usable recommendations.
 - Manifests live under `data/outputs/<league>/refresh_runs/`. Recovery artifacts and hashes live
   under `data/outputs/<league>/last_known_good/`.
 - Large raw/interim/feature artifacts remain local. An empty clone still needs the documented
@@ -51,19 +54,42 @@ Do not resume Stage 4 before reading its journal entry and designing a calibrati
 experiment. The next high-value experiment is constrained, per-position source weighting after
 enough real logged weeks exist.
 
+## Model improvement roadmap
+
+1. **Injury-duration projections — shipping.** Live Sleeper status and injury notes now create
+   explained weekly availability curves. Explicit recovery ranges are parsed when present;
+   otherwise the model uses a conservative status-based curve and clearly says the return date is
+   unknown. The adjustment affects weekly and ROS points, intervals, lineups, waivers, and trades.
+2. **Role-change detection — shipping.** Two recent games are compared with three to six earlier
+   games using position-relevant snap and opportunity shares. At least two signals must agree,
+   every input predates the projected week, changes are capped at 15%, and ROS effects fade as new
+   usage arrives.
+3. **Projection movement signals — shipping.** Saved Tuesday, Thursday, and Sunday snapshots now
+   distinguish meaningful changes from refresh noise, identify the first-moving source, measure
+   cross-source confirmation, explain pipeline-only and availability moves, and strengthen only
+   consequential starter alerts.
+4. **Opponent and game-environment improvements — queued.** Add pace, play volume, neutral pass
+   rate, weather, and materially changed defensive personnel with point-in-time validation.
+5. **Decision-based training — queued.** Optimize and evaluate lineup, waiver, and trade choices
+   directly once enough settled decision-ledger examples exist.
+6. **Early-season safeguards — shipping.** Role adjustments compare current usage with prior role
+   evidence, run at 50% strength after two games, ramp to full strength after four, and label the
+   active guard in Weekly Actions.
+7. **Confidence-based recommendations — queued.** Require larger projected edges when uncertainty,
+   source disagreement, or lineup regret history says a decision is fragile.
+
 ## Current priorities
 
-1. Confirm the September 17 clock-triggered run remains healthy after the live S4U verification.
-2. Accumulate and settle real decision-ledger rows; report follow rate, realized advantage, and
+1. Accumulate and settle real decision-ledger rows; report follow rate, realized advantage, and
    regret by decision type.
-3. Refine the Weekly Actions inbox around consequential exceptions, not more tables.
-4. Complete the cold-start source schedule (`TASKS.md` 1.22).
-5. Test constrained source weights (`TASKS.md` 3.11) when sample size permits.
-6. Add a reproducible demo/bootstrap dataset for fresh-clone onboarding.
+2. Refine the Weekly Actions inbox around consequential exceptions, not more tables.
+3. Complete the cold-start source schedule (`TASKS.md` 1.22).
+4. Test constrained source weights (`TASKS.md` 3.11) when sample size permits.
+5. Add a reproducible demo/bootstrap dataset for fresh-clone onboarding.
+6. Work through queued model improvements 3–7 in the roadmap above as evidence accumulates.
 
 ## Known risks
 
-- Automation has not passed its next real unattended fire after the S4U change.
 - A fresh clone cannot render every page without rebuilding or restoring local data.
 - Some operational modules have less test coverage than core model/scoring code.
 - Decision outcomes require the user to record whether advice was followed.
