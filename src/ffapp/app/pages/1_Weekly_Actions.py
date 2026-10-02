@@ -11,6 +11,7 @@ import streamlit as st
 
 from ffapp.app.league_selector import select_league
 from ffapp.app.weekly_actions_page import (
+    EMPTY_SPOT,
     build_action_inbox,
     explain_player,
     lineup_decisions,
@@ -216,6 +217,7 @@ inbox = build_action_inbox(
     rankings,
     current_starter_ids,
     waivers,
+    fmt=fmt,
     pipeline_status=pipeline_health.status,
     alerts=alert_rows,
 )
@@ -332,7 +334,11 @@ else:
     for move in lineup_moves.iter_rows(named=True):
         with st.container(border=True):
             title, edge, confidence = st.columns([2.2, 1, 1])
-            title.markdown(f"**Start {move['start']}** over {move['sit']}")
+            title.markdown(
+                f"**Start {move['start']}** in {EMPTY_SPOT}"
+                if move["sit"] is None
+                else f"**Start {move['start']}** over {move['sit']}"
+            )
             edge.metric("Projected edge", f"{float(move['expected_gain']):+.1f}")
             confidence.metric("Confidence", str(move["confidence_label"]))
             st.progress(
@@ -350,6 +356,7 @@ recommendations = decision_ledger.recommendation_rows(
     rankings,
     current_starter_ids,
     waivers,
+    fmt=fmt,
 )
 decision_path = decision_ledger.ledger_path(settings.data_root, league.slug)
 saved = decision_ledger.append_recommendations(decision_path, recommendations)

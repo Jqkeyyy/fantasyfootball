@@ -101,3 +101,66 @@ def test_alerts_capture_new_meaningful_lineup_swap() -> None:
         repeat_lineup_actions=True,
     )
     assert repeated.filter(pl.col("kind") == "lineup_swap").height == 1
+
+
+def test_alerts_never_start_a_rb_over_the_only_te() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 1, "TE": 1},
+        flex_slots={"FLEX": 1, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB", "WR", "TE"]},
+        bench=3,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    current = pl.DataFrame(
+        {
+            "player_id": ["rb1", "rb2", "rb3", "te1"],
+            "player_name": ["RB One", "RB Two", "RB Three", "Only TE"],
+            "position": ["RB", "RB", "RB", "TE"],
+            "mean": [15.0, 6.0, 12.0, 3.0],
+            "p_active": [1.0] * 4,
+            "is_starter": [True, True, False, True],
+            "is_rostered": [True] * 4,
+            "is_my_roster": [True] * 4,
+            "waiver_upgrade": [0.0] * 4,
+        }
+    )
+
+    alerts = build_weekly_alerts(current, None, fmt=fmt)
+
+    messages = alerts.filter(pl.col("kind") == "lineup_swap")["message"].to_list()
+    assert len(messages) == 1
+    assert messages[0].startswith("Start RB Three over RB Two")
+
+
+def test_alerts_flag_an_empty_starting_spot() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 2},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=3,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    current = pl.DataFrame(
+        {
+            "player_id": ["rb1", "rb2"],
+            "player_name": ["RB One", "RB Two"],
+            "position": ["RB", "RB"],
+            "mean": [15.0, 9.0],
+            "p_active": [1.0, 1.0],
+            "is_starter": [True, False],
+            "is_rostered": [True, True],
+            "is_my_roster": [True, True],
+            "waiver_upgrade": [0.0, 0.0],
+        }
+    )
+
+    alerts = build_weekly_alerts(current, None, fmt=fmt)
+
+    message = alerts.filter(pl.col("kind") == "lineup_swap")["message"].item()
+    assert message.startswith("Start RB Two in your empty lineup spot")

@@ -276,11 +276,53 @@ def test_action_inbox_prioritizes_data_and_meaningful_lineup_changes() -> None:
         _rankings(),
         {"rb2", "wr1", "wr2"},
         pl.DataFrame(),
+        fmt=_format(),
         pipeline_status="degraded",
     )
 
     assert result["category"].to_list()[:2] == ["data", "lineup"]
     assert "Start RB One over WR Two" in result["action"].to_list()
+
+
+def test_action_inbox_never_starts_a_rb_over_the_only_te() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 1, "TE": 1},
+        flex_slots={"FLEX": 1, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB", "WR", "TE"]},
+        bench=3,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    ids = ["rb1", "rb2", "rb3", "te1"]
+    points = [15.0, 6.0, 12.0, 3.0]
+    rankings = pl.DataFrame(
+        {
+            "player_id": ids,
+            "player_name": ids,
+            "position": ["RB", "RB", "RB", "TE"],
+            "team": ["A"] * 4,
+            "opponent": ["B"] * 4,
+            "p_active": [1.0] * 4,
+            "proj_mean": points,
+            "floor": [p - 3 for p in points],
+            "median": points,
+            "ceiling": [p + 3 for p in points],
+        }
+    )
+    # te1 is the lowest-projected starter, but it is the only TE -- benched
+    # rb3 can only replace the RB in FLEX.
+    current = {"rb1", "rb2", "te1"}
+    lineup = recommended_lineup(rankings, set(ids), current, fmt)
+
+    result = build_action_inbox(
+        lineup, rankings, current, pl.DataFrame(), fmt=fmt, pipeline_status="healthy"
+    )
+
+    assert result.filter(pl.col("category") == "lineup")["action"].to_list() == [
+        "Start rb3 over rb2"
+    ]
 
 
 def test_lineup_decisions_never_pair_an_illegal_cross_position_swap() -> None:
@@ -319,3 +361,45 @@ def test_lineup_decisions_never_pair_an_illegal_cross_position_swap() -> None:
 
     pairs = {(row["start"], row["sit"]) for row in result.iter_rows(named=True)}
     assert pairs == {("rb5", "rb4"), ("wr3", "wr2")}
+
+
+def test_action_inbox_and_moves_fill_an_empty_starting_spot() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 2, "WR": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=3,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+    ids = ["rb1", "rb2", "wr1"]
+    points = [15.0, 9.0, 12.0]
+    rankings = pl.DataFrame(
+        {
+            "player_id": ids,
+            "player_name": ["RB One", "RB Two", "WR One"],
+            "position": ["RB", "RB", "WR"],
+            "team": ["A"] * 3,
+            "opponent": ["B"] * 3,
+            "p_active": [1.0] * 3,
+            "proj_mean": points,
+            "floor": [p - 3 for p in points],
+            "median": points,
+            "ceiling": [p + 3 for p in points],
+        }
+    )
+    current = {"rb1", "wr1"}  # second RB slot left empty
+    lineup = recommended_lineup(rankings, set(ids), current, fmt)
+
+    inbox = build_action_inbox(
+        lineup, rankings, current, pl.DataFrame(), fmt=fmt, pipeline_status="healthy"
+    )
+    moves = lineup_decisions(lineup, rankings, current, fmt)
+
+    assert inbox.filter(pl.col("category") == "lineup")["action"].to_list() == [
+        "Start RB Two in your empty lineup spot"
+    ]
+    move = moves.row(0, named=True)
+    assert (move["start"], move["sit"], move["expected_gain"]) == ("RB Two", None, 9.0)

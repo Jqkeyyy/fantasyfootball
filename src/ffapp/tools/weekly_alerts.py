@@ -8,13 +8,14 @@ from pathlib import Path
 
 import polars as pl
 
+from ffapp.app.weekly_actions_page import swap_action
 from ffapp.app.weekly_rankings_page import UNAVAILABLE_STATUSES
 from ffapp.config import LeagueConfig, Settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.ids import mapping
 from ffapp.ingest import nflverse, sleeper
 from ffapp.league_format import LeagueFormat, parse_league_format
-from ffapp.sim.lineup import PlayerProjection, optimal_lineup
+from ffapp.sim.lineup import PlayerProjection, legal_swap_pairs, optimal_lineup
 from ffapp.tools.artifacts import atomic_write_json, atomic_write_parquet
 
 _PROJECTION_CHANGE = 3.0
@@ -41,7 +42,7 @@ def _supported_format(fmt: LeagueFormat, positions: set[str]) -> LeagueFormat:
 
 def _lineup_swaps(
     snapshot: pl.DataFrame, fmt: LeagueFormat
-) -> list[tuple[dict[str, object], dict[str, object], float]]:
+) -> list[tuple[dict[str, object], dict[str, object] | None, float]]:
     if "is_my_roster" not in snapshot.columns:
         return []
     roster = snapshot.filter(pl.col("is_my_roster") & pl.col("mean").is_not_null())
@@ -69,9 +70,16 @@ def _lineup_swaps(
         recommended - current, key=lambda player: float(by_id[player]["mean"]), reverse=True
     )
     outgoing = sorted(current - recommended, key=lambda player: float(by_id[player]["mean"]))
+    positions = {
+        player_id: str(by_id[player_id]["position"]) for player_id in current | recommended
+    }
     return [
-        (by_id[start], by_id[sit], float(by_id[start]["mean"]) - float(by_id[sit]["mean"]))
-        for start, sit in zip(incoming, outgoing, strict=False)
+        (
+            by_id[start],
+            None if sit is None else by_id[sit],
+            float(by_id[start]["mean"]) - (0.0 if sit is None else float(by_id[sit]["mean"])),
+        )
+        for start, sit in legal_swap_pairs(incoming, outgoing, positions, supported)
     ]
 
 
@@ -175,13 +183,14 @@ def build_weekly_alerts(
             set()
             if repeat_lineup_actions
             else {
-                (str(start["player_id"]), str(sit["player_id"]))
+                (str(start["player_id"]), "" if sit is None else str(sit["player_id"]))
                 for start, sit, gain in _lineup_swaps(prior, fmt)
                 if gain >= _LINEUP_GAIN
             }
         )
         for start, sit, gain in _lineup_swaps(current, fmt):
-            pair = (str(start["player_id"]), str(sit["player_id"]))
+            pair = (str(start["player_id"]), "" if sit is None else str(sit["player_id"]))
+            action = swap_action(start["player_name"], None if sit is None else sit["player_name"])
             if gain < _LINEUP_GAIN or pair in previous_pairs:
                 continue
             raw_active = start.get("p_active")
@@ -192,10 +201,7 @@ def build_weekly_alerts(
                     "kind": "lineup_swap",
                     "player_id": str(start["player_id"]),
                     "player_name": start["player_name"],
-                    "message": (
-                        f"Start {start['player_name']} over {sit['player_name']} "
-                        f"for a projected {gain:+.1f}-point gain."
-                    ),
+                    "message": (f"{action} for a projected {gain:+.1f}-point gain."),
                     "magnitude": gain,
                     "priority": "NOW",
                     "confidence": confidence,
@@ -375,9 +381,7 @@ def enrich_alerts_with_movements(
                 .drop_nulls()
                 .iter_rows(named=True)
             }
-    movement_by_id = {
-        str(row["player_id"]): row for row in movements.iter_rows(named=True)
-    }
+    movement_by_id = {str(row["player_id"]): row for row in movements.iter_rows(named=True)}
     changed = 0
     alerted_ids: set[str] = set()
     for alert in alerts:

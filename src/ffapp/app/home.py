@@ -76,10 +76,16 @@ def home_data(slug: str) -> dict[str, Any]:
     for raw_pos, player_id in zip(positions, starters, strict=False):
         pos = "DST" if raw_pos == "DEF" else raw_pos
         counts[pos] = counts.get(pos, 0) + 1
-        current = by_id.get(player_id)
+        # An empty slot (Sleeper's "0") scores nothing, so any eligible bench
+        # player is an upgrade over it.
+        current = (
+            {"player_name": "your empty spot", "proj_mean": 0.0, "team": None}
+            if player_id is None
+            else by_id.get(player_id)
+        )
         if not current or current.get("proj_mean") is None:
             continue
-        if kickoff.get(current.get("team"), now) <= now:
+        if current.get("team") and kickoff.get(current.get("team"), now) <= now:
             continue
         for candidate_id in bench:
             candidate = by_id.get(candidate_id)
@@ -98,7 +104,8 @@ def home_data(slug: str) -> dict[str, Any]:
                         "sit": current["player_name"],
                         "gain": gain,
                         "incoming": candidate_id,
-                        "outgoing": player_id,
+                        "outgoing": player_id or f"empty:{pos}_{counts[pos]}",
+                        "empty": player_id is None,
                     }
                 )
     chosen = []
@@ -220,7 +227,11 @@ def render_home(slug: str) -> None:
     st.subheader("Lineup moves to consider")
     for swap in data["swaps"]:
         with st.container(border=True):
-            st.markdown(f"**{swap['start']}** over {swap['sit']}")
+            st.markdown(
+                f"**{swap['start']}** into {swap['sit']}"
+                if swap.get("empty")
+                else f"**{swap['start']}** over {swap['sit']}"
+            )
             st.caption(f"Projected gain: +{swap['gain']:.1f} points · both games have not started")
     if not data["swaps"]:
         st.info("No direct swap worth at least one projected point among your unlocked players.")

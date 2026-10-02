@@ -14,6 +14,8 @@ from pathlib import Path
 
 import polars as pl
 
+from ffapp.app.weekly_actions_page import lineup_swap_rows, swap_action
+from ffapp.league_format import LeagueFormat
 from ffapp.tools.artifacts import atomic_write_parquet
 
 LEDGER_SCHEMA = {
@@ -73,34 +75,28 @@ def recommendation_rows(
     current_starter_ids: set[str],
     waivers: pl.DataFrame,
     *,
+    fmt: LeagueFormat,
     now: datetime | None = None,
 ) -> pl.DataFrame:
     """Create stable lineup-swap and waiver recommendation rows."""
     created_at = (now or datetime.now(UTC)).isoformat()
-    recommended_ids = set(lineup["player_id"].to_list()) if not lineup.is_empty() else set()
-    incoming = lineup.filter(~pl.col("player_id").is_in(list(current_starter_ids))).sort(
-        "projected_points", descending=True
-    )
-    outgoing = rankings.filter(
-        pl.col("player_id").is_in(list(current_starter_ids - recommended_ids))
-    ).sort("proj_mean")
     rows: list[dict[str, object]] = []
-    for add, drop in zip(
-        incoming.iter_rows(named=True), outgoing.iter_rows(named=True), strict=False
-    ):
+    for add, drop in lineup_swap_rows(lineup, rankings, current_starter_ids, fmt):
         add_points = float(add["projected_points"])
-        drop_points = float(drop["proj_mean"])
+        drop_points = 0.0 if drop is None else float(drop["proj_mean"] or 0.0)
         spread = max(0.0, float(add["ceiling"]) - float(add["floor"]))
         row: dict[str, object] = {
             "league_slug": league_slug,
             "season": season,
             "week": week,
             "decision_type": "lineup",
-            "recommended_action": f"Start {add['player_name']} over {drop['player_name']}",
+            "recommended_action": swap_action(
+                add["player_name"], None if drop is None else drop["player_name"]
+            ),
             "subject_player_id": str(add["player_id"]),
             "subject_player_name": str(add["player_name"]),
-            "alternative_player_id": str(drop["player_id"]),
-            "alternative_player_name": str(drop["player_name"]),
+            "alternative_player_id": None if drop is None else str(drop["player_id"]),
+            "alternative_player_name": None if drop is None else str(drop["player_name"]),
             "expected_delta": add_points - drop_points,
             "confidence": max(0.0, min(1.0, 1.0 - spread / max(1.0, add_points * 4.0))),
             "status": "recommended",
@@ -192,9 +188,7 @@ def settle_outcomes(
     if not required.issubset(actuals.columns):
         raise ValueError(f"actuals must contain {sorted(required)}")
     points = {
-        (int(row["season"]), int(row["week"]), str(row["player_id"])): float(
-            row["actual_points"]
-        )
+        (int(row["season"]), int(row["week"]), str(row["player_id"])): float(row["actual_points"])
         for row in actuals.drop_nulls("actual_points").iter_rows(named=True)
     }
     settled_at = (now or datetime.now(UTC)).isoformat()
@@ -216,9 +210,7 @@ def settle_outcomes(
                     "alternative_actual_points": alternative,
                     "realized_delta": realized,
                     "decision_regret": (
-                        max(0.0, -chosen_delta)
-                        if status in {"accepted", "rejected"}
-                        else None
+                        max(0.0, -chosen_delta) if status in {"accepted", "rejected"} else None
                     ),
                     "settled_at_utc": settled_at,
                 }

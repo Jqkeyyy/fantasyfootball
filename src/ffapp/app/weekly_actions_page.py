@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from typing import Any
 
 import polars as pl
 
@@ -15,9 +16,9 @@ from ffapp.league_format import LeagueFormat
 from ffapp.projections.aggregate import add_join_key
 from ffapp.sim.lineup import (
     PlayerProjection,
+    legal_swap_pairs,
     optimal_lineup,
     optimal_lineup_points,
-    slot_instances,
 )
 from ffapp.sim.season import SimPlayer
 from ffapp.tools.waivers import build_waiver_board, value_added
@@ -117,22 +118,20 @@ def explain_player(row: dict[str, object]) -> list[str]:
     return explanations
 
 
-def _fills_slots(positions: list[str], slots: list[list[str]]) -> bool:
-    """Whether every player can occupy a distinct slot that accepts their position."""
-    owner: list[int | None] = [None] * len(slots)
+EMPTY_SPOT = "your empty lineup spot"
 
-    def place(player: int, seen: set[int]) -> bool:
-        for slot, eligible in enumerate(slots):
-            if positions[player] not in eligible or slot in seen:
-                continue
-            seen.add(slot)
-            holder = owner[slot]
-            if holder is None or place(holder, seen):
-                owner[slot] = player
-                return True
-        return False
 
-    return all(place(player, set()) for player in range(len(positions)))
+def swap_action(start_name: object, sit_name: object | None) -> str:
+    """Plain-language start/sit instruction; `None` means filling an empty slot."""
+    if sit_name is None:
+        return f"Start {start_name} in {EMPTY_SPOT}"
+    return f"Start {start_name} over {sit_name}"
+
+
+def _projection(row: dict[str, Any] | None) -> float:
+    """A ranked row's projection, with an empty slot or missing projection as 0."""
+    value = None if row is None else row.get("proj_mean")
+    return float(value) if isinstance(value, int | float) else 0.0
 
 
 def lineup_decisions(
@@ -145,55 +144,25 @@ def lineup_decisions(
     now: datetime | None = None,
 ) -> pl.DataFrame:
     """Pair optimizer changes into actionable, unlocked start/sit decisions."""
-    if lineup.is_empty():
-        return pl.DataFrame(schema=LINEUP_DECISION_SCHEMA)
     current_time = now or datetime.now(UTC)
     kickoffs = kickoff_by_team or {}
     by_id = {str(row["player_id"]): row for row in rankings.iter_rows(named=True)}
-    recommended = set(lineup["player_id"].to_list())
-    outgoing_ids = current_starter_ids - recommended
-    unused_outgoing = set(outgoing_ids)
-    # Each suggested swap must leave a legal lineup on its own, so a RB is
-    # never paired against a WR unless a flex slot can absorb the change.
-    supported = projection_supported_format(fmt, set(rankings["position"].unique().to_list()))
-    slots = [eligible for _, eligible in slot_instances(supported)]
-    starting = {player_id for player_id in current_starter_ids if player_id in by_id}
-
-    def legal_after(incoming_id: str, outgoing_id: str) -> bool:
-        ids = (starting - {outgoing_id}) | {incoming_id}
-        return _fills_slots([str(by_id[player_id]["position"]) for player_id in ids], slots)
-
     rows: list[dict[str, object]] = []
-    incoming_rows = lineup.filter(~pl.col("currently_starting")).sort(
-        "projected_points", descending=True
-    )
-    for incoming in incoming_rows.iter_rows(named=True):
-        incoming_id = str(incoming["player_id"])
-        incoming_rank = by_id.get(incoming_id)
-        if incoming_rank is None:
-            continue
-        candidates = [
-            by_id[player_id]
-            for player_id in unused_outgoing
-            if player_id in by_id and legal_after(incoming_id, player_id)
-        ]
-        if not candidates:
-            continue
-        outgoing = min(candidates, key=lambda row: _number(row["proj_mean"]))
-        outgoing_id = str(outgoing["player_id"])
+    for incoming, outgoing in lineup_swap_rows(lineup, rankings, current_starter_ids, fmt):
+        incoming_rank = by_id[str(incoming["player_id"])]
         incoming_kickoff = kickoffs.get(str(incoming_rank.get("team")))
-        outgoing_kickoff = kickoffs.get(str(outgoing.get("team")))
+        outgoing_kickoff = None if outgoing is None else kickoffs.get(str(outgoing.get("team")))
         if any(
             stamp is not None and stamp <= current_time
             for stamp in (incoming_kickoff, outgoing_kickoff)
         ):
             continue
-        gain = _number(incoming_rank["proj_mean"]) - _number(outgoing["proj_mean"])
+        gain = _projection(incoming_rank) - _projection(outgoing)
         if gain <= 0:
             continue
         p_active = min(
             _number(incoming_rank.get("p_active") or 0.0),
-            _number(outgoing.get("p_active") or 0.0),
+            1.0 if outgoing is None else _number(outgoing.get("p_active") or 0.0),
         )
         floor = _number(incoming_rank["floor"])
         ceiling = _number(incoming_rank["ceiling"])
@@ -207,44 +176,86 @@ def lineup_decisions(
             (stamp for stamp in (incoming_kickoff, outgoing_kickoff) if stamp is not None),
             default=None,
         )
-        reshuffle = (
-            f" {incoming_rank['player_name']} goes in a FLEX spot; if "
-            f"{outgoing['player_name']} isn't the one in FLEX, slide your FLEX "
-            f"{outgoing['position']} into {outgoing['player_name']}'s {outgoing['position']} spot."
-            if incoming_rank["position"] != outgoing["position"]
-            else ""
-        )
+        if outgoing is None:
+            why = (
+                f"A starting spot is empty, so {incoming_rank['player_name']} adds "
+                f"{_projection(incoming_rank):.1f} projected points."
+            )
+        else:
+            reshuffle = (
+                f" {incoming_rank['player_name']} goes in a FLEX spot; if "
+                f"{outgoing['player_name']} isn't the one in FLEX, slide your FLEX "
+                f"{outgoing['position']} into {outgoing['player_name']}'s "
+                f"{outgoing['position']} spot."
+                if incoming_rank["position"] != outgoing["position"]
+                else ""
+            )
+            why = (
+                f"{_projection(incoming_rank):.1f} vs {_projection(outgoing):.1f} projected "
+                f"points; {p_active:.0%} minimum availability.{reshuffle}"
+            )
         rows.append(
             {
                 "slot": incoming["slot"],
                 "start": incoming_rank["player_name"],
-                "sit": outgoing["player_name"],
+                "sit": None if outgoing is None else outgoing["player_name"],
                 "expected_gain": gain,
                 "start_floor": floor,
-                "sit_floor": outgoing["floor"],
+                "sit_floor": 0.0 if outgoing is None else outgoing["floor"],
                 "start_ceiling": ceiling,
-                "sit_ceiling": outgoing["ceiling"],
+                "sit_ceiling": 0.0 if outgoing is None else outgoing["ceiling"],
                 "confidence": confidence,
                 "confidence_label": label,
                 "lock_time": lock.isoformat() if lock is not None else "Unknown",
-                "why": (
-                    f"{_number(incoming_rank['proj_mean']):.1f} vs "
-                    f"{_number(outgoing['proj_mean']):.1f} projected points; "
-                    f"{p_active:.0%} minimum availability.{reshuffle}"
-                ),
+                "why": why,
                 "risk": (
                     f"Recommended player's range is {floor:.1f}-{ceiling:.1f}; "
                     f"the edge is {gain:+.1f}."
                 ),
             }
         )
-        unused_outgoing.remove(outgoing_id)
-        starting = (starting - {outgoing_id}) | {incoming_id}
     return (
         pl.DataFrame(rows, schema=LINEUP_DECISION_SCHEMA).sort("expected_gain", descending=True)
         if rows
         else pl.DataFrame(schema=LINEUP_DECISION_SCHEMA)
     )
+
+
+def lineup_swap_rows(
+    lineup: pl.DataFrame,
+    rankings: pl.DataFrame,
+    current_starter_ids: set[str],
+    fmt: LeagueFormat,
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """(recommended lineup row, ranked row to sit) pairs, each a legal swap.
+
+    The sit side is `None` when the recommended player fills an empty slot.
+    """
+    if lineup.is_empty():
+        return []
+    supported = projection_supported_format(fmt, set(rankings["position"].unique().to_list()))
+    by_id = {str(row["player_id"]): row for row in rankings.iter_rows(named=True)}
+    adds = {
+        str(row["player_id"]): row
+        for row in lineup.filter(~pl.col("player_id").is_in(list(current_starter_ids)))
+        .sort("projected_points", descending=True)
+        .iter_rows(named=True)
+        if str(row["player_id"]) in by_id
+    }
+    recommended = set(lineup["player_id"].to_list())
+    sits = sorted(
+        (player_id for player_id in current_starter_ids - recommended if player_id in by_id),
+        key=lambda player_id: _projection(by_id[player_id]),
+    )
+    positions = {
+        player_id: str(by_id[player_id]["position"])
+        for player_id in current_starter_ids | set(adds)
+        if player_id in by_id
+    }
+    return [
+        (adds[start], None if sit is None else by_id[sit])
+        for start, sit in legal_swap_pairs(list(adds), sits, positions, supported)
+    ]
 
 
 def projection_supported_format(fmt: LeagueFormat, positions: set[str]) -> LeagueFormat:
@@ -379,6 +390,7 @@ def build_action_inbox(
     current_starter_ids: set[str],
     waivers: pl.DataFrame,
     *,
+    fmt: LeagueFormat,
     pipeline_status: str,
     alerts: list[dict[str, object]] | None = None,
 ) -> pl.DataFrame:
@@ -397,17 +409,8 @@ def build_action_inbox(
                 "risk": "Inputs may be stale or incomplete until the next healthy refresh.",
             }
         )
-    recommended_ids = set(lineup["player_id"].to_list()) if not lineup.is_empty() else set()
-    incoming = lineup.filter(~pl.col("player_id").is_in(list(current_starter_ids))).sort(
-        "projected_points", descending=True
-    )
-    outgoing = rankings.filter(
-        pl.col("player_id").is_in(list(current_starter_ids - recommended_ids))
-    ).sort("proj_mean")
-    for add, drop in zip(
-        incoming.iter_rows(named=True), outgoing.iter_rows(named=True), strict=False
-    ):
-        gain = float(add["projected_points"]) - float(drop["proj_mean"])
+    for add, drop in lineup_swap_rows(lineup, rankings, current_starter_ids, fmt):
+        gain = float(add["projected_points"]) - _projection(drop)
         spread = max(0.0, float(add["ceiling"]) - float(add["floor"]))
         confidence = max(
             0.0,
@@ -420,12 +423,14 @@ def build_action_inbox(
             {
                 "priority": "NOW" if gain >= 2.0 else "WATCH",
                 "category": "lineup",
-                "action": f"Start {add['player_name']} over {drop['player_name']}",
+                "action": swap_action(
+                    add["player_name"], None if drop is None else drop["player_name"]
+                ),
                 "expected_gain": gain,
                 "confidence": confidence,
                 "confidence_label": confidence_label,
                 "evidence": (
-                    f"{float(add['projected_points']):.1f} vs {float(drop['proj_mean']):.1f} "
+                    f"{float(add['projected_points']):.1f} vs {_projection(drop):.1f} "
                     f"projected points; {float(add['floor']):.1f}-{float(add['ceiling']):.1f} "
                     "range for the recommended starter."
                 ),
@@ -727,6 +732,9 @@ def streaming_recommendations(
 
 
 __all__ = [
+    "EMPTY_SPOT",
+    "lineup_swap_rows",
+    "swap_action",
     "build_action_inbox",
     "explain_player",
     "player_projections",

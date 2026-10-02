@@ -30,6 +30,7 @@ rather than sanitising ids per call.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -159,10 +160,79 @@ def optimal_lineup_points(actual_points: list[PlayerProjection], fmt: LeagueForm
     return optimal_lineup(actual_points, fmt).total_points
 
 
+def fills_slots(positions: Sequence[str], fmt: LeagueFormat) -> bool:
+    """Whether these starters can each occupy a distinct slot that accepts their
+    position -- a bipartite matching by augmenting paths."""
+    slots = [eligible for _, eligible in slot_instances(fmt)]
+    owner: list[int | None] = [None] * len(slots)
+
+    def place(player: int, seen: set[int]) -> bool:
+        for slot, eligible in enumerate(slots):
+            if positions[player] not in eligible or slot in seen:
+                continue
+            seen.add(slot)
+            holder = owner[slot]
+            if holder is None or place(holder, seen):
+                owner[slot] = player
+                return True
+        return False
+
+    return all(place(player, set()) for player in range(len(positions)))
+
+
+def legal_swap_pairs(
+    incoming: Sequence[str],
+    outgoing: Sequence[str],
+    starters: Mapping[str, str],
+    fmt: LeagueFormat,
+) -> list[tuple[str, str | None]]:
+    """Pair optimizer changes into start/sit swaps that each leave a legal lineup.
+
+    `incoming` is in priority order (best first), `outgoing` in sit-first order
+    (weakest first), and `starters` maps every current starter -- plus each
+    incoming player -- to its position. A naive zip of the two lists can tell
+    a manager to start a RB over their only TE; this only pairs a swap when
+    the resulting starters still fill every slot (a cross-position swap is
+    legal exactly when a flex spot can absorb it). Starters at positions this
+    format doesn't model (e.g. K when only skill slots are optimised) are
+    ignored rather than making every swap look illegal.
+
+    An incoming player who can fill a currently empty slot is paired with
+    `None` (nobody needs to sit) before any real starter is benched for them.
+    """
+    slot_count = len(slot_instances(fmt))
+    modelled = {position for _, eligible in slot_instances(fmt) for position in eligible}
+    lineup = {
+        player_id
+        for player_id, position in starters.items()
+        if position in modelled and player_id not in incoming
+    }
+    remaining = list(outgoing)
+    pairs: list[tuple[str, str | None]] = []
+    for start in incoming:
+        filled = lineup | {start}
+        if len(lineup) < slot_count and fills_slots(
+            [starters[player_id] for player_id in filled], fmt
+        ):
+            pairs.append((start, None))
+            lineup = filled
+            continue
+        for sit in remaining:
+            after = (lineup - {sit}) | {start}
+            if fills_slots([starters[player_id] for player_id in after], fmt):
+                pairs.append((start, sit))
+                remaining.remove(sit)
+                lineup = after
+                break
+    return pairs
+
+
 __all__ = [
     "Lineup",
     "Objective",
     "PlayerProjection",
+    "fills_slots",
+    "legal_swap_pairs",
     "optimal_lineup",
     "optimal_lineup_points",
     "slot_instances",

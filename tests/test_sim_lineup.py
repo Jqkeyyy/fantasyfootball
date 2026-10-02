@@ -8,7 +8,14 @@ hand-verified optimum, not just that it runs without crashing.
 from __future__ import annotations
 
 from ffapp.league_format import LeagueFormat
-from ffapp.sim.lineup import Lineup, PlayerProjection, optimal_lineup, optimal_lineup_points
+from ffapp.sim.lineup import (
+    Lineup,
+    PlayerProjection,
+    fills_slots,
+    legal_swap_pairs,
+    optimal_lineup,
+    optimal_lineup_points,
+)
 
 # --- fixtures ---------------------------------------------------------------------
 
@@ -200,3 +207,82 @@ def test_lineup_is_a_plain_dataclass_with_slots_and_total_points() -> None:
 
     assert lineup.slots == {"RB_1": "rb1"}
     assert lineup.total_points == 20.0
+
+
+def _te_format() -> LeagueFormat:
+    return LeagueFormat(
+        n_teams=2,
+        starters={"QB": 1, "RB": 2, "WR": 2, "TE": 1},
+        flex_slots={"FLEX": 2, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={"FLEX": ["RB", "WR", "TE"]},
+        bench=6,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+
+
+def test_fills_slots_respects_position_eligibility() -> None:
+    fmt = _te_format()
+
+    assert fills_slots(["QB", "RB", "RB", "WR", "WR", "TE", "RB", "TE"], fmt)
+    assert not fills_slots(["QB", "RB", "RB", "WR", "WR", "RB", "RB", "RB"], fmt)
+
+
+def test_legal_swap_pairs_skips_the_only_te_and_uses_flex_when_it_can() -> None:
+    fmt = _te_format()
+    starters = {
+        "qb": "QB",
+        "rb1": "RB",
+        "rb2": "RB",
+        "wr1": "WR",
+        "wr2": "WR",
+        "te1": "TE",
+        "rb3": "RB",
+        "wr3": "WR",
+        "rb_bench": "RB",
+    }
+
+    # te1 is the weakest starter, but the only TE -- the RB must replace a
+    # flex-eligible starter instead.
+    pairs = legal_swap_pairs(["rb_bench"], ["te1", "wr3"], starters, fmt)
+
+    assert pairs == [("rb_bench", "wr3")]
+    assert legal_swap_pairs(["rb_bench"], ["te1"], starters, fmt) == []
+
+
+def test_legal_swap_pairs_ignores_positions_the_format_does_not_model() -> None:
+    fmt = LeagueFormat(
+        n_teams=2,
+        starters={"RB": 1},
+        flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+        flex_eligible={},
+        bench=2,
+        ir=0,
+        playoff_week_start=15,
+        waiver_budget=100,
+    )
+
+    pairs = legal_swap_pairs(["rb2"], ["rb1"], {"rb1": "RB", "rb2": "RB", "k": "K"}, fmt)
+
+    assert pairs == [("rb2", "rb1")]
+
+
+def test_legal_swap_pairs_fills_an_empty_slot_before_benching_anyone() -> None:
+    fmt = _te_format()
+    # Second RB slot is empty (seven starters for eight slots).
+    starters = {
+        "qb": "QB",
+        "rb1": "RB",
+        "wr1": "WR",
+        "wr2": "WR",
+        "te1": "TE",
+        "wr3": "WR",
+        "wr4": "WR",
+        "rb_bench": "RB",
+        "te_bench": "TE",
+    }
+
+    pairs = legal_swap_pairs(["rb_bench", "te_bench"], ["wr4"], starters, fmt)
+
+    assert pairs == [("rb_bench", None), ("te_bench", "wr4")]

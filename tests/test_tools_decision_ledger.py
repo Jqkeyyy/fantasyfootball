@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
+from ffapp.league_format import LeagueFormat
 from ffapp.tools.decision_ledger import (
     append_recommendations,
     decision_summary,
@@ -26,9 +27,10 @@ def _recommendations() -> pl.DataFrame:
     )
     rankings = pl.DataFrame(
         {
-            "player_id": ["drop"],
-            "player_name": ["Bench Me"],
-            "proj_mean": [10.0],
+            "player_id": ["add", "drop"],
+            "player_name": ["Add Me", "Bench Me"],
+            "position": ["RB", "RB"],
+            "proj_mean": [14.0, 10.0],
         }
     )
     return recommendation_rows(
@@ -39,8 +41,21 @@ def _recommendations() -> pl.DataFrame:
         rankings,
         {"drop"},
         pl.DataFrame(),
+        fmt=_FORMAT,
         now=datetime(2026, 9, 20, tzinfo=UTC),
     )
+
+
+_FORMAT = LeagueFormat(
+    n_teams=2,
+    starters={"RB": 1},
+    flex_slots={"FLEX": 0, "SUPER_FLEX": 0, "REC_FLEX": 0},
+    flex_eligible={},
+    bench=3,
+    ir=0,
+    playoff_week_start=15,
+    waiver_budget=100,
+)
 
 
 def test_recommendations_are_idempotent_and_choices_are_preserved(tmp_path: Path) -> None:
