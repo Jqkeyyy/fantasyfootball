@@ -28,6 +28,42 @@ For authoritative shipping status, model evidence, operational risks, and next p
 - [Known limitations](#known-limitations)
 - [License](#license)
 
+## Public portfolio demo
+
+The isolated public showcase lives in `portfolio/app.py`. It includes fictional
+players and precomputed sample projections, interactive rankings, a start/sit
+comparison, and a starting-lineup-aware trade explorer. It never loads private
+league configuration, `.env`, local data artifacts, or refresh/notification code.
+It uses simplified calculations, not the full trained models or season simulator.
+
+Run it locally from the repository root:
+
+```powershell
+uv run streamlit run portfolio/app.py
+```
+
+To host it on [Streamlit Community Cloud](https://share.streamlit.io/):
+
+1. Push `portfolio/` and this README to your GitHub repository.
+2. Create an app, choose your repository and branch, and enter
+   `portfolio/app.py` as the main file path.
+3. In advanced settings select Python 3.11. No secrets or API keys are required.
+4. Deploy and test all four views, then add the public URL to your portfolio
+   alongside the GitHub source link. Choose a memorable available subdomain.
+
+The `portfolio/requirements.txt` file takes precedence over the repository-root
+lockfile on Community Cloud, keeping the demo's installation lightweight.
+See [Streamlit dependency discovery](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
+Deploy this entry point, not the private dashboard under `src/ffapp/app/`.
+The demo needs no scheduled jobs, external data downloads, or persistent disk.
+
+Suggested portfolio description:
+
+> A Python fantasy football decision-support platform combining league-specific
+> scoring, data pipelines, probabilistic projections, and lineup-aware analysis.
+> Explore the interactive sample demo or inspect the full modeling and evaluation
+> code on GitHub.
+
 ## What it does
 
 ### Draft preparation
