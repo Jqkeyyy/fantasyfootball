@@ -5,6 +5,41 @@ from __future__ import annotations
 import polars as pl
 
 
+def miss_category(signal: object) -> str:
+    """Map a review clue to a plain-language reason a projection missed."""
+    text = str(signal or "")
+    if "Usage changed" in text:
+        return "Role / opportunity changed"
+    if "Efficiency changed" in text:
+        return "Efficiency moved"
+    if "Multiple touchdowns" in text:
+        return "Touchdown-heavy result"
+    return "Unexplained game variance"
+
+
+def miss_category_summary(review: pl.DataFrame, *, min_error: float = 5.0) -> pl.DataFrame:
+    """Count scored misses of at least ``min_error`` points by likely reason."""
+    if review.is_empty():
+        return pl.DataFrame()
+    misses = review.filter((pl.col("status") == "Scored") & (pl.col("absolute_error") >= min_error))
+    if misses.is_empty():
+        return pl.DataFrame()
+    return (
+        misses.with_columns(
+            pl.col("signal").map_elements(miss_category, return_dtype=pl.String).alias("reason"),
+            pl.when(pl.col("error") > 0).then(1).otherwise(0).alias("_high"),
+        )
+        .group_by("reason")
+        .agg(
+            pl.len().alias("misses"),
+            pl.col("absolute_error").mean().alias("average_miss"),
+            pl.col("_high").sum().alias("too_high"),
+        )
+        .with_columns((pl.col("misses") - pl.col("too_high")).alias("too_low"))
+        .sort("misses", descending=True)
+    )
+
+
 def model_miss_autopsy(review: pl.DataFrame, *, limit: int = 15) -> pl.DataFrame:
     """Rank non-injury misses and attach cautious evidence-based explanations."""
     if review.is_empty():
@@ -12,15 +47,7 @@ def model_miss_autopsy(review: pl.DataFrame, *, limit: int = 15) -> pl.DataFrame
     scored = review.filter(pl.col("status") == "Scored").sort("absolute_error", descending=True)
     rows = []
     for row in scored.head(limit).iter_rows(named=True):
-        signal = str(row.get("signal") or "No clear signal")
-        if "Usage changed" in signal:
-            category = "Role / opportunity changed"
-        elif "Efficiency changed" in signal:
-            category = "Efficiency moved"
-        elif "Multiple touchdowns" in signal:
-            category = "Touchdown-heavy result"
-        else:
-            category = "Unexplained game variance"
+        category = miss_category(row.get("signal"))
         rows.append(
             {
                 "player": row.get("player"),
@@ -99,4 +126,4 @@ def decision_autopsy(
     return pl.DataFrame(rows)
 
 
-__all__ = ["decision_autopsy", "model_miss_autopsy"]
+__all__ = ["decision_autopsy", "miss_category", "miss_category_summary", "model_miss_autopsy"]

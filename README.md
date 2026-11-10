@@ -316,7 +316,8 @@ source or change production weights.
 Open **Weekly Report** in the dashboard menu to compare saved pregame predictions
 with actual results for each league and week. The report shows average absolute
 error, bias, position breakdowns, interval coverage, same-sample baseline error,
-and game-stat clues behind misses. It updates as the scheduled refresh backfills
+game-stat clues behind misses, a likely-reason breakdown, and how your
+recorded lineup choices turned out. It updates as the scheduled refresh backfills
 actual points. Weeks without real outcomes or verified pregame snapshots are
 listed as unavailable rather than assigned a score.
 
@@ -375,8 +376,9 @@ roster needs before running the full season simulation. **Trade Finder** searche
 2-for-1, and 1-for-2 packages across every roster, measures each side's lineup change over
 the remaining schedule, and can run the full playoff simulation on a selected result.
 
-After games finish, **Postgame Review** compares forecasts and recorded choices with actual
-results. Confirmed injuries are excluded from accuracy and decision value. The live ESPN,
+After games finish, **Weekly Report** also explains the biggest misses by likely reason and
+shows whether your recorded choices helped. Confirmed injuries are excluded from accuracy and
+decision value. The live ESPN,
 FantasyPros consensus, and trailing-performance sources earn position-specific blend weights
 after at least four completed weeks and 60 scored player-weeks; no source can exceed 70%.
 
@@ -619,7 +621,6 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
 | **Trade Finder** | Ranked 1-for-1 and uneven packages across every roster, with lineup gain, partner gain, fairness, and optional playoff simulation. | ROS projections plus cached Sleeper rosters. |
 | **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
-| **Postgame Review** | Completed-week decision outcomes and categorized model misses with confirmed injuries excluded. | Prediction logs, weekly actuals/usage, and the decision ledger. |
 | **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
 | **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
 | **Operations** | League refresh health, upstream source age, host disk/app status, schedules, and manual refresh controls. | Refresh manifests, cache metadata, and local host state. |

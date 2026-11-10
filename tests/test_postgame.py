@@ -1,6 +1,11 @@
 import polars as pl
 
-from ffapp.evaluation.postgame import decision_autopsy, model_miss_autopsy
+from ffapp.evaluation.postgame import (
+    decision_autopsy,
+    miss_category,
+    miss_category_summary,
+    model_miss_autopsy,
+)
 
 
 def _review(status: str = "Scored") -> pl.DataFrame:
@@ -46,3 +51,18 @@ def test_decision_autopsy_measures_recorded_choice_and_excludes_injury() -> None
     excluded = decision_autopsy(ledger, _review("Injury excluded"), season=2026, week=2)
     assert excluded["outcome"].item() == "Injury excluded"
     assert excluded["counted"].item() is False
+
+
+def test_miss_category_maps_clues_and_defaults_to_variance() -> None:
+    assert miss_category("Efficiency changed: 4.1 vs 8.0 ypt") == "Efficiency moved"
+    assert miss_category(None) == "Unexplained game variance"
+
+
+def test_miss_category_summary_counts_direction_and_skips_small_or_excluded() -> None:
+    review = _review()
+    result = miss_category_summary(review)
+    by_reason = {row["reason"]: row for row in result.iter_rows(named=True)}
+    assert by_reason["Role / opportunity changed"]["too_high"] == 1
+    assert by_reason["Touchdown-heavy result"]["too_low"] == 1
+    assert miss_category_summary(review, min_error=10.0).is_empty()
+    assert miss_category_summary(_review("Injury excluded")).height == 1

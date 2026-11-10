@@ -9,13 +9,17 @@ import polars as pl
 import streamlit as st
 
 from ffapp.app.league_selector import select_league
+from ffapp.app.ui import apply_app_shell
 from ffapp.config import load_settings
 from ffapp.evaluation.inseason import load_prediction_history
 from ffapp.evaluation.learning import recurring_patterns, replay_bias_correction
+from ffapp.evaluation.postgame import decision_autopsy, miss_category, miss_category_summary
 from ffapp.evaluation.weekly_review import build_weekly_review, review_key, score_summary
 from ffapp.tools.artifacts import atomic_write_json
+from ffapp.tools.decision_ledger import empty_ledger, ledger_path
 
 st.set_page_config(page_title="Weekly Report", layout="wide")
+apply_app_shell()
 league = select_league()
 settings = load_settings()
 st.title("Weekly Model Report")
@@ -89,6 +93,26 @@ if summary.is_empty():
     )
 else:
     metrics = summary.row(0, named=True)
+    tilt = (
+        "projections ran high"
+        if metrics["bias"] > 0.5
+        else "projections ran low"
+        if metrics["bias"] < -0.5
+        else "projections were balanced overall"
+    )
+    verdict = (
+        "beat the simple baseline by "
+        f"{metrics['baseline_mae'] - metrics['paired_model_mae']:.1f} pts"
+        if metrics["baseline_players"] and metrics["paired_model_mae"] <= metrics["baseline_mae"]
+        else "trailed the simple baseline"
+        if metrics["baseline_players"]
+        else "had no baseline to compare against"
+    )
+    st.info(
+        f"**Week {period[1]} in one line:** the model missed by {metrics['mae']:.1f} pts on "
+        f"average, landed within 5 points for {metrics['within_five']:.0%} of players, "
+        f"{tilt}, and {verdict}."
+    )
     a, b = st.columns(2)
     a.metric("Average miss", f"{metrics['mae']:.1f} pts")
     b.metric("Within 5 points", f"{metrics['within_five']:.0%}")
@@ -142,6 +166,23 @@ else:
             "within_five": st.column_config.NumberColumn("Within 5", format="percent"),
         },
     )
+    st.subheader("Why the misses happened")
+    reasons = miss_category_summary(pool)
+    if reasons.is_empty():
+        st.caption("No scored player missed by 5 or more points at this threshold.")
+    else:
+        st.dataframe(
+            reasons.select("reason", "misses", "average_miss", "too_high", "too_low"),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "reason": "Likely reason",
+                "misses": "Misses (5+ pts)",
+                "average_miss": st.column_config.NumberColumn("Average miss", format="%.1f"),
+                "too_high": "Projected too high",
+                "too_low": "Projected too low",
+            },
+        )
     st.subheader("Biggest misses & evidence")
     st.caption(
         "These are diagnostic clues, not proven causes. Usage is compared with the "
@@ -150,18 +191,53 @@ else:
     )
     st.dataframe(
         scored.sort("absolute_error", descending=True)
-        .select("player", "position", "projected", "actual", "error", "signal", "evidence")
-        .head(30),
+        .head(30)
+        .with_columns(
+            pl.col("signal").map_elements(miss_category, return_dtype=pl.String).alias("reason")
+        )
+        .select("player", "position", "projected", "actual", "error", "reason", "evidence"),
         hide_index=True,
         width="stretch",
         column_config={
             "player": "Player",
             "position": "Pos",
-            "signal": "Clue",
+            "reason": "Likely reason",
             "evidence": "Evidence",
             "projected": st.column_config.NumberColumn("Projected", format="%.1f"),
             "actual": st.column_config.NumberColumn("Actual", format="%.1f"),
             "error": st.column_config.NumberColumn("Predicted − actual", format="%+.1f"),
+        },
+    )
+
+st.subheader("Your decisions")
+ledger_file = ledger_path(settings.data_root, league.slug)
+ledger = pl.read_parquet(ledger_file) if ledger_file.exists() else empty_ledger()
+decisions = decision_autopsy(ledger, week_rows, season=period[0], week=period[1])
+if decisions.is_empty():
+    st.caption(
+        "No recommendation was saved for this week. Mark Follow/Decline in Weekly Actions "
+        "to see whether your choices helped."
+    )
+else:
+    counted = decisions.filter(pl.col("counted"))
+    helped = counted.filter(pl.col("your_choice_value") > 0)
+    net = float(counted["your_choice_value"].sum()) if not counted.is_empty() else 0.0
+    left, mid, right = st.columns(3)
+    left.metric("Choices settled", counted.height)
+    mid.metric("Choices that helped", helped.height)
+    right.metric("Net points from choices", f"{net:+.1f}")
+    st.dataframe(
+        decisions.drop("counted"),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "decision": "Recommendation",
+            "choice": "You",
+            "projected_edge": st.column_config.NumberColumn("Expected edge", format="%+.1f"),
+            "realized_edge": st.column_config.NumberColumn("Actual edge", format="%+.1f"),
+            "your_choice_value": st.column_config.NumberColumn("Your result", format="%+.1f"),
+            "outcome": "Outcome",
+            "evidence": "Evidence",
         },
     )
 

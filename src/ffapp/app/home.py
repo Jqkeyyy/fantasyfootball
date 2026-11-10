@@ -264,7 +264,7 @@ def render_home(slug: str) -> None:
         icon=":material/swap_horiz:",
     )
     postgame.page_link(
-        "pages/17_Postgame_Review.py",
-        label="Review last week's misses",
+        "pages/9_Weekly_Report.py",
+        label="Review last week's results",
         icon=":material/troubleshoot:",
     )
