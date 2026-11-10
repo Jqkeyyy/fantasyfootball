@@ -84,7 +84,8 @@ def recommendation_rows(
     for add, drop in lineup_swap_rows(lineup, rankings, current_starter_ids, fmt):
         add_points = float(add["projected_points"])
         drop_points = 0.0 if drop is None else float(drop["proj_mean"] or 0.0)
-        spread = max(0.0, float(add["ceiling"]) - float(add["floor"]))
+        has_range = add["ceiling"] is not None and add["floor"] is not None
+        spread = max(0.0, float(add["ceiling"]) - float(add["floor"])) if has_range else 0.0
         row: dict[str, object] = {
             "league_slug": league_slug,
             "season": season,
@@ -98,7 +99,9 @@ def recommendation_rows(
             "alternative_player_id": None if drop is None else str(drop["player_id"]),
             "alternative_player_name": None if drop is None else str(drop["player_name"]),
             "expected_delta": add_points - drop_points,
-            "confidence": max(0.0, min(1.0, 1.0 - spread / max(1.0, add_points * 4.0))),
+            "confidence": (
+                max(0.0, min(1.0, 1.0 - spread / max(1.0, add_points * 4.0))) if has_range else None
+            ),
             "status": "recommended",
             "created_at_utc": created_at,
             "decided_at_utc": None,
@@ -182,7 +185,7 @@ def record_choice(
 def settle_outcomes(
     path: Path, actuals: pl.DataFrame, *, now: datetime | None = None
 ) -> pl.DataFrame:
-    """Settle recorded player-v-player decisions from actual fantasy points."""
+    """Settle decisions from actual points, valuing an empty lineup slot at zero."""
     ledger = pl.read_parquet(path)
     required = {"season", "week", "player_id", "actual_points"}
     if not required.issubset(actuals.columns):
@@ -200,6 +203,8 @@ def settle_outcomes(
         alternative = (
             points.get((*key, str(alternative_id))) if alternative_id is not None else None
         )
+        if alternative_id is None and row["decision_type"] == "lineup":
+            alternative = 0.0
         if subject is not None and alternative is not None:
             realized = subject - alternative
             status = str(row["status"])

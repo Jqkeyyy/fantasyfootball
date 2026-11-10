@@ -152,12 +152,16 @@ PREDICTION_LOG_SCHEMA = {
     "team": pl.String,
     "projection_source": pl.String,
     "live_mean": pl.Float64,
+    "audit_base_mean": pl.Float64,
+    "audit_role_mean": pl.Float64,
+    "audit_injury_mean": pl.Float64,
     "live_q10": pl.Float64,
     "live_q25": pl.Float64,
     "live_q50": pl.Float64,
     "live_q75": pl.Float64,
     "live_q90": pl.Float64,
     "espn_mean": pl.Float64,
+    "espn_season_verified": pl.Boolean,
     "b3_mean": pl.Float64,
     "b3_q10": pl.Float64,
     "b3_q25": pl.Float64,
@@ -679,10 +683,17 @@ def build_prediction_log(
         )
     )
     if espn is None:
-        work = work.with_columns(pl.lit(None, dtype=pl.Float64).alias("espn_mean"))
+        work = work.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("espn_mean"),
+            pl.lit(False).alias("espn_season_verified"),
+        )
     else:
         work = work.join(
-            espn.select("player_id", pl.col("mean").alias("espn_mean")),
+            espn.select(
+                "player_id",
+                pl.col("mean").alias("espn_mean"),
+                (pl.col("projection_source") == "espn_weekly").alias("espn_season_verified"),
+            ),
             on="player_id",
             how="left",
         )
@@ -739,6 +750,13 @@ def build_prediction_log(
         pl.lit(None, dtype=pl.Boolean).alias("was_starting"),
     )
 
+    # The CLI applies production role/injury adjustments after this base build.
+    # Null stages distinguish legacy or unadjusted builds from audited forecasts.
+    work = work.with_columns(
+        pl.lit(None, dtype=pl.Float64).alias("audit_base_mean"),
+        pl.lit(None, dtype=pl.Float64).alias("audit_role_mean"),
+        pl.lit(None, dtype=pl.Float64).alias("audit_injury_mean"),
+    )
     return work.select(list(PREDICTION_LOG_SCHEMA)), fetch_df
 
 

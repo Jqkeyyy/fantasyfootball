@@ -327,6 +327,7 @@ ESPN_STAT_ID_MAP: dict[str, str] = {
     "88": "pat_missed",
     "83": "fg_made",
     "85": "fg_missed",
+    "214": "fg_made_yards",
     # DST (see module docstring for the points-allowed gap).
     "95": "def_interceptions",
     "96": "fumble_recovery_opp",
@@ -354,6 +355,7 @@ def normalize_espn(payload: dict[str, Any], *, season: int) -> pl.DataFrame:
                 s
                 for s in player.get("stats", [])
                 if s.get("scoringPeriodId") == 0
+                and s.get("seasonId") == season
                 and s.get("statSourceId") == 1
                 and s.get("statSplitTypeId") == 0
             ),
@@ -402,6 +404,7 @@ def normalize_espn_weekly(payload: dict[str, Any], *, season: int, week: int) ->
                 stat_row
                 for stat_row in player.get("stats", [])
                 if stat_row.get("scoringPeriodId") == week
+                and stat_row.get("seasonId") == season
                 and stat_row.get("statSourceId") == 1
                 and stat_row.get("statSplitTypeId") == 1
             ),

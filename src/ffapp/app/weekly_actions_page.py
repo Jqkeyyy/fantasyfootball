@@ -164,8 +164,9 @@ def lineup_decisions(
             _number(incoming_rank.get("p_active") or 0.0),
             1.0 if outgoing is None else _number(outgoing.get("p_active") or 0.0),
         )
-        floor = _number(incoming_rank["floor"])
-        ceiling = _number(incoming_rank["ceiling"])
+        has_range = incoming_rank["floor"] is not None and incoming_rank["ceiling"] is not None
+        floor = _number(incoming_rank["floor"]) if has_range else 0.0
+        ceiling = _number(incoming_rank["ceiling"]) if has_range else 0.0
         confidence, label = recommendation_confidence(
             expected_gain=gain,
             floor=floor,
@@ -192,7 +193,8 @@ def lineup_decisions(
             )
             why = (
                 f"{_projection(incoming_rank):.1f} vs {_projection(outgoing):.1f} projected "
-                f"points; {p_active:.0%} minimum availability.{reshuffle}"
+                + (f"points; {p_active:.0%} minimum availability." if has_range else "points.")
+                + reshuffle
             )
         rows.append(
             {
@@ -200,17 +202,19 @@ def lineup_decisions(
                 "start": incoming_rank["player_name"],
                 "sit": None if outgoing is None else outgoing["player_name"],
                 "expected_gain": gain,
-                "start_floor": floor,
+                "start_floor": floor if has_range else None,
                 "sit_floor": 0.0 if outgoing is None else outgoing["floor"],
-                "start_ceiling": ceiling,
+                "start_ceiling": ceiling if has_range else None,
                 "sit_ceiling": 0.0 if outgoing is None else outgoing["ceiling"],
-                "confidence": confidence,
-                "confidence_label": label,
+                "confidence": confidence if has_range else None,
+                "confidence_label": label if has_range else "Point estimate only",
                 "lock_time": lock.isoformat() if lock is not None else "Unknown",
                 "why": why,
                 "risk": (
                     f"Recommended player's range is {floor:.1f}-{ceiling:.1f}; "
                     f"the edge is {gain:+.1f}."
+                    if has_range
+                    else "ESPN point estimate only; uncertainty and availability are uncalibrated."
                 ),
             }
         )
@@ -281,6 +285,17 @@ def player_projections(rankings: pl.DataFrame, player_ids: Iterable[str]) -> lis
     """Convert ranked rows for a roster into the lineup engine's input."""
     wanted = set(player_ids)
     available = rankings
+    # ESPN K/DST supplies point estimates, not calibrated outcome quantiles.
+    # The mean optimizer can still use these without inventing displayed ranges.
+    available = available.with_columns(
+        *[
+            pl.when(pl.col("position").is_in(["K", "DST"]))
+            .then(pl.col(column).fill_null(pl.col("proj_mean")))
+            .otherwise(pl.col(column))
+            .alias(column)
+            for column in ("median", "ceiling")
+        ]
+    )
     if "injury_status" in available.columns:
         available = available.filter(
             ~pl.col("injury_status").fill_null("").is_in(list(UNAVAILABLE_STATUSES))
@@ -411,7 +426,8 @@ def build_action_inbox(
         )
     for add, drop in lineup_swap_rows(lineup, rankings, current_starter_ids, fmt):
         gain = float(add["projected_points"]) - _projection(drop)
-        spread = max(0.0, float(add["ceiling"]) - float(add["floor"]))
+        has_range = add["ceiling"] is not None and add["floor"] is not None
+        spread = max(0.0, float(add["ceiling"]) - float(add["floor"])) if has_range else 0.0
         confidence = max(
             0.0,
             min(1.0, 1.0 - spread / max(1.0, float(add["projected_points"]) * 4.0)),
@@ -427,16 +443,17 @@ def build_action_inbox(
                     add["player_name"], None if drop is None else drop["player_name"]
                 ),
                 "expected_gain": gain,
-                "confidence": confidence,
-                "confidence_label": confidence_label,
+                "confidence": confidence if has_range else None,
+                "confidence_label": confidence_label if has_range else "Point estimate only",
                 "evidence": (
                     f"{float(add['projected_points']):.1f} vs {_projection(drop):.1f} "
-                    f"projected points; {float(add['floor']):.1f}-{float(add['ceiling']):.1f} "
-                    "range for the recommended starter."
+                    "projected points."
                 ),
                 "risk": (
                     f"Recommended starter range: {float(add['floor']):.1f}-"
                     f"{float(add['ceiling']):.1f}."
+                    if has_range
+                    else "Point estimate only; calibrated uncertainty is unavailable."
                 ),
             }
         )
@@ -654,6 +671,7 @@ def waiver_recommendations(
             ceiling=ceiling,
             p_active=p_active,
         )
+        has_range = row.get("floor") is not None and row.get("ceiling") is not None
         drop = str(row.get("drop_player") or "your lowest-value bench player")
         role = (
             "Primary"
@@ -667,8 +685,8 @@ def waiver_recommendations(
                 "roster_need": f"Upgrade {drop}",
                 "bid_floor": max(0, math.floor(bid * 0.75)),
                 "bid_ceiling": bid,
-                "confidence": confidence,
-                "confidence_label": label,
+                "confidence": confidence if has_range else None,
+                "confidence_label": label if has_range else "Point estimate only",
                 "why": (
                     f"Adds {_number(row['value_added_per_week']):.1f} projected lineup "
                     f"points per week; {int(_number(row['competing_teams']))} competing "
@@ -678,6 +696,92 @@ def waiver_recommendations(
         )
         planned.append(row)
     return pl.DataFrame(planned)
+
+
+def specialist_projections(
+    weekly_points: pl.DataFrame,
+    players_dim: pl.DataFrame,
+    schedule: pl.DataFrame,
+    *,
+    season: int,
+    week: int,
+) -> pl.DataFrame:
+    """Resolve league-scored ESPN K/DST estimates for both rosters and streamers."""
+    current = weekly_points.filter(
+        (pl.col("season") == season)
+        & (pl.col("week") == week)
+        & pl.col("position").is_in(["K", "DST"])
+    )
+    kickers = add_join_key(current.filter(pl.col("position") == "K")).join(
+        mapping.dedupe_to_one_row_per_name_position(
+            players_dim.with_columns(pl.col("position").replace({"PK": "K"}))
+        ).select("join_key", "player_id", "sleeper_id"),
+        on="join_key",
+        how="left",
+    )
+    defenses = current.filter(pl.col("position") == "DST").with_columns(
+        pl.col("team").replace({"LA": "LAR", "WSH": "WAS"}).alias("player_id"),
+        pl.col("team").replace({"LA": "LAR", "WSH": "WAS"}).alias("sleeper_id"),
+    )
+    candidates = pl.concat(
+        [
+            kickers.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
+            defenses.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
+        ],
+        how="vertical_relaxed",
+    ).drop_nulls(["player_id", "sleeper_id", "points"])
+    opponents = (
+        team_opponent(schedule)
+        .filter((pl.col("season") == season) & (pl.col("week") == week))
+        .select("team", "opponent")
+    )
+    return (
+        candidates.with_columns(pl.col("team").replace({"LAR": "LA", "WSH": "WAS"}))
+        .join(opponents, on="team", how="inner")
+        .unique(subset=["player_id"])
+    )
+
+
+def add_specialist_rankings(
+    rankings: pl.DataFrame,
+    specialists: pl.DataFrame,
+    players_dim: pl.DataFrame,
+    my_roster_ids: set[str],
+    rostered_ids: set[str],
+) -> pl.DataFrame:
+    """Append point-only specialist estimates without manufacturing uncertainty."""
+    injuries = (
+        dict(players_dim.select("player_id", "injury_status").iter_rows())
+        if "injury_status" in players_dim.columns
+        else {}
+    )
+    existing = set(rankings["player_id"].to_list())
+    rows = []
+    for specialist in specialists.iter_rows(named=True):
+        player_id = str(specialist["player_id"])
+        if player_id in existing:
+            continue
+        injury = injuries.get(player_id)
+        row = dict.fromkeys(rankings.columns)
+        row.update(
+            player_id=player_id,
+            player_name=specialist["player_name"],
+            position=specialist["position"],
+            team=specialist["team"],
+            opponent=specialist["opponent"],
+            proj_mean=0.0 if injury in UNAVAILABLE_STATUSES else specialist["points"],
+            injury_status=injury,
+            owner_status=(
+                "my_roster"
+                if player_id in my_roster_ids
+                else "rostered_elsewhere"
+                if player_id in rostered_ids
+                else "free_agent"
+            ),
+            projection_source="espn_weekly_point_estimate",
+        )
+        rows.append({key: row[key] for key in rankings.columns})
+    return pl.concat([rankings, pl.DataFrame(rows, schema=rankings.schema)]) if rows else rankings
 
 
 def streaming_recommendations(
@@ -691,39 +795,11 @@ def streaming_recommendations(
     limit_per_position: int = 5,
 ) -> pl.DataFrame:
     """Rank available K/DST options from league-scored current-week projections."""
-    current = weekly_points.filter(
-        (pl.col("season") == season)
-        & (pl.col("week") == week)
-        & pl.col("position").is_in(["K", "DST"])
-    )
-    kickers = add_join_key(current.filter(pl.col("position") == "K")).join(
-        mapping.dedupe_to_one_row_per_name_position(players_dim).select(
-            "join_key", "player_id", "sleeper_id"
-        ),
-        on="join_key",
-        how="left",
-    )
-    defenses = current.filter(pl.col("position") == "DST").with_columns(
-        pl.col("team").alias("player_id"),
-        pl.col("team").alias("sleeper_id"),
-    )
-    candidates = pl.concat(
-        [
-            kickers.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
-            defenses.select("player_id", "sleeper_id", "player_name", "position", "team", "points"),
-        ],
-        how="vertical_relaxed",
-    ).filter(
-        pl.col("sleeper_id").is_not_null() & ~pl.col("sleeper_id").is_in(list(rostered_sleeper_ids))
-    )
-    opponents = (
-        team_opponent(schedule)
-        .filter((pl.col("season") == season) & (pl.col("week") == week))
-        .select("team", "opponent")
-    )
+    candidates = specialist_projections(
+        weekly_points, players_dim, schedule, season=season, week=week
+    ).filter(~pl.col("sleeper_id").is_in(list(rostered_sleeper_ids)))
     return (
-        candidates.join(opponents, on="team", how="left")
-        .sort(["position", "points"], descending=[False, True])
+        candidates.sort(["position", "points"], descending=[False, True])
         .group_by("position", maintain_order=True)
         .head(limit_per_position)
         .with_columns(pl.int_range(1, pl.len() + 1).over("position").alias("rank"))

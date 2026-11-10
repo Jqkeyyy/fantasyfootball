@@ -96,3 +96,54 @@ def test_settle_outcomes_measures_realized_delta_and_regret(tmp_path: Path) -> N
     summary = decision_summary(settled)
     assert summary["follow_rate"].item() == 1.0
     assert summary["mean_regret"].item() == 5.0
+
+
+def test_empty_lineup_spot_settles_against_zero(tmp_path: Path) -> None:
+    for accepted, points, regret in [(True, 8.0, 0.0), (False, 8.0, 8.0), (True, -2.0, 2.0)]:
+        path = tmp_path / "empty.parquet"
+        rows = _recommendations().with_columns(
+            pl.lit(None, dtype=pl.String).alias("alternative_player_id"),
+            pl.lit(None, dtype=pl.String).alias("alternative_player_name"),
+        )
+        rows.write_parquet(path)
+        record_choice(path, rows["decision_id"].item(), accepted=accepted)
+        settled = settle_outcomes(
+            path,
+            pl.DataFrame(
+                {
+                    "season": [2026],
+                    "week": [3],
+                    "player_id": ["add"],
+                    "actual_points": [points],
+                }
+            ),
+        )
+        assert settled["alternative_actual_points"].item() == 0.0
+        assert settled["realized_delta"].item() == points
+        assert settled["decision_regret"].item() == regret
+        assert decision_summary(settled)["settled"].item() == 1
+
+
+def test_missing_actuals_and_no_drop_waivers_remain_unsettled(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.parquet"
+    for kind, alternative, actual_id in [
+        ("lineup", None, "other"),
+        ("lineup", "drop", "add"),
+        ("waiver", None, "add"),
+    ]:
+        _recommendations().with_columns(
+            pl.lit(kind).alias("decision_type"),
+            pl.lit(alternative, dtype=pl.String).alias("alternative_player_id"),
+        ).write_parquet(path)
+        settled = settle_outcomes(
+            path,
+            pl.DataFrame(
+                {
+                    "season": [2026],
+                    "week": [3],
+                    "player_id": [actual_id],
+                    "actual_points": [8.0],
+                }
+            ),
+        )
+        assert settled["settled_at_utc"].item() is None

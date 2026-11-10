@@ -16,6 +16,25 @@ from ffapp.evaluation.inseason import (
 from ffapp.league_format import LeagueFormat
 
 
+def test_wrong_season_legacy_espn_estimates_cannot_train_source_weights():
+    from ffapp.evaluation.inseason import verified_learning_history
+
+    original = _history([5.0, 10.0, 20.0]).with_columns(
+        pl.Series("espn_mean", [6.0, 11.0, 21.0]),
+        pl.Series("espn_season_verified", [True, False, None]),
+    )
+    clean = verified_learning_history(original)
+    assert clean["espn_mean"].to_list() == [6.0, None, None]
+    assert clean["live_mean"].to_list() == [5.5, None, None]
+    assert clean["model_mean"].to_list() == original["model_mean"].to_list()
+    assert original["espn_mean"].null_count() == 0
+    legacy = verified_learning_history(original.drop("espn_season_verified"))
+    assert legacy["espn_mean"].null_count() == 3
+    report = summarize_inseason_performance(clean)
+    espn = report.filter((pl.col("source") == "espn_weekly") & (pl.col("position") == "ALL"))
+    assert espn["n_obs"].item() == 1
+
+
 def test_adaptive_blend_waits_for_four_weeks_and_caps_one_source() -> None:
     performance = pl.DataFrame(
         {

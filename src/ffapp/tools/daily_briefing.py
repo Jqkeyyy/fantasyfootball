@@ -34,11 +34,36 @@ def league_briefing(settings: Settings, league: LeagueConfig) -> str:
     status = str(refresh.get("status") or "missing").upper()
     week = refresh.get("week") or alert_payload.get("week") or "?"
     lines = [f"**{league.display_name} · Week {week} · {status}**"]
+    steps = refresh.get("steps")
+    problems = (
+        [
+            step
+            for step in steps
+            if isinstance(step, dict) and step.get("status") in {"degraded", "failed"}
+        ]
+        if isinstance(steps, list)
+        else []
+    )
+    for step in problems:
+        name = str(step.get("name") or "Refresh check").replace("_", " ")
+        detail = " ".join(str(step.get("detail") or "No details recorded").split())
+        lines.append(f"• ⚠ {name}: {detail}")
+    if not refresh:
+        lines.append("• ⚠ Refresh report missing or unreadable.")
+    elif status in {"DEGRADED", "FAILED"} and not problems:
+        lines.append("• ⚠ Refresh problem recorded without a specific cause.")
+    alerts_available = isinstance(alerts, list) and all(isinstance(row, dict) for row in alerts)
+    if not alerts_available:
+        lines.append("• ⚠ Lineup/waiver alerts missing or unreadable; actions unverified.")
     if alert_rows:
         for alert in alert_rows[:3]:
             confidence = alert.get("confidence")
             suffix = f" ({float(confidence):.0%})" if isinstance(confidence, int | float) else ""
             lines.append(f"• {str(alert.get('message') or 'Action needed')[:260]}{suffix}")
+    elif not alerts_available:
+        pass
+    elif status != "HEALTHY":
+        lines.append("• No alerts recorded; incomplete refresh means actions may be missing.")
     else:
         lines.append("• No new lineup or waiver exception needs action.")
     return "\n".join(lines)
@@ -49,8 +74,17 @@ def build_briefing(settings: Settings, leagues: list[LeagueConfig], *, now: date
     # Remove a leading zero without using platform-specific strftime flags.
     heading = local.strftime("%A, %B %d").replace(" 0", " ")
     sections = [f"🏈 **Daily fantasy briefing · {heading}**"]
-    sections.extend(league_briefing(settings, league) for league in leagues)
-    return with_dashboard_link("\n\n".join(sections))[:2000]
+    # Reserve the dashboard instructions and the sender's @everyone prefix.
+    footer = with_dashboard_link("")
+    budget = 2000 - len("@everyone ") - len(footer) - len(sections[0]) - 2
+    per_league = budget // max(len(leagues), 1) - 2
+    for league in leagues:
+        section = league_briefing(settings, league)
+        if len(section) > per_league:
+            suffix = "\n• More details in dashboard."
+            section = section[: max(0, per_league - len(suffix) - 1)].rstrip() + "…" + suffix
+        sections.append(section)
+    return with_dashboard_link("\n\n".join(sections))
 
 
 def run(*, now: datetime | None = None) -> str:

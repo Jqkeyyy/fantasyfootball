@@ -561,7 +561,7 @@ def test_normalize_fantasypros_excludes_overall_and_dynasty_rows() -> None:
 def test_normalize_fantasypros_handles_na_literal_in_numeric_bye_column() -> None:
     """This repo's CSVs use the literal string "NA" for missing values, not
     empty cells -- same gotcha task 0.3's crosswalk fetch already hit
-    (HANDOFF.md §5). Confirmed live with a real row (Tyreek Hill, whose `bye`
+    (HANDOFF.md Â§5). Confirmed live with a real row (Tyreek Hill, whose `bye`
     column is "NA"): polars' schema inference tries to parse the whole
     numeric `bye` column as an int and crashes on that literal string,
     unless null_values=["NA"] is passed -- reproduced verbatim here rather
@@ -1093,7 +1093,7 @@ CBS_K_HTML = _cbs_table(
                 "17",
                 "39",
                 "44",
-                "—",
+                "â€”",
                 "0.3",
                 "0.3",
                 "8.3",
@@ -1691,3 +1691,71 @@ def test_normalize_fp_weekly_leaves_b3_points_null_when_r2p_pts_column_is_absent
     row = df.row(0, named=True)
     assert row["b3_points"] is None
     assert row["ecr"] == pytest.approx(1.42)
+
+
+def test_weekly_kicker_uses_requested_season_and_field_goal_yardage() -> None:
+    from ffapp.projections.aggregate import apply_league_scoring
+
+    stats = []
+    for year, yards in [(2025, 10.0), (2026, 81.5)]:
+        row = _espn_stat_row(
+            scoring_period_id=4,
+            stat_source_id=1,
+            stat_split_type_id=1,
+            stats={"214": yards, "86": 2.4, "85": 0.3, "88": 0.1},
+        )
+        row["seasonId"] = year
+        stats.append(row)
+    payload = {
+        "players": [
+            _espn_player(
+                full_name="Kicker",
+                default_position_id=5,
+                pro_team_id=34,
+                stats=stats,
+            )
+        ]
+    }
+    normalized = rankings.normalize_espn_weekly(payload, season=2026, week=4)
+    assert normalized["fg_made_yards"].item() == 81.5
+    scored = apply_league_scoring(
+        normalized,
+        {"fgm_yds": 0.1, "xpm": 1.0, "fgmiss": -1.0, "xpmiss": -1.0},
+    )
+    assert abs(scored["points"].item() - 10.15) < 1e-9
+    assert rankings.normalize_espn_weekly(payload, season=2027, week=4).is_empty()
+
+
+@pytest.mark.parametrize("weekly", [False, True])
+def test_espn_requires_explicit_season_and_never_selects_prior_year(weekly: bool) -> None:
+    candidates = []
+    for year, yards in [(2025, 10.0), (None, 99.0), (2026, 75.0)]:
+        row = _espn_stat_row(
+            scoring_period_id=5 if weekly else 0,
+            stat_source_id=1,
+            stat_split_type_id=1 if weekly else 0,
+            stats={"24": yards},
+        )
+        if year is None:
+            row.pop("seasonId")
+        else:
+            row["seasonId"] = year
+        candidates.append(row)
+    payload = {
+        "players": [
+            _espn_player(
+                full_name="Test RB", default_position_id=2, pro_team_id=8, stats=candidates
+            )
+        ]
+    }
+
+    def normalize(data):
+        return (
+            rankings.normalize_espn_weekly(data, season=2026, week=5)
+            if weekly
+            else rankings.normalize_espn(data, season=2026)
+        )
+
+    assert normalize(payload)["rushing_yards"].item() == 75.0
+    candidates.pop()
+    assert normalize(payload).is_empty()

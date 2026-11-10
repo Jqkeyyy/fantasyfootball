@@ -106,9 +106,7 @@ def build_injury_adjustments(
     projected = projections.select(projection_columns).unique()
     if "mean" in projected.columns:
         projected = projected.filter(pl.col("mean").is_not_null() & (pl.col("mean") > 0.25))
-    joined = projected.join(
-        identities, on="player_id", how="left"
-    )
+    joined = projected.join(identities, on="player_id", how="left")
     rows: list[dict[str, object]] = []
     for row in joined.iter_rows(named=True):
         status = str(row.get("injury_status") or "").strip()
@@ -252,8 +250,7 @@ def build_role_adjustments(
             for metric, _, recent_mean, baseline_mean in coherent
         )
         guard = (
-            f"; early-season strength {early_season_weight:.0%} "
-            f"from {current_games}/4 games"
+            f"; early-season strength {early_season_weight:.0%} from {current_games}/4 games"
             if early_season_weight < 1.0
             else ""
         )
@@ -311,11 +308,22 @@ def apply_adjustments(
     projections: pl.DataFrame, adjustments: pl.DataFrame
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Apply role first and injury second, returning adjusted rows and the audit."""
-    if projections.is_empty() or adjustments.is_empty():
+    if projections.is_empty():
+        return projections, adjustments
+    projections = projections.with_columns(
+        pl.col("mean").alias("audit_base_mean"),
+        pl.col("mean").alias("audit_role_mean"),
+        pl.col("mean").alias("audit_injury_mean"),
+    )
+    if adjustments.is_empty():
         return projections, adjustments
     keys = ["player_id", "season", "week"]
     combined = adjustments.group_by(keys).agg(
-        pl.col("multiplier").product().alias("_total_multiplier")
+        pl.col("multiplier").product().alias("_total_multiplier"),
+        pl.col("multiplier")
+        .filter(pl.col("adjustment_type") == "role")
+        .product()
+        .alias("_role_multiplier"),
     )
     adjusted = projections.join(combined, on=keys, how="left").with_columns(
         pl.col("_total_multiplier").fill_null(1.0)
@@ -327,18 +335,28 @@ def apply_adjustments(
             if column in adjusted.columns
         ]
     )
+    adjusted = adjusted.with_columns(
+        (pl.col("audit_base_mean") * pl.col("_role_multiplier").fill_null(1.0)).alias(
+            "audit_role_mean"
+        ),
+        pl.col("mean").alias("audit_injury_mean"),
+    )
     if "p_active" in adjusted.columns:
         injury_caps = (
             adjustments.filter(pl.col("adjustment_type") == "injury")
             .group_by(keys)
             .agg(pl.col("multiplier").min().alias("_injury_cap"))
         )
-        adjusted = adjusted.join(injury_caps, on=keys, how="left").with_columns(
-            pl.min_horizontal(pl.col("p_active"), pl.col("_injury_cap").fill_null(1.0)).alias(
-                "p_active"
+        adjusted = (
+            adjusted.join(injury_caps, on=keys, how="left")
+            .with_columns(
+                pl.min_horizontal(pl.col("p_active"), pl.col("_injury_cap").fill_null(1.0)).alias(
+                    "p_active"
+                )
             )
-        ).drop("_injury_cap")
-    return adjusted.drop("_total_multiplier"), adjustments
+            .drop("_injury_cap")
+        )
+    return adjusted.drop("_total_multiplier", "_role_multiplier"), adjustments
 
 
 __all__ = [

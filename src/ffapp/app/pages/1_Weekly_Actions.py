@@ -12,12 +12,14 @@ import streamlit as st
 from ffapp.app.league_selector import select_league
 from ffapp.app.weekly_actions_page import (
     EMPTY_SPOT,
+    add_specialist_rankings,
     build_action_inbox,
     explain_player,
     lineup_decisions,
     projection_supported_format,
     recommended_lineup,
     sim_players,
+    specialist_projections,
     streaming_recommendations,
     waiver_recommendations,
 )
@@ -107,6 +109,21 @@ sleeper_to_player = {
     for row in players_dim.select("sleeper_id", "player_id").drop_nulls().iter_rows(named=True)
 }
 
+specialists = pl.DataFrame()
+weekly_points = pl.DataFrame()
+try:
+    espn_payload = json.loads(
+        rankings_ingest.fetch_espn(season, offline=True, settings=settings).read_text()
+    )
+    weekly_stats = rankings_ingest.normalize_espn_weekly(espn_payload, season=season, week=week)
+    weekly_points = apply_league_scoring(weekly_stats, league.league_cache["scoring_settings"])
+    specialists = specialist_projections(
+        weekly_points, players_dim, schedule, season=season, week=week
+    )
+    sleeper_to_player.update(dict(specialists.select("sleeper_id", "player_id").iter_rows()))
+except Exception as exc:
+    st.warning(f"Kicker/defense projections unavailable: {exc}")
+
 
 def _string_list(values: object) -> list[str]:
     return [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
@@ -143,6 +160,10 @@ rankings = build_weekly_rankings(
     my_roster_ids=my_roster_ids,
     rostered_ids=all_rostered_ids,
 )
+if not specialists.is_empty():
+    rankings = add_specialist_rankings(
+        rankings, specialists, players_dim, my_roster_ids, all_rostered_ids
+    )
 if rankings.is_empty():
     st.warning("No ranked players are available for this week.")
     st.stop()
@@ -341,10 +362,11 @@ else:
             )
             edge.metric("Projected edge", f"{float(move['expected_gain']):+.1f}")
             confidence.metric("Confidence", str(move["confidence_label"]))
-            st.progress(
-                float(move["confidence"]),
-                text=f"Confidence {float(move['confidence']):.0%}",
-            )
+            if move["confidence"] is not None:
+                st.progress(
+                    float(move["confidence"]),
+                    text=f"Confidence {float(move['confidence']):.0%}",
+                )
             st.write(move["why"])
             st.caption(f"Risk: {move['risk']} · Earliest lock: {move['lock_time']}")
 
@@ -410,7 +432,7 @@ metric_b.metric("Current supported starters", f"{current_total:.1f}")
 metric_c.metric("Projected improvement", f"{recommended_total - current_total:+.1f}")
 if unsupported_starters:
     st.info(
-        "The lineup optimizer handles skill players here; use the streaming section below for "
+        "Weekly projections are unavailable for these starting positions: "
         + ", ".join(unsupported_starters)
         + "."
     )
@@ -554,11 +576,8 @@ else:
 
 st.subheader("Kicker and defense streamers")
 try:
-    espn_payload = json.loads(
-        rankings_ingest.fetch_espn(season, offline=True, settings=settings).read_text()
-    )
-    weekly_stats = rankings_ingest.normalize_espn_weekly(espn_payload, season=season, week=week)
-    weekly_points = apply_league_scoring(weekly_stats, league.league_cache["scoring_settings"])
+    if weekly_points.is_empty():
+        raise ValueError("No cached weekly feed is available")
     streamers = streaming_recommendations(
         weekly_points,
         players_dim,

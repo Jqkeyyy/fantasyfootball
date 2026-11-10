@@ -539,7 +539,7 @@ def write_projections(projections: pl.DataFrame, output_path: Path) -> pl.DataFr
         existing = pl.read_parquet(output_path)
         keys = projections.select("season", "week").unique()
         existing = existing.join(keys, on=["season", "week"], how="anti")
-        combined = pl.concat([existing, projections], how="vertical_relaxed")
+        combined = pl.concat([existing, projections], how="diagonal_relaxed")
     else:
         combined = projections
     atomic_write_parquet(combined, output_path)

@@ -23,6 +23,7 @@ apply_app_shell()
 league = select_league()
 settings = load_settings()
 st.title("Predictions vs Actuals")
+st.page_link("pages/20_Accuracy_Audit.py", label="Accuracy Audit — compare sources and adjustments")
 st.caption(
     f"{league.display_name} · the model's last pregame prediction next to what each player scored"
 )

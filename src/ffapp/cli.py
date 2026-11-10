@@ -1004,7 +1004,7 @@ def project_command(
         )
         if output_path_ros.exists():
             prior_ros = pl.read_parquet(output_path_ros).filter(pl.col("season") != resolved_season)
-            combined_ros = pl.concat([prior_ros, result], how="vertical_relaxed")
+            combined_ros = pl.concat([prior_ros, result], how="diagonal_relaxed")
         else:
             combined_ros = result
         atomic_write_parquet(combined_ros, output_path_ros)
@@ -1519,6 +1519,16 @@ def log_week_command(
         )
         raise typer.Exit(code=1)
 
+    live_columns = {"live_mean": "mean", **{f"live_q{q}": f"q{q}" for q in [10, 25, 50, 75, 90]}}
+    audited_rows, _, _ = _projection_adjustments(
+        rows.rename(live_columns),
+        players_dim,
+        settings,
+        season=resolved_season,
+        anchor_week=week,
+    )
+    rows = audited_rows.rename({value: key for key, value in live_columns.items()})
+
     league_config = load_league(league_slug)
     if league_config.league_id is not None and settings.sleeper_username is not None:
         try:
@@ -1554,6 +1564,8 @@ def log_week_command(
         except Exception as exc:
             typer.echo(f"WARNING: could not attach roster snapshot to prediction log ({exc}).")
 
+    # Use completion time: a source fetched across kickoff must not look pregame.
+    rows = rows.with_columns(pl.lit(datetime.now(UTC).isoformat()).alias("as_of_utc"))
     path = prediction_log.write_prediction_log(
         rows,
         fetch_rows,

@@ -32,6 +32,29 @@ SLEEPER_PLAYERS_JSON = FIXTURES / "sleeper_players.json"
 OVERRIDES_CSV = FIXTURES / "overrides.csv"
 
 
+def test_sleeper_optional_fields_after_null_inference_sample(tmp_path):
+    players = {str(i): {"full_name": "Healthy Player"} for i in range(101)}
+    players["late"] = {
+        "full_name": "Injured Player",
+        "injury_status": "Out",
+        "injury_body_part": "Leg",
+        "injury_notes": "Fracture",
+        "gsis_id": "00-1234567",
+        "espn_id": 12345,
+        "search_rank": 20,
+        "active": True,
+    }
+    path = tmp_path / "players.json"
+    path.write_text(json.dumps(players), encoding="utf-8")
+    result = mapping._load_sleeper_players(path)
+    assert result.height == 102
+    row = result.filter(pl.col("sleeper_id") == "late").row(0, named=True)
+    assert row["injury_notes"] == "Fracture"
+    assert row["espn_id"] == "12345"
+    assert row["active"] is True
+    assert result["injury_notes"].null_count() == 101
+
+
 # --- normalize_name ---------------------------------------------------------
 
 

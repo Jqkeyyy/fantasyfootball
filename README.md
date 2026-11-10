@@ -286,12 +286,8 @@ sudo ./scripts/install-tailscale-access.sh
 Follow the sign-in and HTTPS approval links printed by the command. Install the
 Tailscale app on the phone, sign in to the same account, and use the HTTPS URL
 shown by `tailscale serve status`. Save that URL as `FFAPP_DASHBOARD_URL` in the
-server's `.env` so Discord links and the Install App page point at it. The dashboard remains unavailable to the
+server's `.env` so Discord links point at it. The dashboard remains unavailable to the
 public internet; access is limited to devices authorized in the tailnet.
-
-Open **Install App** from the dashboard on a phone for iPhone and Android home-screen
-instructions. The installed shortcut uses the same private Tailscale URL, so Tailscale
-must remain connected on the phone.
 
 On the configured Windows laptop, set `FFAPP_SERVER_HOST` in `.env` to the server's
 address and double-click `start-server-app.bat` instead.
@@ -302,6 +298,20 @@ the tunnel and does not stop the server.
 ## Configuration
 
 ### Weekly model report
+
+Open **Accuracy Audit** (also linked from **Predictions vs Actuals**) to compare
+saved sources on the same players and the same pregame snapshot. Filter by week,
+position, historical roster or starters, and predicted points; download the matched
+rows as CSV. The page reports average absolute error, RMSE, bias, and results by
+week and position. It rejects unverified/postgame snapshots and missing outcomes.
+Consensus scoring and historical provider publication times are not verified, so
+these are pipeline comparisons rather than a certified platform leaderboard.
+
+**Check our adjustments** compares recorded production stages before and after
+role, injury, and final kickoff changes. Recording starts with this release;
+missing historical stages are not reconstructed. The base stage already includes
+model availability and source selection. Reports do not automatically promote a
+source or change production weights.
 
 Open **Weekly Report** in the dashboard menu to compare saved pregame predictions
 with actual results for each league and week. The report shows average absolute
@@ -359,9 +369,7 @@ rest-of-season projections when available, estimates competing roster interest, 
 range, and names the likely drop. Discord uses the same action thresholds and explanation fields
 for meaningful lineup, availability, projection, and waiver changes.
 
-Open **Live Matchup** during games for the current Sleeper score, projected finish, win
-probability, remaining starters, swing players, and a final unlocked-lineup check. Open
-**Roster Strategy** for four-week position health, bye pressure, playoff value, waiver
+Open **Roster Strategy** for four-week position health, bye pressure, playoff value, waiver
 targets, and trade chips. The **Trade Analyzer** suggests balanced packages based on mutual
 roster needs before running the full season simulation. **Trade Finder** searches 1-for-1,
 2-for-1, and 1-for-2 packages across every roster, measures each side's lineup change over
@@ -455,9 +463,8 @@ uv run streamlit run src/ffapp/app/streamlit_app.py
 The first command refreshes every available point-projection source, rank source, and ADP cache. Individual source failures degrade gracefully, but the board cannot be built if all point sources fail.
 
 Draft boards, source rankings, and default exports are isolated beneath
-`data/outputs/<league>/draft/`. The dashboard's Draft Board, Draft Mobile, and
-Mock Draft pages use the shared league selector, so switching leagues never
-reuses another league's scoring-specific board or mock/live state.
+`data/outputs/<league>/draft/`, so switching leagues never reuses another
+league's scoring-specific board or live state.
 
 For an offline phone backup:
 
@@ -473,7 +480,7 @@ To rehearse the live UI with a prior completed Sleeper draft:
 uv run ffapp draft live --league rogan-radinator-league --replay --pace-seconds 8
 ```
 
-Open the Draft Mobile page, then clear the replay when finished:
+Clear the replay when finished:
 
 ```powershell
 uv run ffapp draft live --league rogan-radinator-league --stop
@@ -609,23 +616,17 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 
 | Page | What it shows | Required artifact(s) |
 | --- | --- | --- |
-| **Draft Board** | Filters, tier breaks, VOR, ADP value, and opportunity cost. Includes Pure Rankings and Live Draft tabs. | `data/outputs/<league>/draft/draft_board_<season>.csv`; source tab also uses `source_rankings_<season>.csv`. |
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
 | **Weekly Actions** | Prioritized decision inbox, recommended lineup, explanations, matchup simulation, waiver bids, K/DST streamers, pipeline health, and a follow/reject outcome ledger. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
 | **Trade Finder** | Ranked 1-for-1 and uneven packages across every roster, with lineup gain, partner gain, fairness, and optional playoff simulation. | ROS projections plus cached Sleeper rosters. |
-| **Live Matchup** | Live score, projected finish, win probability, remaining players, and swing outcomes. | Weekly projections, schedule, and current Sleeper matchup data. |
 | **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
 | **Decision Learning** | Recorded choices, settled outcomes, realized value, regret, and confidence calibration. | `data/outputs/<league>/decisions/ledger.parquet`. |
 | **Postgame Review** | Completed-week decision outcomes and categorized model misses with confirmed injuries excluded. | Prediction logs, weekly actuals/usage, and the decision ledger. |
 | **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
 | **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
 | **Operations** | League refresh health, upstream source age, host disk/app status, schedules, and manual refresh controls. | Refresh manifests, cache metadata, and local host state. |
-| **Install App** | iPhone and Android home-screen installation steps for the private dashboard. | Tailscale access and Streamlit static PWA assets. |
-| **Schedule Grid** | Positional SOS, bye-aware heatmap, and player matchup detail with usage context. | `data/interim/schedule.parquet`, `defense_position_allowed.parquet`, and `data/features/player_week_features.parquet`. |
 | **Model Health** | Active projection source and current/historical evaluation reports. | `config/projection_source_evaluation.yml` and `data/outputs/eval/*/report.md`. |
-| **Draft Mobile** | Phone-friendly best-available cards, position filters, tier depth, and live/replayed picks. | Draft board CSV plus live Sleeper access or an active replay session. |
-| **Mock Draft** | Sleeper-style draft grid and repeated practice against ADP-driven bots using real keepers and pick order. | Draft board CSV, league config, and keeper config where applicable. |
 | **ROS Rankings** | Current free-agent ROS rank, movement, expected games, quantile totals, VOR, and playoff value. | `data/outputs/<league>/rankings_ros/latest.parquet`. |
 | **Chopped Bids** | Available players from completed chopped transactions, roster-relative starter/depth value, opponent market estimate, recommended bid, and hard ceiling. | Weekly/ROS projections plus cached Sleeper rosters and transactions for the selected chopped league. |
 
@@ -809,11 +810,9 @@ Set `is_primary: true` on exactly one file in `config/leagues/`. All others must
 
 Dashboard pages do not build data on demand. Run the producer named in the page's error message:
 
-- Draft page: `ffapp draft board`
 - Weekly Rankings: `ffapp project --week N`
 - Model Health: `ffapp evaluate --seasons ...`
 - ROS Rankings: range-mode `ffapp project`, followed by `ffapp rankings ros`
-- Schedule Grid: materialize the interim schedule, defense-vs-position, and feature tables
 
 ### The B3 file is missing
 

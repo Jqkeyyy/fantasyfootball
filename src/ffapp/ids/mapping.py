@@ -149,7 +149,25 @@ def _load_sleeper_players(path: Path) -> pl.DataFrame:
         }
         for sleeper_id, p in raw.items()
     ]
-    df = pl.DataFrame(records)
+    # Optional text fields can be null throughout Polars' inference sample.
+    # Keep their types stable when a later player has an injury note or ID.
+    df = pl.DataFrame(
+        records,
+        schema={
+            "sleeper_id": pl.String,
+            "full_name": pl.String,
+            "position": pl.String,
+            "team": pl.String,
+            "gsis_id": pl.String,
+            "espn_id": pl.String,
+            "birth_date": pl.String,
+            "search_rank": pl.Int64,
+            "active": pl.Boolean,
+            "injury_status": pl.String,
+            "injury_body_part": pl.String,
+            "injury_notes": pl.String,
+        },
+    )
     return df.with_columns(
         pl.when(pl.col("full_name").is_not_null())
         .then(pl.col("full_name").map_elements(normalize_name, return_dtype=pl.Utf8))

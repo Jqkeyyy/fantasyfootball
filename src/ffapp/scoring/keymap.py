@@ -87,6 +87,8 @@ def _parse_distances(fg_made_list: str | None) -> list[int]:
 
 def _fg_yards(stats: pl.DataFrame, value: float) -> pl.Series:
     """Total yardage of every made field goal, for per-yard (`fgm_yds`) scoring."""
+    if "fg_made_yards" in stats.columns:
+        return (stats["fg_made_yards"].fill_null(0) * value).cast(pl.Float64)
     yards = stats["fg_made_list"].map_elements(
         lambda s: sum(_parse_distances(s)), return_dtype=pl.Int64
     )

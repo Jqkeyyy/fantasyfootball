@@ -386,6 +386,34 @@ def weekly_accuracy(history: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def verified_learning_history(history: pl.DataFrame) -> pl.DataFrame:
+    """Exclude legacy wrong-season ESPN inputs from source selection evidence.
+
+    Raw logs remain intact for forensic accuracy review. Only forecasts produced
+    with explicit season matching and no source fallback qualify as ESPN evidence.
+    """
+    if history.is_empty():
+        return history
+    verified = (
+        pl.col("espn_season_verified").fill_null(False)
+        if "espn_season_verified" in history.columns
+        else pl.lit(False)
+    )
+    updates = []
+    if "espn_mean" in history.columns:
+        updates.append(
+            pl.when(verified).then(pl.col("espn_mean")).otherwise(None).alias("espn_mean")
+        )
+    if "projection_source" in history.columns:
+        invalid_live = (pl.col("projection_source") == "espn_weekly") & ~verified
+        for column in ["live_mean", "live_q10", "live_q25", "live_q50", "live_q75", "live_q90"]:
+            if column in history.columns:
+                updates.append(
+                    pl.when(invalid_live).then(None).otherwise(pl.col(column)).alias(column)
+                )
+    return history.with_columns(updates)
+
+
 def materialize_inseason_report(
     settings: Settings, league: LeagueConfig, fmt: LeagueFormat
 ) -> dict[str, object]:
@@ -393,6 +421,7 @@ def materialize_inseason_report(
     history = load_prediction_history(
         settings.data_root / "outputs" / league.slug / "prediction_log"
     )
+    history = verified_learning_history(history)
     performance = summarize_inseason_performance(history)
     weights = source_reliability_weights(performance)
     blend_weights = adaptive_blend_weights(performance)
@@ -416,6 +445,9 @@ def materialize_inseason_report(
         "league_slug": league.slug,
         "scored_weeks": int(trends.select("season", "week").unique().height),
         "recommendation": recommendation,
+        "source_integrity": (
+            "Legacy ESPN estimates without verified season are excluded from learning."
+        ),
         "adaptive_blend_active": not blend_weights.is_empty(),
         "adaptive_blend_positions": (
             sorted(blend_weights["position"].unique().to_list())

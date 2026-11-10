@@ -403,3 +403,137 @@ def test_action_inbox_and_moves_fill_an_empty_starting_spot() -> None:
     ]
     move = moves.row(0, named=True)
     assert (move["start"], move["sit"], move["expected_gain"]) == ("RB Two", None, 9.0)
+
+
+def test_specialists_join_lineup_and_only_produce_legal_swaps() -> None:
+    from dataclasses import replace
+
+    from ffapp.app.weekly_actions_page import (
+        add_specialist_rankings,
+        lineup_swap_rows,
+        specialist_projections,
+    )
+    from ffapp.tools.decision_ledger import recommendation_rows
+
+    points = pl.DataFrame(
+        {
+            "season": [2026] * 6,
+            "week": [2, 2, 2, 2, 1, 2],
+            "player_name": ["K One", "K Two", "A Defense", "B Defense", "Old", "Bye"],
+            "position": ["K", "K", "DST", "DST", "DST", "DST"],
+            "team": ["A", "B", "A", "B", "C", "C"],
+            "points": [10.0, 8.0, 9.0, 6.0, 50.0, 50.0],
+        }
+    )
+    players = pl.DataFrame(
+        {
+            "player_id": ["k1", "k2"],
+            "sleeper_id": ["s1", "s2"],
+            "full_name": ["K One", "K Two"],
+            "normalized_name": ["k one", "k two"],
+            "position": ["K", "K"],
+            "injury_status": [None, None],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2026],
+            "week": [2],
+            "home_team": ["A"],
+            "away_team": ["B"],
+        }
+    )
+    specialists = specialist_projections(points, players, schedule, season=2026, week=2)
+    assert set(specialists["player_id"]) == {"k1", "k2", "A", "B"}
+    roster = {"rb1", "rb2", "wr1", "wr2", "k1", "k2", "A", "B"}
+    current = {"rb1", "rb2", "wr1", "k2", "B"}
+    rankings = add_specialist_rankings(_rankings(), specialists, players, roster, roster)
+    fmt = replace(_format(), starters={"RB": 1, "WR": 1, "K": 1, "DST": 1})
+    lineup = recommended_lineup(rankings, roster, current, fmt)
+    assert set(lineup["player_id"]) == {"rb1", "rb2", "wr1", "k1", "A"}
+    swaps = lineup_swap_rows(lineup, rankings, current, fmt)
+    assert {(add["player_id"], drop["player_id"]) for add, drop in swaps if drop} == {
+        ("k1", "k2"),
+        ("A", "B"),
+    }
+    decisions = lineup_decisions(lineup, rankings, current, fmt)
+    assert decisions["confidence"].null_count() == 2
+    assert decisions["start_floor"].null_count() == 2
+    assert set(decisions["confidence_label"]) == {"Point estimate only"}
+    ledger = recommendation_rows(
+        "league",
+        2026,
+        2,
+        lineup,
+        rankings,
+        current,
+        pl.DataFrame(),
+        fmt=fmt,
+    )
+    assert ledger.height == 2
+    assert ledger["confidence"].null_count() == 2
+    inbox = build_action_inbox(
+        lineup,
+        rankings,
+        current,
+        pl.DataFrame(),
+        fmt=fmt,
+        pipeline_status="healthy",
+    )
+    assert inbox["confidence"].null_count() == 2
+    locked = lineup_decisions(
+        lineup,
+        rankings,
+        current,
+        fmt,
+        kickoff_by_team={"A": datetime.now(UTC) - timedelta(minutes=1)},
+    )
+    assert locked.is_empty()
+
+    unavailable = players.with_columns(pl.lit("Out").alias("injury_status"))
+    injured_rankings = add_specialist_rankings(
+        _rankings(),
+        specialists,
+        unavailable,
+        roster,
+        roster,
+    )
+    injured_lineup = recommended_lineup(injured_rankings, roster, current, fmt)
+    assert not set(injured_lineup["player_id"]) & {"k1", "k2"}
+
+
+def test_specialist_provider_position_and_team_aliases() -> None:
+    from ffapp.app.weekly_actions_page import specialist_projections
+
+    points = pl.DataFrame(
+        {
+            "season": [2026] * 3,
+            "week": [4] * 3,
+            "player_name": ["Rams Kicker", "Rams D/ST", "Commanders D/ST"],
+            "position": ["K", "DST", "DST"],
+            "team": ["LAR", "LAR", "WSH"],
+            "points": [9.0, 8.0, 7.0],
+        }
+    )
+    players = pl.DataFrame(
+        {
+            "player_id": ["k1"],
+            "sleeper_id": ["s1"],
+            "full_name": ["Rams Kicker"],
+            "normalized_name": ["rams kicker"],
+            "position": ["PK"],
+        }
+    )
+    schedule = pl.DataFrame(
+        {
+            "season": [2026],
+            "week": [4],
+            "home_team": ["LA"],
+            "away_team": ["WAS"],
+        }
+    )
+    result = specialist_projections(points, players, schedule, season=2026, week=4)
+    assert set(result["player_id"]) == {"k1", "LAR", "WAS"}
+    assert set(result["sleeper_id"]) == {"s1", "LAR", "WAS"}
+    assert set(result["team"]) == {"LA", "WAS"}
+    assert set(result["opponent"]) == {"LA", "WAS"}
