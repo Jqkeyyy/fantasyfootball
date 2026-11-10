@@ -257,11 +257,6 @@ def render_home(slug: str) -> None:
     fourth.page_link(
         "pages/14_Roster_Strategy.py", label="Roster strategy", icon=":material/account_tree:"
     )
-    st.page_link(
-        "pages/15_Decision_Learning.py",
-        label="Review which recommendations helped",
-        icon=":material/psychology:",
-    )
     trade, postgame = st.columns(2)
     trade.page_link(
         "pages/18_Trade_Finder.py",

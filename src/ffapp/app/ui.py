@@ -213,7 +213,6 @@ def apply_app_shell() -> None:
               <a href="/Alerts" target="_self">Phone Alerts</a>
               <a href="/Operations" target="_self">Operations</a>
               <a href="/Roster_Strategy" target="_self">Roster Strategy</a>
-              <a href="/Decision_Learning" target="_self">Decision Learning</a>
               <a href="/Postgame_Review" target="_self">Postgame Review</a>
               <a href="/Predictions_vs_Actuals" target="_self">Predictions vs Actuals</a>
               <a href="/Accuracy_Audit" target="_self">Accuracy Audit</a>

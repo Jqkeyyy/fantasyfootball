@@ -381,9 +381,7 @@ FantasyPros consensus, and trailing-performance sources earn position-specific b
 after at least four completed weeks and 60 scored player-weeks; no source can exceed 70%.
 
 Recommendations are saved automatically. Record whether you followed them in **Weekly
-Actions** or **Decision Learning**. Later full refreshes settle those choices from actual
-points so Decision Learning can report follow rate, realized value, regret, and confidence
-bands. It waits for repeated settled decisions before presenting a pattern as useful.
+Actions**; later full refreshes settle those choices from actual points.
 
 ### Global settings
 
@@ -621,7 +619,6 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
 | **Trade Finder** | Ranked 1-for-1 and uneven packages across every roster, with lineup gain, partner gain, fairness, and optional playoff simulation. | ROS projections plus cached Sleeper rosters. |
 | **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
-| **Decision Learning** | Recorded choices, settled outcomes, realized value, regret, and confidence calibration. | `data/outputs/<league>/decisions/ledger.parquet`. |
 | **Postgame Review** | Completed-week decision outcomes and categorized model misses with confirmed injuries excluded. | Prediction logs, weekly actuals/usage, and the decision ledger. |
 | **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
 | **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
