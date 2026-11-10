@@ -217,11 +217,6 @@ def render_home(slug: str) -> None:
         if matchup.get("opponent") is not None:
             right.metric(matchup["opponent_name"], f"{matchup['opponent'] or 0:.1f}")
         st.caption("Last cached Sleeper scores; updated by full refreshes and kickoff checks.")
-        st.page_link(
-            "pages/13_Live_Matchup.py",
-            label="Open live matchup",
-            icon=":material/sports_football:",
-        )
     else:
         st.info("No cached matchup is available for this week.")
     st.subheader("Lineup moves to consider")
@@ -278,7 +273,3 @@ def render_home(slug: str) -> None:
         label="Review last week's misses",
         icon=":material/troubleshoot:",
     )
-    with st.expander("Draft & offseason tools"):
-        st.page_link("pages/11_Draft_Board.py", label="Draft Board")
-        st.page_link("pages/5_Draft_Mobile.py", label="Draft Mobile")
-        st.page_link("pages/6_Mock_Draft.py", label="Mock Draft")

@@ -103,7 +103,7 @@ def command_summary(command: str, league_slug: str | None = None) -> str:
         week = payload.get("week", _alerts(slug).get("week", "?"))
         status = str(payload.get("status") or "No active kickoff-window alert")
         return (
-            f"**{display_name} · Week {week} matchup**\n• {status}\n{dashboard_url()}Live_Matchup"
+            f"**{display_name} · Week {week} matchup**\n• {status}\n{dashboard_url()}"
         )[:1900]
     if command == "trades":
         return (

@@ -11,7 +11,7 @@ def _installable_app_metadata() -> None:
 
 
 def apply_app_shell() -> None:
-    """Apply the app's brand, spacing, cards, and mobile layout once per page."""
+    """Apply the app's brand, navigation, spacing, and responsive layout once per page."""
     _installable_app_metadata()
     st.markdown(
         """
@@ -33,7 +33,6 @@ def apply_app_shell() -> None:
         }
         [data-testid="stHeader"] { background: transparent; }
         [data-testid="stToolbar"] { display: none; }
-        .ff-mobile-nav { display: none; }
         .block-container {
             max-width: 1260px;
             padding-top: 2.35rem;
@@ -133,6 +132,56 @@ def apply_app_shell() -> None:
             font-weight: 700;
         }
 
+        .ff-app-nav {
+            display: block;
+            margin: 0 0 1.25rem;
+            padding: .8rem .9rem;
+            color: #ffffff;
+            background: linear-gradient(135deg, #132238, #1b3453);
+            border-radius: 14px;
+            box-shadow: 0 9px 24px rgba(19,34,56,.18);
+        }
+        .ff-app-nav__brand {
+            margin-bottom: .55rem;
+            color: #ffffff;
+            font-size: .7rem;
+            font-weight: 800;
+            letter-spacing: .12em;
+        }
+        .ff-app-nav summary {
+            padding: .25rem 0;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 750;
+            list-style-position: inside;
+        }
+        .ff-app-nav__links {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: .45rem;
+            margin-top: .7rem;
+        }
+        .ff-app-nav__links a {
+            display: flex;
+            align-items: center;
+            min-height: 2.55rem;
+            padding: .55rem .65rem;
+            color: #eaf1f8 !important;
+            background: rgba(255,255,255,.08);
+            border: 1px solid rgba(255,255,255,.12);
+            border-radius: 9px;
+            font-size: .82rem;
+            font-weight: 650;
+            line-height: 1.15;
+            text-decoration: none;
+        }
+        .ff-app-nav__links a:first-child {
+            color: #ffffff !important;
+            background: rgba(19,185,129,.28);
+            border-color: rgba(19,185,129,.55);
+        }
+
         @media (max-width: 700px) {
             .block-container { padding: 1.25rem 1rem 3rem; }
             h1 { font-size: 2rem !important; line-height: 1.08 !important; }
@@ -140,55 +189,7 @@ def apply_app_shell() -> None:
             [data-testid="stHorizontalBlock"] { gap: .65rem; }
             [data-testid="stMetric"] { padding: .75rem .8rem; }
             [data-testid="stDataFrame"] { border-radius: 10px; }
-            .ff-mobile-nav {
-                display: block;
-                margin: 0 0 1.25rem;
-                padding: .8rem .9rem;
-                color: #ffffff;
-                background: linear-gradient(135deg, #132238, #1b3453);
-                border-radius: 14px;
-                box-shadow: 0 9px 24px rgba(19,34,56,.18);
-            }
-            .ff-mobile-nav__brand {
-                margin-bottom: .55rem;
-                color: #ffffff;
-                font-size: .7rem;
-                font-weight: 800;
-                letter-spacing: .12em;
-            }
-            .ff-mobile-nav summary {
-                padding: .25rem 0;
-                color: #ffffff;
-                cursor: pointer;
-                font-size: 1rem;
-                font-weight: 750;
-                list-style-position: inside;
-            }
-            .ff-mobile-nav__links {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: .45rem;
-                margin-top: .7rem;
-            }
-            .ff-mobile-nav__links a {
-                display: flex;
-                align-items: center;
-                min-height: 2.55rem;
-                padding: .55rem .65rem;
-                color: #eaf1f8 !important;
-                background: rgba(255,255,255,.08);
-                border: 1px solid rgba(255,255,255,.12);
-                border-radius: 9px;
-                font-size: .82rem;
-                font-weight: 650;
-                line-height: 1.15;
-                text-decoration: none;
-            }
-            .ff-mobile-nav__links a:first-child {
-                color: #ffffff !important;
-                background: rgba(19,185,129,.28);
-                border-color: rgba(19,185,129,.55);
-            }
+            .ff-app-nav__links { grid-template-columns: 1fr 1fr; }
         }
         </style>
         """,
@@ -196,32 +197,27 @@ def apply_app_shell() -> None:
     )
     st.markdown(
         """
-        <div class="ff-mobile-nav">
-          <div class="ff-mobile-nav__brand">FF COMMAND CENTER</div>
+        <div class="ff-app-nav">
+          <div class="ff-app-nav__brand">FF COMMAND CENTER</div>
           <details>
             <summary>Menu &amp; all tools</summary>
-            <nav class="ff-mobile-nav__links" aria-label="Mobile navigation">
+            <nav class="ff-app-nav__links" aria-label="Main navigation">
               <a href="/" target="_self">Your Week</a>
               <a href="/Weekly_Actions" target="_self">Weekly Actions</a>
               <a href="/Weekly_Rankings" target="_self">Weekly Rankings</a>
               <a href="/Weekly_Report" target="_self">Weekly Report</a>
-              <a href="/Schedule_Grid" target="_self">Schedule Grid</a>
               <a href="/ROS_Rankings" target="_self">ROS Rankings</a>
               <a href="/Trade_Analyzer" target="_self">Trade Analyzer</a>
               <a href="/Trade_Finder" target="_self">Trade Finder</a>
               <a href="/Chopped_Bids" target="_self">Chopped Bids</a>
               <a href="/Alerts" target="_self">Phone Alerts</a>
               <a href="/Operations" target="_self">Operations</a>
-              <a href="/Live_Matchup" target="_self">Live Matchup</a>
               <a href="/Roster_Strategy" target="_self">Roster Strategy</a>
               <a href="/Decision_Learning" target="_self">Decision Learning</a>
               <a href="/Postgame_Review" target="_self">Postgame Review</a>
               <a href="/Predictions_vs_Actuals" target="_self">Predictions vs Actuals</a>
-              <a href="/Install_App" target="_self">Install App</a>
+              <a href="/Accuracy_Audit" target="_self">Accuracy Audit</a>
               <a href="/Model_Health" target="_self">Model Health</a>
-              <a href="/Draft_Board" target="_self">Draft Board</a>
-              <a href="/Draft_Mobile" target="_self">Draft Mobile</a>
-              <a href="/Mock_Draft" target="_self">Mock Draft</a>
             </nav>
           </details>
         </div>
