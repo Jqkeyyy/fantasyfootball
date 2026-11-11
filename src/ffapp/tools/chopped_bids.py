@@ -105,29 +105,6 @@ def chopped_candidates(
     return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
 
 
-def _percentile(values: list[int], percentile: float) -> int:
-    if not values:
-        return 0
-    ordered = sorted(values)
-    index = (len(ordered) - 1) * percentile
-    lower = math.floor(index)
-    upper = math.ceil(index)
-    if lower == upper:
-        return ordered[lower]
-    weight = index - lower
-    return int(round(ordered[lower] * (1.0 - weight) + ordered[upper] * weight))
-
-
-def _estimated_win_probability(bid: int, opponent_bids: list[int]) -> float:
-    """Smoothed empirical chance that a bid clears modeled opponents."""
-    if bid <= 0:
-        return 0.0
-    if not opponent_bids:
-        return 0.95
-    cleared = sum(opponent_bid < bid for opponent_bid in opponent_bids)
-    return (cleared + 1.0) / (len(opponent_bids) + 2.0)
-
-
 def _roster_players(
     roster: dict[str, Any], by_sleeper_id: dict[str, dict[str, Any]]
 ) -> list[PlayerProjection]:
@@ -172,11 +149,71 @@ def _fast_lineup_points(players: list[PlayerProjection], fmt: LeagueFormat) -> f
     return best(0, 0)
 
 
-def _win_chance(bid: int, opponent_bids: list[int], lock_bid: int) -> float:
+# Market price model, fit on 145 resolved chopped-player waivers from this account's two
+# chopped leagues (2026 weeks 2-8). Winning prices follow points above positional
+# replacement far more than raw projection: an elite QB sells for most of a team's
+# FAAB while a merely good QB often goes unclaimed. Prices are expressed as a share of
+# the average remaining FAAB per active team, so they shrink as the league spends down.
+# Leave-one-week-out backtest: average miss $50 vs $64 for the per-team share model.
+REPLACEMENT_PPG = {"QB": 13.0, "RB": 3.5, "WR": 6.0, "TE": 6.5}
+DEFAULT_REPLACEMENT_PPG = 6.0
+PRICE_TIER_EDGES = (0.0, 3.0, 6.0, 9.0)
+# Deciles (0%, 10%, ..., 100%) of winning price / average remaining FAAB, per tier.
+PRICE_SHARE_DECILES = (
+    (0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.024, 0.055, 0.215),
+    (0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.003, 0.013, 0.036, 0.178, 0.445),
+    (0.000, 0.000, 0.000, 0.002, 0.011, 0.025, 0.055, 0.117, 0.177, 0.365, 0.590),
+    (0.006, 0.092, 0.166, 0.220, 0.251, 0.261, 0.285, 0.313, 0.375, 0.408, 0.550),
+    (0.182, 0.200, 0.275, 0.404, 0.604, 0.720, 0.784, 0.800, 0.807, 0.831, 0.880),
+)
+# Price quantile each bid targets. Ordinary players are bid near the typical price,
+# where the old rule overpaid most; scarce top tiers are bid further up the range.
+CONSERVATIVE_QUANTILE = 0.5
+RECOMMENDED_QUANTILE = (0.6, 0.6, 0.6, 0.75, 0.85)
+AGGRESSIVE_QUANTILE = 0.9
+
+
+def price_tier(position: str, projection_ppg: float) -> int:
+    """0 (at/below replacement) .. 4 (elite), from points above positional replacement."""
+    above = projection_ppg - REPLACEMENT_PPG.get(position, DEFAULT_REPLACEMENT_PPG)
+    return sum(above >= edge for edge in PRICE_TIER_EDGES)
+
+
+def market_price(tier: int, average_faab: float, quantile: float) -> int:
+    """Estimated winning price at ``quantile`` of this tier's historical price range."""
+    deciles = PRICE_SHARE_DECILES[tier]
+    position = min(max(quantile, 0.0), 1.0) * 10
+    lower = math.floor(position)
+    upper = min(lower + 1, 10)
+    share = deciles[lower] + (deciles[upper] - deciles[lower]) * (position - lower)
+    return int(round(share * max(average_faab, 0.0)))
+
+
+def market_win_probability(tier: int, average_faab: float, bid: int) -> float:
+    """Historical chance that ``bid`` beats the winning price for this tier."""
+    if bid <= 0:
+        return 0.0
+    if average_faab <= 0:
+        return 1.0
+    share = bid / average_faab
+    deciles = PRICE_SHARE_DECILES[tier]
+    # Highest decile whose price is still below the bid (ties at $0 mean unclaimed).
+    below = [index for index, value in enumerate(deciles) if value < share]
+    if not below:
+        return 0.0
+    index = below[-1]
+    if index == 10:
+        return 1.0
+    low, high = deciles[index], deciles[index + 1]
+    fraction = (share - low) / (high - low) if high > low else 1.0
+    return min(1.0, (index + fraction) / 10)
+
+
+def _win_chance(bid: int, tier: int, average_faab: float, lock_bid: int) -> float:
     """Certain once a bid exceeds every interested competitor's remaining FAAB."""
     if bid > 0 and bid >= lock_bid:
         return 1.0
-    return _estimated_win_probability(bid, opponent_bids)
+    return market_win_probability(tier, average_faab, bid)
 
 
 def build_chopped_bid_board(
@@ -304,6 +341,9 @@ def build_chopped_bid_board(
             )
 
     my_budget = remaining_faab(roster_by_id[my_roster_id], total_budget)
+    average_faab = sum(
+        remaining_faab(roster, total_budget) for roster in roster_by_id.values()
+    ) / max(1, len(roster_by_id))
     name_by_player_id = {
         str(row["player_id"]): str(row["player_name"])
         for row in player_values.filter(pl.col("player_name").is_not_null()).iter_rows(named=True)
@@ -328,9 +368,13 @@ def build_chopped_bid_board(
         # No competitor can bid more than the FAAB it has left, so one dollar above the
         # richest interested competitor's budget wins outright (barring a tie-break).
         lock_bid = richest_competitor_faab + 1
-        market_bid = _percentile(opponent_bids, 0.75)
-        median_market_bid = _percentile(opponent_bids, 0.50)
         competing_teams = len(opponent_bids)
+        tier = price_tier(str(row["position"]), float(row["projection_ppg"]))
+
+        def priced(quantile: float, tier: int = tier, cap: int = richest_competitor_faab) -> int:
+            return min(cap, market_price(tier, average_faab, quantile))
+
+        market_bid = priced(RECOMMENDED_QUANTILE[tier])
         if my_ros_value <= 0:
             recommendation = "No lineup upgrade"
             conservative_bid = 0
@@ -343,21 +387,11 @@ def build_chopped_bid_board(
             aggressive_bid = 0
         else:
             recommendation = "Bid"
-            conservative_bid = min(
-                max_bid,
-                max(1, round(value_bid * 0.8), median_market_bid + 1),
-            )
-            base_recommendation = min(max_bid, max(value_bid, market_bid + 1))
-            urgency_buffer = round((max_bid - base_recommendation) * survival_urgency * 0.15)
+            base_recommendation = market_bid + 1
+            urgency_buffer = round((max_bid - base_recommendation) * survival_urgency * 0.05)
             recommended_bid = min(max_bid, base_recommendation + urgency_buffer)
-            aggressive_bid = min(
-                max_bid,
-                max(
-                    recommended_bid,
-                    max(opponent_bids, default=0) + 1,
-                    round(value_bid * (1.0 + 0.20 * survival_urgency)),
-                ),
-            )
+            conservative_bid = min(recommended_bid, priced(CONSERVATIVE_QUANTILE) + 1)
+            aggressive_bid = min(max_bid, max(recommended_bid, priced(AGGRESSIVE_QUANTILE) + 1))
         if recommendation == "Bid" and lock_bid <= max_bid:
             conservative_bid = min(conservative_bid, lock_bid)
             recommended_bid = min(recommended_bid, lock_bid)
@@ -385,12 +419,14 @@ def build_chopped_bid_board(
                 "aggressive_bid": aggressive_bid,
                 "max_bid": max_bid,
                 "conservative_win_probability": _win_chance(
-                    conservative_bid, opponent_bids, lock_bid
+                    conservative_bid, tier, average_faab, lock_bid
                 ),
                 "recommended_win_probability": _win_chance(
-                    recommended_bid, opponent_bids, lock_bid
+                    recommended_bid, tier, average_faab, lock_bid
                 ),
-                "aggressive_win_probability": _win_chance(aggressive_bid, opponent_bids, lock_bid),
+                "aggressive_win_probability": _win_chance(
+                    aggressive_bid, tier, average_faab, lock_bid
+                ),
                 "survival_urgency": survival_urgency,
                 "faab_after_recommended": max(0, my_budget - recommended_bid),
                 "competing_teams": competing_teams,

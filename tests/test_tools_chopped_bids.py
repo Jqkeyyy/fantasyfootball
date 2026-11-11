@@ -8,6 +8,9 @@ from ffapp.tools.chopped_bids import (
     _fast_lineup_points,
     build_chopped_bid_board,
     chopped_candidates,
+    market_price,
+    market_win_probability,
+    price_tier,
     remaining_faab,
 )
 
@@ -132,15 +135,16 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
     star = board.filter(pl.col("sleeper_id") == "c1").row(0, named=True)
     small = board.filter(pl.col("sleeper_id") == "c2").row(0, named=True)
     assert star["lineup_gain_ppg"] == 10.0
-    assert star["market_bid"] == 50
+    # Star QB: 20 ppg is 7 above QB replacement (tier 3); average FAAB is (100 + 50) / 2.
+    assert star["market_bid"] == market_price(3, 75.0, 0.75)
     # The only competitor has $50 left, so $51 wins outright; the old value-share bid
     # from our larger $100 budget would have overpaid at $91.
     assert star["richest_competitor_faab"] == 50
     assert star["lock_bid"] == 51
-    assert star["recommended_bid"] == 51
-    assert star["aggressive_bid"] == 51
-    assert star["recommended_win_probability"] == 1.0
-    assert star["teams_can_outbid"] == 0
+    assert star["recommended_bid"] == 30  # market + 1 plus a small survival-urgency buffer
+    assert star["aggressive_bid"] == 32
+    assert star["aggressive_bid"] <= star["lock_bid"]
+    assert star["teams_can_outbid"] == 1
     assert star["recommended_bid"] <= star["max_bid"]
     assert star["conservative_bid"] <= star["recommended_bid"] <= star["aggressive_bid"]
     assert (
@@ -149,7 +153,7 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
         <= star["aggressive_win_probability"]
     )
     assert star["survival_urgency"] == 1.0
-    assert star["faab_after_recommended"] == 49
+    assert star["faab_after_recommended"] == 70
     assert small["competing_teams"] == 0
     assert small["recommended_bid"] == 1
     assert small["recommended_win_probability"] == 1.0
@@ -196,7 +200,7 @@ def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
 
     row = board.row(0, named=True)
     assert row["max_bid"] == 10
-    assert row["market_bid"] == 100
+    assert row["market_bid"] > row["max_bid"]
     assert row["recommended_bid"] == 0
     assert row["recommendation"] == "Pass above max"
     assert row["richest_competitor_faab"] == 100
@@ -251,7 +255,7 @@ def test_elite_backup_gets_smaller_depth_insurance_value() -> None:
     assert row["drop_player"] == "Weak Bench"
 
 
-def test_learned_opponent_aggression_changes_market_estimate() -> None:
+def test_learned_opponent_aggression_changes_opponent_estimate() -> None:
     candidates = pl.DataFrame(
         {
             "sleeper_id": ["candidate"],
@@ -300,4 +304,28 @@ def test_learned_opponent_aggression_changes_market_estimate() -> None:
         season_end_week=2,
         opponent_aggression={2: 1.5},
     )
-    assert aggressive["market_bid"].item() > neutral["market_bid"].item()
+    assert (
+        aggressive["highest_opponent_estimate"].item() > neutral["highest_opponent_estimate"].item()
+    )
+
+
+def test_price_tier_uses_points_above_positional_replacement() -> None:
+    assert price_tier("QB", 15.0) == 1  # a solid QB is barely above QB replacement
+    assert price_tier("RB", 15.0) == 4  # the same points at RB are elite
+    assert price_tier("WR", 5.0) == 0
+
+
+def test_market_price_scales_with_league_faab_and_quantile() -> None:
+    assert market_price(4, 500.0, 0.5) == 360
+    assert market_price(4, 250.0, 0.5) == 180
+    assert market_price(0, 500.0, 0.5) == 0  # low-tier players usually go unclaimed
+    assert market_price(2, 500.0, 0.6) < market_price(2, 500.0, 0.9)
+
+
+def test_market_win_probability_rises_with_bid() -> None:
+    assert market_win_probability(4, 500.0, 0) == 0.0
+    low = market_win_probability(4, 500.0, 100)
+    high = market_win_probability(4, 500.0, 400)
+    assert 0.0 < low < high < 1.0
+    assert market_win_probability(0, 500.0, 1) >= 0.7  # most tier-0 players go unclaimed
+    assert market_win_probability(4, 500.0, 500) == 1.0
