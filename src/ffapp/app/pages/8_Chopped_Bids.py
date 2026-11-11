@@ -218,6 +218,69 @@ metric_c.metric("Teams remaining", active_teams)
 metric_d.metric("Projection week", week)
 metric_e.metric("Survive this chop", f"{my_survival:.0%}")
 
+active_rosters = [roster for roster in rosters if roster.get("players")]
+league_faab = (
+    pl.DataFrame(
+        [
+            {
+                "roster_id": int(roster["roster_id"]),
+                "manager": manager_by_roster.get(int(roster["roster_id"])),
+                "remaining_faab": remaining_faab(roster, total_budget),
+            }
+            for roster in active_rosters
+        ]
+    )
+    .join(survival_table.select("roster_id", "elimination_probability"), on="roster_id", how="left")
+    .with_columns(
+        (pl.col("remaining_faab") - my_remaining).alias("vs_you"),
+        (pl.col("roster_id") == my_roster_id).alias("is_you"),
+    )
+    .sort("remaining_faab", descending=True)
+)
+opponent_faab = league_faab.filter(~pl.col("is_you"))["remaining_faab"]
+richest_opponent = int(opponent_faab.max() or 0) if opponent_faab.len() else 0
+faab_rank = int(league_faab["remaining_faab"].gt(my_remaining).sum()) + 1
+st.markdown("#### League FAAB")
+faab_a, faab_b, faab_c, faab_d = st.columns(4)
+faab_a.metric("Your FAAB rank", f"{faab_rank} of {league_faab.height}")
+faab_b.metric(
+    "Richest opponent", f"${richest_opponent}", delta=f"{richest_opponent - my_remaining:+d} vs you"
+)
+faab_c.metric(
+    "Opponent median",
+    f"${int(opponent_faab.median() or 0) if opponent_faab.len() else 0}",
+)
+faab_d.metric(
+    "Teams you can outbid on anyone",
+    int((opponent_faab < my_remaining).sum()) if opponent_faab.len() else 0,
+    help="Opponents with less FAAB than you: they can never top your full budget.",
+)
+if my_remaining > richest_opponent:
+    st.success(
+        f"You have the most FAAB. No opponent can bid more than ${richest_opponent}, so "
+        f"${richest_opponent + 1} wins any player outright. Bids below are capped there."
+    )
+st.dataframe(
+    league_faab.with_columns(
+        pl.when(pl.col("is_you"))
+        .then(pl.col("manager") + " (you)")
+        .otherwise(pl.col("manager"))
+        .alias("manager")
+    ).select("manager", "remaining_faab", "vs_you", "elimination_probability"),
+    width="stretch",
+    hide_index=True,
+    column_config={
+        "manager": "Manager",
+        "remaining_faab": st.column_config.ProgressColumn(
+            "Remaining FAAB", min_value=0, max_value=max(total_budget, 1), format="$%d"
+        ),
+        "vs_you": st.column_config.NumberColumn("vs you", format="%+d"),
+        "elimination_probability": st.column_config.ProgressColumn(
+            "Chop risk this week", min_value=0.0, max_value=1.0, format="percent"
+        ),
+    },
+)
+
 with st.expander("This week's elimination risk"):
     survival_display = survival_table.with_columns(
         pl.col("roster_id")
@@ -296,13 +359,10 @@ with st.expander("Recommendation results"):
         else:
             result_a, result_b = st.columns(2)
             mean_error = float(
-                recommendation_results.select(pl.col("recommendation_error").mean()).item()
-                or 0.0
+                recommendation_results.select(pl.col("recommendation_error").mean()).item() or 0.0
             )
             winning_rate = float(
-                recommendation_results.select(
-                    pl.col("recommended_met_winning_bid").mean()
-                ).item()
+                recommendation_results.select(pl.col("recommended_met_winning_bid").mean()).item()
                 or 0.0
             )
             result_a.metric(
@@ -367,6 +427,9 @@ st.dataframe(
         "projection_ppg",
         "current_week_projection",
         "competing_teams",
+        "richest_competitor_faab",
+        "lock_bid",
+        "teams_can_outbid",
         "highest_opponent_estimate",
         "drop_player",
         "chopped_week",
@@ -394,6 +457,13 @@ st.dataframe(
         "highest_opponent_estimate": st.column_config.NumberColumn(
             "Highest opponent estimate", format="$%d"
         ),
+        "richest_competitor_faab": st.column_config.NumberColumn(
+            "Richest interested team", format="$%d"
+        ),
+        "lock_bid": st.column_config.NumberColumn("Guaranteed-win bid", format="$%d"),
+        "teams_can_outbid": st.column_config.NumberColumn(
+            "Teams able to outbid", help="Interested opponents with enough FAAB to beat it."
+        ),
         "lineup_gain_ppg": st.column_config.NumberColumn("Lineup gain/wk", format="%+.1f"),
         "depth_gain_ppg": st.column_config.NumberColumn("Depth value/wk", format="%+.1f"),
         "projection_ppg": st.column_config.NumberColumn("ROS PPG", format="%.1f"),
@@ -414,7 +484,12 @@ with st.expander("How the bid is calculated"):
   using each opponent's roster needs and remaining FAAB.
 - **Conservative** and **aggressive** bracket the recommended bid while staying under the same
   value ceiling; aggressive aims to clear the strongest estimated competitor.
-- **Estimated win chance** compares the bid with each opponent's roster-specific estimate.
+- **Remaining FAAB of every team** limits what each opponent is modeled to bid, and it sets
+  the **guaranteed-win bid**: one dollar above the richest team that actually wants the player.
+  No recommendation goes above that, so a big budget is never spent beating teams that cannot
+  afford to compete. (A tie at that amount would fall to Sleeper's tie-break.)
+- **Estimated win chance** compares the bid with each opponent's roster-specific estimate, and
+  is 100% once the bid reaches the guaranteed-win amount.
 - **Survival urgency** rises as your optimized lineup falls behind the active rosters and adds a
   small premium to the recommended bid.
 - **Recommended** is enough to clear that market estimate when it remains below your

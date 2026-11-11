@@ -172,6 +172,13 @@ def _fast_lineup_points(players: list[PlayerProjection], fmt: LeagueFormat) -> f
     return best(0, 0)
 
 
+def _win_chance(bid: int, opponent_bids: list[int], lock_bid: int) -> float:
+    """Certain once a bid exceeds every interested competitor's remaining FAAB."""
+    if bid > 0 and bid >= lock_bid:
+        return 1.0
+    return _estimated_win_probability(bid, opponent_bids)
+
+
 def build_chopped_bid_board(
     candidates: pl.DataFrame,
     player_values: pl.DataFrame,
@@ -312,6 +319,15 @@ def build_chopped_bid_board(
             for roster_id in roster_by_id
             if roster_id != my_roster_id and values_by_roster[roster_id][sleeper_id][0] > 0
         ]
+        competitor_budgets = [
+            remaining_faab(roster_by_id[roster_id], total_budget)
+            for roster_id in roster_by_id
+            if roster_id != my_roster_id and values_by_roster[roster_id][sleeper_id][0] > 0
+        ]
+        richest_competitor_faab = max(competitor_budgets, default=0)
+        # No competitor can bid more than the FAAB it has left, so one dollar above the
+        # richest interested competitor's budget wins outright (barring a tie-break).
+        lock_bid = richest_competitor_faab + 1
         market_bid = _percentile(opponent_bids, 0.75)
         median_market_bid = _percentile(opponent_bids, 0.50)
         competing_teams = len(opponent_bids)
@@ -342,6 +358,11 @@ def build_chopped_bid_board(
                     round(value_bid * (1.0 + 0.20 * survival_urgency)),
                 ),
             )
+        if recommendation == "Bid" and lock_bid <= max_bid:
+            conservative_bid = min(conservative_bid, lock_bid)
+            recommended_bid = min(recommended_bid, lock_bid)
+            aggressive_bid = min(aggressive_bid, lock_bid)
+
         output.append(
             {
                 "sleeper_id": sleeper_id,
@@ -363,19 +384,22 @@ def build_chopped_bid_board(
                 "recommended_bid": recommended_bid,
                 "aggressive_bid": aggressive_bid,
                 "max_bid": max_bid,
-                "conservative_win_probability": _estimated_win_probability(
-                    conservative_bid, opponent_bids
+                "conservative_win_probability": _win_chance(
+                    conservative_bid, opponent_bids, lock_bid
                 ),
-                "recommended_win_probability": _estimated_win_probability(
-                    recommended_bid, opponent_bids
+                "recommended_win_probability": _win_chance(
+                    recommended_bid, opponent_bids, lock_bid
                 ),
-                "aggressive_win_probability": _estimated_win_probability(
-                    aggressive_bid, opponent_bids
-                ),
+                "aggressive_win_probability": _win_chance(aggressive_bid, opponent_bids, lock_bid),
                 "survival_urgency": survival_urgency,
                 "faab_after_recommended": max(0, my_budget - recommended_bid),
                 "competing_teams": competing_teams,
                 "highest_opponent_estimate": max(opponent_bids, default=0),
+                "richest_competitor_faab": richest_competitor_faab,
+                "lock_bid": lock_bid,
+                "teams_can_outbid": sum(budget >= recommended_bid for budget in competitor_budgets)
+                if recommended_bid > 0
+                else len(competitor_budgets),
                 "drop_player": name_by_player_id.get(str(drop_id)) if drop_id else None,
                 "value_basis": (
                     "starter upgrade"
@@ -419,6 +443,9 @@ _BID_SCHEMA = {
     "faab_after_recommended": pl.Int64,
     "competing_teams": pl.Int64,
     "highest_opponent_estimate": pl.Int64,
+    "richest_competitor_faab": pl.Int64,
+    "lock_bid": pl.Int64,
+    "teams_can_outbid": pl.Int64,
     "drop_player": pl.String,
     "value_basis": pl.String,
     "recommendation": pl.String,

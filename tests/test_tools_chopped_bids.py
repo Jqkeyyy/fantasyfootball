@@ -133,7 +133,14 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
     small = board.filter(pl.col("sleeper_id") == "c2").row(0, named=True)
     assert star["lineup_gain_ppg"] == 10.0
     assert star["market_bid"] == 50
-    assert star["recommended_bid"] == 91
+    # The only competitor has $50 left, so $51 wins outright; the old value-share bid
+    # from our larger $100 budget would have overpaid at $91.
+    assert star["richest_competitor_faab"] == 50
+    assert star["lock_bid"] == 51
+    assert star["recommended_bid"] == 51
+    assert star["aggressive_bid"] == 51
+    assert star["recommended_win_probability"] == 1.0
+    assert star["teams_can_outbid"] == 0
     assert star["recommended_bid"] <= star["max_bid"]
     assert star["conservative_bid"] <= star["recommended_bid"] <= star["aggressive_bid"]
     assert (
@@ -142,9 +149,10 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
         <= star["aggressive_win_probability"]
     )
     assert star["survival_urgency"] == 1.0
-    assert star["faab_after_recommended"] == 9
+    assert star["faab_after_recommended"] == 49
     assert small["competing_teams"] == 0
-    assert small["recommended_bid"] == 9
+    assert small["recommended_bid"] == 1
+    assert small["recommended_win_probability"] == 1.0
 
 
 def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
@@ -191,6 +199,8 @@ def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
     assert row["market_bid"] == 100
     assert row["recommended_bid"] == 0
     assert row["recommendation"] == "Pass above max"
+    assert row["richest_competitor_faab"] == 100
+    assert row["teams_can_outbid"] == 1
     assert row["survival_urgency"] == 0.0
     assert row["faab_after_recommended"] == 10
 
