@@ -142,7 +142,7 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
     assert star["richest_competitor_faab"] == 50
     assert star["lock_bid"] == 51
     assert star["recommended_bid"] == 30  # market + 1 plus a small survival-urgency buffer
-    assert star["aggressive_bid"] == 32
+    assert star["aggressive_bid"] == 51  # full fair value, capped at the guaranteed-win bid
     assert star["aggressive_bid"] <= star["lock_bid"]
     assert star["teams_can_outbid"] == 1
     assert star["recommended_bid"] <= star["max_bid"]
@@ -159,7 +159,7 @@ def test_build_chopped_bid_board_estimates_market_and_hard_ceiling() -> None:
     assert small["recommended_win_probability"] == 1.0
 
 
-def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
+def test_board_takes_value_shot_when_market_exceeds_value_ceiling() -> None:
     candidates = pl.DataFrame(
         {
             "sleeper_id": ["c1"],
@@ -201,12 +201,14 @@ def test_board_recommends_pass_when_market_exceeds_value_ceiling() -> None:
     row = board.row(0, named=True)
     assert row["max_bid"] == 10
     assert row["market_bid"] > row["max_bid"]
-    assert row["recommended_bid"] == 0
-    assert row["recommendation"] == "Pass above max"
+    # Priced above his worth to us: still take a fair-value shot instead of passing.
+    assert row["recommendation"] == "Value shot"
+    assert row["recommended_bid"] == row["aggressive_bid"] == 10
+    assert row["conservative_bid"] == 6
     assert row["richest_competitor_faab"] == 100
     assert row["teams_can_outbid"] == 1
     assert row["survival_urgency"] == 0.0
-    assert row["faab_after_recommended"] == 10
+    assert row["faab_after_recommended"] == 0
 
 
 def test_elite_backup_gets_smaller_depth_insurance_value() -> None:

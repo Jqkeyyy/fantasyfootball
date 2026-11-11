@@ -71,8 +71,9 @@ def format_chopped_recommendation(
         drop = f" · drop {row['drop_player']}" if row.get("drop_player") else ""
         gain = float(row.get("survival_probability_gain") or 0.0)
         survival = float(row.get("survival_probability_after") or 0.0)
+        shot = " · value shot" if row.get("recommendation") == "Value shot" else ""
         lines.append(
-            f"**{index}. {row['player_name']} ({row['position']})** — "
+            f"**{index}. {row['player_name']} ({row['position']})**{shot} — "
             f"${row['conservative_bid']} / **${row['recommended_bid']}** / "
             f"${row['aggressive_bid']} (max ${row['max_bid']})\n"
             f"Win {float(row['recommended_win_probability']):.0%} · "

@@ -483,9 +483,13 @@ with st.expander("How the bid is calculated"):
   TE 6.5 per game), and prices scale with the league's average remaining FAAB. An elite QB is
   priced like a star, but a merely solid QB is priced like the free agent most leagues treat
   him as.
-- **Conservative / recommended / aggressive** target the 50th, 60th (75th-85th for the top
-  tiers) and 90th percentile of that historical price, never above your **do not exceed**
-  value ceiling. **Value bid** is shown for reference only.
+- **Recommended** targets the 60th percentile of that historical price (75th-85th for the top
+  tiers), but never less than 25% of the player's worth to you, so a real upgrade never gets a
+  token bid. **Conservative** targets the typical (median) price; **aggressive** is your full
+  fair value, the **do not exceed** ceiling. **Value bid** is shown for reference only.
+- **Value shot** replaces passing when the market usually prices a player above his worth to
+  you: bid your fair value anyway, because managers forget or run short and stars sometimes
+  go cheap. Its win chance is honest and often low.
 - **Survival urgency** adds a small premium when your lineup trails the league.
 - **Remaining FAAB of every team** limits what each opponent is modeled to bid, and it sets
   the **guaranteed-win bid**: one dollar above the richest team that actually wants the player.
@@ -493,8 +497,6 @@ with st.expander("How the bid is calculated"):
   afford to compete. (A tie at that amount would fall to Sleeper's tie-break.)
 - **Estimated win chance** is the share of comparable past players who sold for less than
   the bid, and is 100% once the bid reaches the guaranteed-win amount.
-- “Pass above max” means the estimated market price is higher than the player is worth to your
-  roster.
 
 These are decision estimates, not knowledge of hidden waiver bids. Adjust the reserve and
 aggressiveness controls to compare strategies before submitting claims in Sleeper.

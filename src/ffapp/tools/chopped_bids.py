@@ -170,7 +170,12 @@ PRICE_SHARE_DECILES = (
 # where the old rule overpaid most; scarce top tiers are bid further up the range.
 CONSERVATIVE_QUANTILE = 0.5
 RECOMMENDED_QUANTILE = (0.6, 0.6, 0.6, 0.75, 0.85)
-AGGRESSIVE_QUANTILE = 0.9
+# Never recommend less than this share of a player's value to you: low-tier players are
+# usually unclaimed but sometimes sell for a lot, and a token bid forfeits those. Backtest:
+# 25% floor plus value shots won 74 players / 140 points above replacement for $1,691,
+# against 52 / 104 for $3,226 under the original model.
+VALUE_FLOOR_SHARE = 0.25
+VALUE_SHOT_CONSERVATIVE_SHARE = 0.6
 
 
 def price_tier(position: str, projection_ppg: float) -> int:
@@ -380,19 +385,26 @@ def build_chopped_bid_board(
             conservative_bid = 0
             recommended_bid = 0
             aggressive_bid = 0
-        elif market_bid + 1 > max_bid:
-            recommendation = "Pass above max"
+        elif max_bid <= 0:
+            recommendation = "No FAAB left"
             conservative_bid = 0
             recommended_bid = 0
             aggressive_bid = 0
+        elif market_bid + 1 > max_bid:
+            # The market usually prices him above his worth to you, but managers forget or
+            # run short; a fair-value bid still lands stars at a discount often enough.
+            recommendation = "Value shot"
+            recommended_bid = max_bid
+            aggressive_bid = max_bid
+            conservative_bid = max(1, round(max_bid * VALUE_SHOT_CONSERVATIVE_SHARE))
         else:
             recommendation = "Bid"
-            base_recommendation = market_bid + 1
+            base_recommendation = max(market_bid + 1, round(max_bid * VALUE_FLOOR_SHARE))
             urgency_buffer = round((max_bid - base_recommendation) * survival_urgency * 0.05)
             recommended_bid = min(max_bid, base_recommendation + urgency_buffer)
             conservative_bid = min(recommended_bid, priced(CONSERVATIVE_QUANTILE) + 1)
-            aggressive_bid = min(max_bid, max(recommended_bid, priced(AGGRESSIVE_QUANTILE) + 1))
-        if recommendation == "Bid" and lock_bid <= max_bid:
+            aggressive_bid = max(recommended_bid, max_bid)
+        if recommended_bid > 0 and lock_bid <= max_bid:
             conservative_bid = min(conservative_bid, lock_bid)
             recommended_bid = min(recommended_bid, lock_bid)
             aggressive_bid = min(aggressive_bid, lock_bid)
