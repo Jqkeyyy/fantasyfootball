@@ -246,19 +246,11 @@ def render_home(slug: str) -> None:
     else:
         st.info("No positive lineup upgrade among the current waiver candidates.")
     st.divider()
-    left, middle, right, fourth = st.columns(4)
+    left, middle, right = st.columns(3)
     left.page_link(
-        "pages/9_Weekly_Report.py", label="Weekly Model Report", icon=":material/analytics:"
-    )
-    middle.page_link(
-        "pages/10_Alerts.py", label="Set up phone alerts", icon=":material/notifications:"
-    )
-    right.page_link("pages/12_Operations.py", label="Automation status", icon=":material/settings:")
-    fourth.page_link(
-        "pages/14_Roster_Strategy.py", label="Roster strategy", icon=":material/account_tree:"
-    )
-    st.page_link(
         "pages/9_Weekly_Report.py",
         label="Review last week's results",
         icon=":material/troubleshoot:",
     )
+    middle.page_link("pages/4_Model_Lab.py", label="Model Lab", icon=":material/science:")
+    right.page_link("pages/12_Operations.py", label="Automation status", icon=":material/settings:")

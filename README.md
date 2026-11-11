@@ -299,7 +299,8 @@ the tunnel and does not stop the server.
 
 ### Weekly model report
 
-Open **Accuracy Audit** (also linked from **Predictions vs Actuals**) to compare
+Open **Model Lab** for model health, predictions vs actuals, the accuracy audit, and
+performance over time, each as a section of one page. Its **Accuracy Audit** section compares
 saved sources on the same players and the same pregame snapshot. Filter by week,
 position, historical roster or starters, and predicted points; download the matched
 rows as CSV. The page reports average absolute error, RMSE, bias, and results by
@@ -343,17 +344,15 @@ games. Each check refreshes projections and Sleeper state, applies explicit Out/
 statuses to teams that have not kicked off, saves an immutable pregame forecast, and
 creates decision alerts. A shared lock prevents overlap with the full weekly refresh.
 
-Open **Phone Alerts** in the private dashboard to store a Discord channel webhook and
-send a test. The secret is kept under `data/private/` outside Git. Notifications cover
+Discord alerts use a channel webhook stored in `data/private/discord.json`, outside Git. Notifications cover
 new starter availability problems, material starter projection changes, useful waiver
 upgrades, and refresh failures; identical alerts are suppressed for six hours.
-The same page can securely configure a Discord bot for `/lineup`, `/waivers`,
-`/matchup`, `/trades`, and `/health` slash commands. The cron watchdog keeps the bot
+A Discord bot configured in `data/private/discord_bot.json` answers `/lineup`, `/waivers`,
+`/matchup`, and `/health` slash commands. The cron watchdog keeps the bot
 connected; a server ID is optional but makes command registration immediate.
 
 The home page is the in-season phone dashboard: current cached matchup score, unlocked
 lineup swaps, the top waiver opportunity, data freshness, and links to detailed tools.
-Draft pages remain available inside **Draft & offseason tools**.
 
 ### In-season decision and automation centers
 
@@ -369,9 +368,6 @@ main risk. Its waiver plan orders primary and fallback claims by roster-relative
 rest-of-season projections when available, estimates competing roster interest, suggests a FAAB
 range, and names the likely drop. Discord uses the same action thresholds and explanation fields
 for meaningful lineup, availability, projection, and waiver changes.
-
-Open **Roster Strategy** for four-week position health, bye pressure, playoff value, waiver
-targets, and trade chips.
 
 After games finish, **Weekly Report** also explains the biggest misses by likely reason and
 shows whether your recorded choices helped. Confirmed injuries are excluded from accuracy and
@@ -441,7 +437,7 @@ uv run ffapp ids check --season 2026 --top-n 300
 ### ROS calibration and source evaluation
 
 - `config/ros_calibration.yml` stores empirically estimated week-to-week correlation and injury recovery rates by position.
-- `config/projection_source_evaluation.yml` is the human-curated summary displayed on the Model Health page.
+- `config/projection_source_evaluation.yml` is the human-curated summary displayed in Model Lab's Health section.
 - `config/source_refresh_status.yml` records whether projection sources behave as weekly, frozen, or season-long feeds.
 
 ## Common workflows
@@ -528,7 +524,7 @@ Each run gets its own timestamped directory beneath `data/outputs/eval/`, contai
 - `availability_predictions.parquet` for availability-model predictions;
 - `report.md` with accuracy, ranking, lineup-regret, calibration, and feature-importance results.
 
-The Model Health dashboard page displays the newest report by default and keeps older runs selectable.
+Model Lab's Health section displays the newest report by default and keeps older runs selectable.
 
 ### In-season prediction logging
 
@@ -615,11 +611,8 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | --- | --- | --- |
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
 | **Weekly Actions** | Prioritized decision inbox, recommended lineup, explanations, matchup simulation, waiver bids, K/DST streamers, pipeline health, and a follow/reject outcome ledger. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
-| **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
-| **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
-| **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |
+| **Model Lab** | One page with four sections: Health (live source, in-season source performance, blend weights, evaluation reports), Predictions vs Actuals, Accuracy Audit, and Performance Over Time. | Prediction logs, weekly actuals, `config/projection_source_evaluation.yml`, and `data/outputs/eval/*/report.md`. |
 | **Operations** | League refresh health, upstream source age, host disk/app status, schedules, and manual refresh controls. | Refresh manifests, cache metadata, and local host state. |
-| **Model Health** | Active projection source and current/historical evaluation reports. | `config/projection_source_evaluation.yml` and `data/outputs/eval/*/report.md`. |
 | **ROS Rankings** | Current free-agent ROS rank, movement, expected games, quantile totals, VOR, and playoff value. | `data/outputs/<league>/rankings_ros/latest.parquet`. |
 | **Chopped Bids** | Available players from completed chopped transactions, roster-relative starter/depth value, opponent market estimate, recommended bid, and hard ceiling. | Weekly/ROS projections plus cached Sleeper rosters and transactions for the selected chopped league. |
 
@@ -804,7 +797,7 @@ Set `is_primary: true` on exactly one file in `config/leagues/`. All others must
 Dashboard pages do not build data on demand. Run the producer named in the page's error message:
 
 - Weekly Rankings: `ffapp project --week N`
-- Model Health: `ffapp evaluate --seasons ...`
+- Model Lab (Health): `ffapp evaluate --seasons ...`
 - ROS Rankings: range-mode `ffapp project`, followed by `ffapp rankings ros`
 
 ### The B3 file is missing

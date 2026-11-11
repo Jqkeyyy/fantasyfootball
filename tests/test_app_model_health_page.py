@@ -1,6 +1,6 @@
 """Model health page logic (SPEC.md §12.6, §15; task 2.11). Pure,
 pytest-testable functions only -- the real Streamlit page
-(`app/pages/4_Model_Health.py`) is verified by actually running it
+(`app/model_lab/health.py`, shown in Model Lab) is verified by actually running it
 (CLAUDE.md's UI rule), documented in docs/JOURNAL.md, not here.
 """
 

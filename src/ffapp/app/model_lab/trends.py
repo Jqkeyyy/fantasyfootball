@@ -7,18 +7,12 @@ from pathlib import Path
 import polars as pl
 import streamlit as st
 
-from ffapp.app.league_selector import select_league
 from ffapp.app.performance_trends import POSITIONS, performance_trends
-from ffapp.app.ui import apply_app_shell
-from ffapp.config import load_settings
 from ffapp.evaluation.inseason import load_prediction_history
 from ffapp.evaluation.weekly_review import build_weekly_review
 
-st.set_page_config(page_title="Performance Over Time", layout="wide")
-apply_app_shell()
-league = select_league()
-settings = load_settings()
-st.title("Performance Over Time")
+league = league  # noqa: F821 -- provided by the Model Lab page
+settings = settings  # noqa: F821
 st.caption(f"{league.display_name} · Saved pregame projections versus real fantasy points")
 st.caption(
     "Charts check for new saved results every five minutes while this page is open. "

@@ -111,7 +111,7 @@ def run() -> None:
     config = load_bot_config()
     token = config.get("bot_token") or os.getenv("DISCORD_BOT_TOKEN")
     if not token:
-        print("Discord bot is not configured; use the Phone Alerts page.")
+        print("Discord bot is not configured; see data/private/discord_bot.json.")
         return
 
     import discord

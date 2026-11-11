@@ -8,22 +8,15 @@ from pathlib import Path
 import polars as pl
 import streamlit as st
 
-from ffapp.app.league_selector import select_league
 from ffapp.app.predictions_page import player_history, prediction_comparison, weekly_accuracy
-from ffapp.app.ui import apply_app_shell
-from ffapp.config import load_settings
 from ffapp.draft.pick_order import resolve_my_roster_id
 from ffapp.evaluation.inseason import load_prediction_history
 from ffapp.evaluation.weekly_review import build_weekly_review
 from ffapp.ids import mapping
 from ffapp.ingest import nflverse, sleeper
 
-st.set_page_config(page_title="Predictions vs Actuals", layout="wide")
-apply_app_shell()
-league = select_league()
-settings = load_settings()
-st.title("Predictions vs Actuals")
-st.page_link("pages/20_Accuracy_Audit.py", label="Accuracy Audit — compare sources and adjustments")
+league = league  # noqa: F821 -- provided by the Model Lab page
+settings = settings  # noqa: F821
 st.caption(
     f"{league.display_name} · the model's last pregame prediction next to what each player scored"
 )

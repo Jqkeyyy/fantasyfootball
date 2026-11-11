@@ -1,7 +1,7 @@
 """Model health page logic (SPEC.md §12.6, §15; task 2.11).
 
 Pure, pytest-testable functions only -- the real Streamlit page
-(`app/pages/4_Model_Health.py`) is thin `st.*` glue on top, matching
+(`app/model_lab/health.py`, shown in Model Lab) is thin `st.*` glue on top, matching
 every other page's own precedent (`draft_board_page.py`,
 `weekly_rankings_page.py`, `schedule_grid_page.py`). Reads task 1.17's
 own already-built `data/outputs/eval/<timestamp>/report.md` directly --

@@ -5,9 +5,6 @@ import json
 import polars as pl
 import streamlit as st
 
-from ffapp.app.league_selector import select_league
-from ffapp.app.ui import apply_app_shell
-from ffapp.config import load_settings
 from ffapp.evaluation.accuracy_audit import (
     SOURCES,
     STAGES,
@@ -17,11 +14,8 @@ from ffapp.evaluation.accuracy_audit import (
 )
 from ffapp.evaluation.inseason import load_prediction_history
 
-st.set_page_config(page_title="Accuracy Audit", layout="wide")
-apply_app_shell()
-league = select_league()
-settings = load_settings()
-st.title("Accuracy Audit")
+league = league  # noqa: F821 -- provided by the Model Lab page
+settings = settings  # noqa: F821
 st.warning(
     "A season-selection bug was confirmed in the old ESPN importer: it could read last year's "
     "projection for the same week. The importer now requires an explicit season match. "

@@ -1,30 +1,4 @@
-"""Model health Streamlit page (SPEC.md §12.6, §15; task 2.11).
-
-Fourth page in SPEC §15's own build order, under `app/pages/` per
-Streamlit's own multipage convention (matching `2_Weekly_Rankings.py`/
-`3_Schedule_Grid.py`'s own precedent). Reads the pre-built
-`data/outputs/eval/<timestamp>/report.md` (`ffapp evaluate`, task 1.17)
-directly -- nothing computed on page load, SPEC §15's own "fast to
-load" design constraint. Report selection and markdown loading live in
-`model_health_page.py`, unit-tested there; this script is thin `st.*`
-glue, verified by actually running it (CLAUDE.md's UI rule).
-
-SPEC §15's own reason this page exists: "Being reminded weekly of how
-your model is actually performing is the main defence against trusting
-it too much." -- so the default view is always the latest real report,
-with older ones (SPEC §12.6: "kept, not overwritten") reachable via the
-sidebar, not the other way around.
-
-**Live projection source** (SPEC-ADDENDUM-04.md §C, task 1.20): shown
-above the report -- which `model.projection_source` is live
-(`config/settings.yml`) and its real margin over B2, read from
-`config/projection_source_evaluation.yml` (a small, human-curated
-summary of `docs/JOURNAL.md`'s 2026-08-16 closing entry, not a live
-computation).
-
-Run with: `uv run streamlit run src/ffapp/app/streamlit_app.py`, then
-open "Model Health" from the sidebar.
-"""
+"""Model Lab section: live source, in-season performance, and evaluation reports."""
 
 from __future__ import annotations
 
@@ -33,7 +7,6 @@ from pathlib import Path
 import polars as pl
 import streamlit as st
 
-from ffapp.app.league_selector import select_league
 from ffapp.app.model_health_page import (
     ModelHealthNotBuiltError,
     ProjectionSourceEvaluationNotFoundError,
@@ -42,7 +15,7 @@ from ffapp.app.model_health_page import (
     load_report_markdown,
     projection_source_summary,
 )
-from ffapp.config import CONFIG_DIR, load_settings
+from ffapp.config import CONFIG_DIR
 from ffapp.evaluation.inseason import (
     adaptive_blend_weights,
     load_prediction_history,
@@ -54,8 +27,6 @@ from ffapp.evaluation.inseason import (
     weekly_accuracy,
 )
 from ffapp.league_format import parse_league_format
-
-st.set_page_config(page_title="Model Health", layout="wide")
 
 
 @st.cache_data(show_spinner="Loading evaluation report...")
@@ -69,16 +40,11 @@ def _load_report_cached(path_str: str, mtime: float) -> str:
     return load_report_markdown(Path(path_str))
 
 
-settings = load_settings()
-league = select_league()
+settings = settings  # noqa: F821 -- provided by the Model Lab page
+league = league  # noqa: F821
 league_eval_dir = settings.data_root / "outputs" / league.slug / "eval"
 legacy_eval_dir = settings.data_root / "outputs" / "eval"
 eval_dir = league_eval_dir if league_eval_dir.exists() else legacy_eval_dir
-
-st.title("Model Health")
-st.page_link(
-    "pages/9_Weekly_Report.py", label="Weekly accuracy & injury review", icon=":material/analytics:"
-)
 
 st.subheader("Live projection source")
 live_source = settings.model.projection_source

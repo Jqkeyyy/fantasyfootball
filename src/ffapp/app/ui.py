@@ -208,12 +208,8 @@ def apply_app_shell() -> None:
               <a href="/Weekly_Report" target="_self">Weekly Report</a>
               <a href="/ROS_Rankings" target="_self">ROS Rankings</a>
               <a href="/Chopped_Bids" target="_self">Chopped Bids</a>
-              <a href="/Alerts" target="_self">Phone Alerts</a>
+              <a href="/Model_Lab" target="_self">Model Lab</a>
               <a href="/Operations" target="_self">Operations</a>
-              <a href="/Roster_Strategy" target="_self">Roster Strategy</a>
-              <a href="/Predictions_vs_Actuals" target="_self">Predictions vs Actuals</a>
-              <a href="/Accuracy_Audit" target="_self">Accuracy Audit</a>
-              <a href="/Model_Health" target="_self">Model Health</a>
             </nav>
           </details>
         </div>

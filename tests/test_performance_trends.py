@@ -82,8 +82,10 @@ def test_page_renders_all_groups_and_controls(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         "ffapp.evaluation.weekly_review.build_weekly_review", lambda *a, **k: review_rows()
     )
-    page = Path(__file__).parents[1] / "src/ffapp/app/pages/21_Performance_Over_Time.py"
-    app = AppTest.from_file(str(page)).run(timeout=30)
+    page = Path(__file__).parents[1] / "src/ffapp/app/pages/4_Model_Lab.py"
+    app = AppTest.from_file(str(page))
+    app.query_params["section"] = "trends"
+    app.run(timeout=30)
     assert not app.exception
     assert [tab.label for tab in app.tabs] == ["Top 100", "By position", "Everything"]
     assert len(app.get("vega_lite_chart")) == 16
