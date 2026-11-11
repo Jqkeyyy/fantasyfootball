@@ -102,16 +102,7 @@ def command_summary(command: str, league_slug: str | None = None) -> str:
         payload = _read_json(load_settings().data_root / "outputs" / slug / "gameday.json")
         week = payload.get("week", _alerts(slug).get("week", "?"))
         status = str(payload.get("status") or "No active kickoff-window alert")
-        return (
-            f"**{display_name} · Week {week} matchup**\n• {status}\n{dashboard_url()}"
-        )[:1900]
-    if command == "trades":
-        return (
-            f"**{display_name} trade finder**\n"
-            "Searches every roster for fair 1-for-1, 2-for-1, and 1-for-2 packages, then "
-            "measures both teams' expected starting-lineup change.\n"
-            f"{dashboard_url()}Trade_Finder"
-        )[:1900]
+        return (f"**{display_name} · Week {week} matchup**\n• {status}\n{dashboard_url()}")[:1900]
     raise ValueError(f"Unknown Discord command: {command}")
 
 
@@ -164,10 +155,6 @@ def run() -> None:
     @client.tree.command(name="matchup", description="Show your live matchup status")
     async def matchup(interaction: discord.Interaction, league: str | None = None) -> None:
         await respond(interaction, "matchup", league)
-
-    @client.tree.command(name="trades", description="Open the lineup-aware trade finder")
-    async def trades(interaction: discord.Interaction, league: str | None = None) -> None:
-        await respond(interaction, "trades", league)
 
     @client.tree.command(name="health", description="Check refresh health for every league")
     async def health(interaction: discord.Interaction) -> None:

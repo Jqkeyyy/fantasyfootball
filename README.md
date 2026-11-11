@@ -371,10 +371,7 @@ range, and names the likely drop. Discord uses the same action thresholds and ex
 for meaningful lineup, availability, projection, and waiver changes.
 
 Open **Roster Strategy** for four-week position health, bye pressure, playoff value, waiver
-targets, and trade chips. The **Trade Analyzer** suggests balanced packages based on mutual
-roster needs before running the full season simulation. **Trade Finder** searches 1-for-1,
-2-for-1, and 1-for-2 packages across every roster, measures each side's lineup change over
-the remaining schedule, and can run the full playoff simulation on a selected result.
+targets, and trade chips.
 
 After games finish, **Weekly Report** also explains the biggest misses by likely reason and
 shows whether your recorded choices helped. Confirmed injuries are excluded from accuracy and
@@ -618,8 +615,6 @@ The Streamlit entry point is `src/ffapp/app/streamlit_app.py`. Its pages do not 
 | --- | --- | --- |
 | **Weekly Rankings** | Position tabs, week selection, roster/free-agent context, and weekly projections. | `data/outputs/<league>/projections.parquet` plus cached player/roster identity data. |
 | **Weekly Actions** | Prioritized decision inbox, recommended lineup, explanations, matchup simulation, waiver bids, K/DST streamers, pipeline health, and a follow/reject outcome ledger. | `data/outputs/<league>/projections.parquet` plus cached Sleeper and feature data. |
-| **Trade Analyzer** | Before/after Monte Carlo win, playoff, and title deltas for both sides of a proposed trade. | `data/outputs/<league>/projections_ros.parquet` plus cached Sleeper league data. |
-| **Trade Finder** | Ranked 1-for-1 and uneven packages across every roster, with lineup gain, partner gain, fairness, and optional playoff simulation. | ROS projections plus cached Sleeper rosters. |
 | **Roster Strategy** | Four-week position health, bye pressure, playoff value, waiver targets, and trade chips. | ROS projections plus cached Sleeper rosters. |
 | **Predictions vs Actuals** | Week-by-week table and chart of each player's last pregame prediction next to their real score, a per-player history, and weekly accuracy. | Prediction logs plus weekly actuals. |
 | **Phone Alerts** | Webhook alerts plus secure Discord slash-command bot setup and status. | `data/private/discord.json` and optional `discord_bot.json`. |

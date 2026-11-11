@@ -207,8 +207,6 @@ def apply_app_shell() -> None:
               <a href="/Weekly_Rankings" target="_self">Weekly Rankings</a>
               <a href="/Weekly_Report" target="_self">Weekly Report</a>
               <a href="/ROS_Rankings" target="_self">ROS Rankings</a>
-              <a href="/Trade_Analyzer" target="_self">Trade Analyzer</a>
-              <a href="/Trade_Finder" target="_self">Trade Finder</a>
               <a href="/Chopped_Bids" target="_self">Chopped Bids</a>
               <a href="/Alerts" target="_self">Phone Alerts</a>
               <a href="/Operations" target="_self">Operations</a>

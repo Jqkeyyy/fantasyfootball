@@ -182,4 +182,3 @@ else:
         width="stretch",
         hide_index=True,
     )
-    st.link_button("Build a trade", "/Trade_Analyzer", icon=":material/handshake:")
