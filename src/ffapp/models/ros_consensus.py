@@ -32,6 +32,30 @@ from ffapp.tools.prediction_log import (
 )
 
 _DEFAULT_BRANCH = "subtracted"
+_MIN_LIVE_SOURCES = 2
+# A "season total" source whose typical value is under this fraction of the
+# other sources' is really publishing a per-game number (seen live from CBS:
+# ~25 for a player the others put near 200). Subtracting season actuals from
+# it zeroes out exactly the best players.
+_OFF_SCALE_RATIO = 0.35
+
+
+def _off_scale_sources(season_points: dict[str, pl.DataFrame]) -> set[str]:
+    """Sources whose median value is far below the median of the others."""
+    medians = {
+        name: float(df["points"].median())  # type: ignore[arg-type]
+        for name, df in season_points.items()
+        if not df.is_empty() and df["points"].median() is not None
+    }
+    off: set[str] = set()
+    for name, median in medians.items():
+        others = [m for other, m in medians.items() if other != name]
+        if len(others) < 2:
+            continue
+        reference = sorted(others)[len(others) // 2]
+        if reference > 0 and median < _OFF_SCALE_RATIO * reference:
+            off.add(name)
+    return off
 
 
 def fetch_season_consensus(
@@ -96,10 +120,22 @@ def resolve_remaining_value(
     `player_id, actual_points_to_date` -- a player with no real row there
     (no games logged yet, e.g. a rookie) subtracts 0, not null.
     """
+    usable = {
+        name: df
+        for name, df in season_points.items()
+        if not df.is_empty() and name not in _off_scale_sources(season_points)
+    }
+    # Once at least `_MIN_LIVE_SOURCES` sources are confirmed to update for
+    # games already played, the static preseason ones only add bias:
+    # "preseason total minus actuals" punishes any player beating his
+    # preseason projection (a 25-PPG breakout ends up with almost nothing
+    # left), so drop them.
+    live = [name for name in usable if trend_by_source.get(name) == "declining"]
+    if len(live) >= _MIN_LIVE_SOURCES:
+        usable = {name: usable[name] for name in live}
+
     frames: list[pl.DataFrame] = []
-    for name, points_df in season_points.items():
-        if points_df.is_empty():
-            continue
+    for name, points_df in usable.items():
         trend = trend_by_source.get(name, _DEFAULT_BRANCH)
         branch = "ros_direct" if trend == "declining" else "subtracted"
         with_actuals = points_df.join(actuals_to_date, on="player_id", how="left").with_columns(

@@ -103,3 +103,35 @@ def test_aggregate_remaining_value_trims_and_reports_n_sources() -> None:
     row = result.row(0, named=True)
     assert row["n_sources"] == 3
     assert row["season_consensus_ros_points"] == pytest.approx(105.0, abs=1.0)
+
+
+def _three_sources(values: dict[str, float]) -> dict[str, pl.DataFrame]:
+    return {
+        name: pl.DataFrame(
+            {"player_id": ["p1"], "position": ["WR"], "team": ["SEA"], "points": [value]}
+        )
+        for name, value in values.items()
+    }
+
+
+def test_resolve_remaining_value_drops_per_game_scale_source() -> None:
+    """A 'season' source publishing ~25 (per game) next to others near 170
+    must not be turned into 0 by subtracting season actuals."""
+    season_points = _three_sources({"espn": 165.0, "cbs": 25.0, "fantasysharks": 176.0})
+    trends = {"espn": "declining", "cbs": "flat", "fantasysharks": "declining"}
+    actuals = pl.DataFrame({"player_id": ["p1"], "actual_points_to_date": [232.0]})
+
+    result = ros_consensus.resolve_remaining_value(season_points, trends, actuals)
+    assert set(result["source"].to_list()) == {"espn", "fantasysharks"}
+
+
+def test_resolve_remaining_value_prefers_live_sources_over_stale_preseason() -> None:
+    """With two sources already updating rest-of-season, a flat preseason
+    total (minus actuals) would punish a breakout player, so it is dropped."""
+    season_points = _three_sources({"espn": 165.0, "footballguys": 157.0, "fftoday": 308.0})
+    trends = {"espn": "declining", "footballguys": "declining", "fftoday": "flat"}
+    actuals = pl.DataFrame({"player_id": ["p1"], "actual_points_to_date": [232.0]})
+
+    result = ros_consensus.resolve_remaining_value(season_points, trends, actuals)
+    assert sorted(result["source"].to_list()) == ["espn", "footballguys"]
+    assert set(result["branch"].to_list()) == {"ros_direct"}
