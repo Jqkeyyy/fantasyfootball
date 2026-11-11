@@ -10,6 +10,7 @@ from __future__ import annotations
 import polars as pl
 
 from ffapp.league_format import LeagueFormat
+from ffapp.scoring.engine import score_stat_line
 from ffapp.sim.lineup import PlayerProjection, optimal_lineup_points
 from ffapp.tools import tiers
 from ffapp.tools.ros_rankings import REQUIRED_ROS_BOARD_COLUMNS, ROS_BOARD_SCHEMA_VERSION
@@ -18,6 +19,8 @@ from ffapp.tools.waivers import value_added
 SORT_OPTIONS = {
     "Value over replacement": "vor_ros",
     "Projected ROS points": "ros_points",
+    "Projected season total": "projected_total",
+    "Points so far": "season_points",
     "Projected points per game": "ros_ppg",
     "Upside (P90)": "ros_p90",
     "Floor (P10)": "ros_p10",
@@ -239,9 +242,7 @@ def team_specific_recommendations(
             _number(row["_ppg"]),
             _number(row["_ppg"]),
         )
-        lineup_gain, drop_id = value_added(
-            roster, candidate, fmt, baseline_points=baseline
-        )
+        lineup_gain, drop_id = value_added(roster, candidate, fmt, baseline_points=baseline)
         playoff_value = _number(row["playoff_weeks_value"])
         playoff_candidate = PlayerProjection(
             candidate.player_id,
@@ -276,9 +277,43 @@ def team_specific_recommendations(
     )
 
 
+def season_points_to_date(
+    stats: pl.DataFrame, scoring: dict[str, float], *, season: int, before_week: int
+) -> pl.DataFrame:
+    """`player_id, season_points, games_played`: real points scored this
+    season under the league's own scoring, before the ROS anchor week."""
+    empty = pl.DataFrame(
+        schema={"player_id": pl.String, "season_points": pl.Float64, "games_played": pl.UInt32}
+    )
+    if stats.is_empty():
+        return empty
+    scoped = stats.filter((pl.col("season") == season) & (pl.col("week") < before_week))
+    if "season_type" in scoped.columns:
+        scoped = scoped.filter(pl.col("season_type") == "REG")
+    if scoped.is_empty():
+        return empty
+    return (
+        scoped.with_columns(score_stat_line(scoped, scoring).alias("_points"))
+        .group_by("player_id")
+        .agg(pl.col("_points").sum().alias("season_points"), pl.len().alias("games_played"))
+    )
+
+
+def add_season_totals(board: pl.DataFrame, to_date: pl.DataFrame) -> pl.DataFrame:
+    """Join points-so-far onto the board and add the projected full-season
+    total (`season_points + ros_points`). Players with no games score 0."""
+    return (
+        board.join(to_date, on="player_id", how="left")
+        .with_columns(pl.col("season_points").fill_null(0.0), pl.col("games_played").fill_null(0))
+        .with_columns((pl.col("season_points") + pl.col("ros_points")).alias("projected_total"))
+    )
+
+
 __all__ = [
     "RosBoardSchemaError",
     "SORT_OPTIONS",
+    "add_season_totals",
+    "season_points_to_date",
     "explain_ros_player",
     "filter_board",
     "player_week_schedule",

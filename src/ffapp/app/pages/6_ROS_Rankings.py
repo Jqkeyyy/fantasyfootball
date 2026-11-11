@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
@@ -11,10 +12,12 @@ from ffapp.app.league_selector import select_league
 from ffapp.app.ros_rankings_page import (
     SORT_OPTIONS,
     RosBoardSchemaError,
+    add_season_totals,
     explain_ros_player,
     filter_board,
     player_week_schedule,
     prepare_board,
+    season_points_to_date,
     style_rank_change,
     team_specific_recommendations,
     validate_board_schema,
@@ -48,6 +51,36 @@ try:
 except RosBoardSchemaError as exc:
     st.error(str(exc))
     st.stop()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_points_to_date(
+    root: str, slug: str, scoring_items: tuple, revision: float
+) -> pl.DataFrame:
+    data = Path(root)
+    stats_path = data / "interim" / "player_week_stats.parquet"
+    ros_path = data / "outputs" / slug / "projections_ros.parquet"
+    if not stats_path.exists() or not ros_path.exists():
+        return season_points_to_date(pl.DataFrame(), {}, season=0, before_week=0)
+    anchor = pl.read_parquet(ros_path, columns=["season", "week"])
+    season = int(anchor["season"].max())  # type: ignore[arg-type]
+    before_week = int(anchor.filter(pl.col("season") == season)["week"].min())  # type: ignore[arg-type]
+    return season_points_to_date(
+        pl.read_parquet(stats_path), dict(scoring_items), season=season, before_week=before_week
+    )
+
+
+try:
+    points_to_date = load_points_to_date(
+        str(settings.data_root),
+        league.slug,
+        tuple(sorted(league.league_cache["scoring_settings"].items())),
+        latest_path.stat().st_mtime,
+    )
+except Exception as exc:  # noqa: BLE001 - totals are a nice-to-have, never block the board
+    st.warning(f"Season points so far unavailable: {exc}")
+    points_to_date = season_points_to_date(pl.DataFrame(), {}, season=0, before_week=0)
+board = add_season_totals(board, points_to_date)
 displayed = style_rank_change(board)
 
 with st.sidebar:
@@ -83,7 +116,9 @@ table = ranked.select(
     "availability",
     "fantasy_team",
     "vor_ros",
+    "season_points",
     "ros_points",
+    "projected_total",
     "ros_ppg",
     "ros_p10",
     "ros_p50",
@@ -109,15 +144,21 @@ event = st.dataframe(
         "availability": "Status",
         "fantasy_team": "Fantasy Team",
         "vor_ros": st.column_config.NumberColumn("VOR", format="%.1f"),
-        "ros_points": st.column_config.NumberColumn("ROS Points", format="%.1f"),
+        "season_points": st.column_config.NumberColumn(
+            "Pts So Far", format="%.1f", help="Points scored this season in your league's scoring"
+        ),
+        "ros_points": st.column_config.NumberColumn(
+            "ROS Proj", format="%.1f", help="Projected points for the rest of the season"
+        ),
+        "projected_total": st.column_config.NumberColumn(
+            "Season Total", format="%.1f", help="Points so far + ROS projection"
+        ),
         "ros_ppg": st.column_config.NumberColumn("PPG", format="%.1f"),
         "ros_p10": st.column_config.NumberColumn("Floor", format="%.1f"),
         "ros_p50": st.column_config.NumberColumn("Median", format="%.1f"),
         "ros_p90": st.column_config.NumberColumn("Upside", format="%.1f"),
         "expected_games": st.column_config.NumberColumn("Exp Games", format="%.1f"),
-        "playoff_weeks_value": st.column_config.NumberColumn(
-            "Playoff Value", format="%.1f"
-        ),
+        "playoff_weeks_value": st.column_config.NumberColumn("Playoff Value", format="%.1f"),
         "rank_change_display": "Change",
         "player_id": None,
     },
@@ -161,12 +202,20 @@ if selected_rows:
         f"{selected['position']} · {selected['nfl_team']} · {owner} · "
         f"Position tier {selected['position_tier']}"
     )
-    metrics = st.columns(5)
+    metrics = st.columns(6)
     metrics[0].metric("VOR rank", int(selected["rank"]))
-    metrics[1].metric("ROS points", f"{float(selected['ros_points']):.1f}")
-    metrics[2].metric("Expected games", f"{float(selected['expected_games']):.1f}")
-    metrics[3].metric("Floor", f"{float(selected['ros_p10']):.1f}")
-    metrics[4].metric("Upside", f"{float(selected['ros_p90']):.1f}")
+    metrics[1].metric(
+        "Points so far",
+        f"{float(selected['season_points']):.1f}",
+        f"{int(selected['games_played'])} games",
+        delta_color="off",
+    )
+    metrics[2].metric("ROS projection", f"{float(selected['ros_points']):.1f}")
+    metrics[3].metric("Season total", f"{float(selected['projected_total']):.1f}")
+    metrics[4].metric("Expected games", f"{float(selected['expected_games']):.1f}")
+    metrics[5].metric(
+        "Floor / Upside", f"{float(selected['ros_p10']):.0f} / {float(selected['ros_p90']):.0f}"
+    )
 
     ros_path = settings.data_root / "outputs" / league.slug / "projections_ros.parquet"
     weekly = (

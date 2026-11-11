@@ -158,3 +158,24 @@ def test_team_specific_recommendations_reports_lineup_gain_and_drop() -> None:
     assert row["lineup_gain_ppg"] == 5.0
     assert row["playoff_lineup_gain"] == 15.0
     assert row["drop_player"] == "My Bench"
+
+
+def test_season_points_to_date_scores_only_weeks_before_anchor() -> None:
+    from ffapp.app.ros_rankings_page import add_season_totals, season_points_to_date
+
+    stats = pl.DataFrame(
+        {
+            "player_id": ["a", "a", "a", "b"],
+            "season": [2026, 2026, 2026, 2025],
+            "week": [1, 2, 10, 1],
+            "season_type": ["REG"] * 4,
+            "receptions": [5, 3, 9, 4],
+        }
+    )
+    to_date = season_points_to_date(stats, {"rec": 1.0}, season=2026, before_week=10)
+    assert to_date.to_dicts() == [{"player_id": "a", "season_points": 8.0, "games_played": 2}]
+
+    board = pl.DataFrame({"player_id": ["a", "b"], "ros_points": [50.0, 20.0]})
+    totals = add_season_totals(board, to_date).sort("player_id")
+    assert totals["season_points"].to_list() == [8.0, 0.0]
+    assert totals["projected_total"].to_list() == [58.0, 20.0]
